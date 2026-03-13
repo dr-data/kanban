@@ -5,6 +5,7 @@ import { useHotkeys } from "react-hotkeys-hook";
 import { BranchSelectDropdown, type BranchSelectOption } from "@/components/branch-select-dropdown";
 import { TaskPromptComposer } from "@/components/task-prompt-composer";
 import type { TaskAutoReviewMode } from "@/types";
+import { KBD } from "./KBD";
 
 export type TaskInlineCardMode = "create" | "edit";
 
@@ -82,7 +83,7 @@ export function TaskInlineCreateCard({
 	const autoReviewModeId = `${idPrefix}-auto-review-mode-select`;
 	const branchSelectId = `${idPrefix}-branch-select`;
 	const actionLabel = mode === "edit" ? "Save" : "Create";
-	const cancelLabel = "Cancel (esc)";
+	const cancelLabel = <span>Cancel <KBD>esc</KBD></span>;
 	const cardMarginBottom = mode === "create" ? 8 : 0;
 
 	useHotkeys(
