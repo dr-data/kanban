@@ -18,6 +18,7 @@ export default defineConfig({
 	test: {
 		globals: true,
 		environment: "node",
+		globalSetup: ["./test/vitest-global-teardown.ts"],
 		exclude: ["apps/**", "web-ui/**", "third_party/**", "**/node_modules/**", "**/dist/**", ".worktrees/**"],
 		testTimeout: 15_000,
 	},
