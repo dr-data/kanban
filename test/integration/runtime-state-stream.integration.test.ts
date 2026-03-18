@@ -26,6 +26,7 @@ import type {
 	RuntimeWorkspaceStateResponse,
 	RuntimeWorktreeEnsureResponse,
 } from "../../src/core/api-contract.js";
+import { cleanupChildProcess, waitForChildProcessClose } from "../utilities/child-process.js";
 import { createGitTestEnv } from "../utilities/git-env.js";
 import { createTempDir } from "../utilities/temp-dir.js";
 
@@ -174,11 +175,35 @@ async function waitForProcessStart(process: ChildProcess, timeoutMs = 10_000): P
 		let settled = false;
 		let stdout = "";
 		let stderr = "";
+		const handleStdout = (chunk: Buffer) => {
+			handleOutput(chunk, "stdout");
+		};
+		const handleStderr = (chunk: Buffer) => {
+			handleOutput(chunk, "stderr");
+		};
+		const handleExit = (code: number | null, signal: NodeJS.Signals | null) => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			clearTimeout(timeoutId);
+			process.stdout?.removeListener("data", handleStdout);
+			process.stderr?.removeListener("data", handleStderr);
+			process.removeListener("exit", handleExit);
+			rejectStart(
+				new Error(
+					`Server process exited before startup (code=${String(code)} signal=${String(signal)}).\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+				),
+			);
+		};
 		const timeoutId = setTimeout(() => {
 			if (settled) {
 				return;
 			}
 			settled = true;
+			process.stdout?.removeListener("data", handleStdout);
+			process.stderr?.removeListener("data", handleStderr);
+			process.removeListener("exit", handleExit);
 			rejectStart(new Error(`Timed out waiting for server start.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
 		}, timeoutMs);
 		const handleOutput = (chunk: Buffer, source: "stdout" | "stderr") => {
@@ -198,26 +223,14 @@ async function waitForProcessStart(process: ChildProcess, timeoutMs = 10_000): P
 			}
 			settled = true;
 			clearTimeout(timeoutId);
+			process.stdout?.removeListener("data", handleStdout);
+			process.stderr?.removeListener("data", handleStderr);
+			process.removeListener("exit", handleExit);
 			resolveStart({ runtimeUrl });
 		};
-		process.stdout.on("data", (chunk: Buffer) => {
-			handleOutput(chunk, "stdout");
-		});
-		process.stderr.on("data", (chunk: Buffer) => {
-			handleOutput(chunk, "stderr");
-		});
-		process.once("exit", (code, signal) => {
-			if (settled) {
-				return;
-			}
-			settled = true;
-			clearTimeout(timeoutId);
-			rejectStart(
-				new Error(
-					`Server process exited before startup (code=${String(code)} signal=${String(signal)}).\nstdout:\n${stdout}\nstderr:\n${stderr}`,
-				),
-			);
-		});
+		process.stdout.on("data", handleStdout);
+		process.stderr.on("data", handleStderr);
+		process.once("exit", handleExit);
 	});
 }
 
@@ -238,24 +251,6 @@ async function requestGracefulShutdown(childProcess: ChildProcess): Promise<void
 			}
 			resolveSend();
 		});
-	});
-}
-
-async function waitForExit(childProcess: ChildProcess, timeoutMs: number): Promise<boolean> {
-	if (childProcess.exitCode !== null) {
-		return true;
-	}
-
-	return await new Promise<boolean>((resolveExit) => {
-		const handleExit = () => {
-			clearTimeout(timeoutId);
-			resolveExit(true);
-		};
-		const timeoutId = setTimeout(() => {
-			childProcess.removeListener("exit", handleExit);
-			resolveExit(false);
-		}, timeoutMs);
-		childProcess.once("exit", handleExit);
 	});
 }
 
@@ -296,19 +291,23 @@ async function startKanbanServer(input: {
 	return {
 		runtimeUrl,
 		stop: async () => {
-			if (child.exitCode !== null) {
-				return;
-			}
-			await requestGracefulShutdown(child);
-			const didExitGracefully = await waitForExit(child, 5_000);
-			if (didExitGracefully) {
-				return;
-			}
+			try {
+				if (child.exitCode !== null) {
+					return;
+				}
+				await requestGracefulShutdown(child);
+				const didExitGracefully = await waitForChildProcessClose(child, 5_000);
+				if (didExitGracefully) {
+					return;
+				}
 
-			child.kill("SIGKILL");
-			const didExitAfterForce = await waitForExit(child, 5_000);
-			if (!didExitAfterForce) {
-				throw new Error("Timed out stopping kanban test server process.");
+				child.kill("SIGKILL");
+				const didExitAfterForce = await waitForChildProcessClose(child, 5_000);
+				if (!didExitAfterForce) {
+					throw new Error("Timed out stopping kanban test server process.");
+				}
+			} finally {
+				cleanupChildProcess(child);
 			}
 		},
 	};
@@ -391,12 +390,15 @@ async function connectRuntimeStream(url: string): Promise<RuntimeStreamClient> {
 		},
 		close: async () => {
 			if (socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+				emitter.removeAllListeners();
 				return;
 			}
 			await new Promise<void>((resolveClose) => {
 				socket.once("close", () => resolveClose());
 				socket.close();
 			});
+			emitter.removeAllListeners();
+			socket.removeAllListeners();
 		},
 	};
 }

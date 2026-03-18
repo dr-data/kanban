@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { cleanupChildProcess, waitForChildProcessClose } from "../utilities/child-process.js";
 import { createGitTestEnv } from "../utilities/git-env.js";
 import { createTempDir } from "../utilities/temp-dir.js";
 
@@ -91,11 +92,35 @@ async function waitForServerStart(process: ChildProcess, timeoutMs = 10_000): Pr
 		let settled = false;
 		let stdout = "";
 		let stderr = "";
+		const handleStdout = (chunk: Buffer) => {
+			handleOutput(chunk, "stdout");
+		};
+		const handleStderr = (chunk: Buffer) => {
+			handleOutput(chunk, "stderr");
+		};
+		const handleExit = (code: number | null, signal: NodeJS.Signals | null) => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			clearTimeout(timeoutId);
+			process.stdout?.removeListener("data", handleStdout);
+			process.stderr?.removeListener("data", handleStderr);
+			process.removeListener("exit", handleExit);
+			rejectStart(
+				new Error(
+					`Server process exited before startup (code=${String(code)} signal=${String(signal)}).\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+				),
+			);
+		};
 		const timeoutId = setTimeout(() => {
 			if (settled) {
 				return;
 			}
 			settled = true;
+			process.stdout?.removeListener("data", handleStdout);
+			process.stderr?.removeListener("data", handleStderr);
+			process.removeListener("exit", handleExit);
 			rejectStart(new Error(`Timed out waiting for server start.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
 		}, timeoutMs);
 		const handleOutput = (chunk: Buffer, source: "stdout" | "stderr") => {
@@ -110,43 +135,13 @@ async function waitForServerStart(process: ChildProcess, timeoutMs = 10_000): Pr
 			}
 			settled = true;
 			clearTimeout(timeoutId);
+			process.stdout?.removeListener("data", handleStdout);
+			process.stderr?.removeListener("data", handleStderr);
+			process.removeListener("exit", handleExit);
 			resolveStart();
 		};
-		process.stdout.on("data", (chunk: Buffer) => {
-			handleOutput(chunk, "stdout");
-		});
-		process.stderr.on("data", (chunk: Buffer) => {
-			handleOutput(chunk, "stderr");
-		});
-		process.once("exit", (code, signal) => {
-			if (settled) {
-				return;
-			}
-			settled = true;
-			clearTimeout(timeoutId);
-			rejectStart(
-				new Error(
-					`Server process exited before startup (code=${String(code)} signal=${String(signal)}).\nstdout:\n${stdout}\nstderr:\n${stderr}`,
-				),
-			);
-		});
-	});
-}
-
-async function waitForExit(process: ChildProcess, timeoutMs: number): Promise<boolean> {
-	if (process.exitCode !== null) {
-		return true;
-	}
-
-	return await new Promise<boolean>((resolveExit) => {
-		const handleExit = () => {
-			clearTimeout(timeoutId);
-			resolveExit(true);
-		};
-		const timeoutId = setTimeout(() => {
-			process.removeListener("exit", handleExit);
-			resolveExit(false);
-		}, timeoutMs);
+		process.stdout.on("data", handleStdout);
+		process.stderr.on("data", handleStderr);
 		process.once("exit", handleExit);
 	});
 }
@@ -196,10 +191,12 @@ async function runCliCommandAndCollectOutput(options: {
 		stderr += chunk.toString();
 	});
 
-	const didExit = await waitForExit(process, options.timeoutMs ?? 8_000);
+	const didExit = await waitForChildProcessClose(process, options.timeoutMs ?? 8_000);
 	if (!didExit) {
 		process.kill("SIGKILL");
+		await waitForChildProcessClose(process, 5_000);
 	}
+	cleanupChildProcess(process);
 
 	return {
 		stdout,
@@ -270,21 +267,24 @@ describe("source task commands", () => {
 					stderr += chunk.toString();
 				});
 
-				const didExit = await waitForExit(commandProcess, 8_000);
+				const didExit = await waitForChildProcessClose(commandProcess, 8_000);
 				if (!didExit) {
 					commandProcess.kill("SIGKILL");
+					await waitForChildProcessClose(commandProcess, 5_000);
 				}
+				cleanupChildProcess(commandProcess);
 
 				expect(didExit, `task create did not exit in time.\nstdout:\n${stdout}\nstderr:\n${stderr}`).toBe(true);
 				expect(commandProcess.exitCode).toBe(0);
 				expect(stdout).toContain('"ok": true');
 			} finally {
 				await requestGracefulShutdown(serverProcess);
-				const stopped = await waitForExit(serverProcess, 5_000);
+				const stopped = await waitForChildProcessClose(serverProcess, 5_000);
 				if (!stopped) {
 					serverProcess.kill("SIGKILL");
-					await waitForExit(serverProcess, 5_000);
+					await waitForChildProcessClose(serverProcess, 5_000);
 				}
+				cleanupChildProcess(serverProcess);
 			}
 		} finally {
 			cleanupProject();
@@ -404,11 +404,12 @@ describe("source task commands", () => {
 				expect(listedTrash.stdout).toContain('"count": 0');
 			} finally {
 				await requestGracefulShutdown(serverProcess);
-				const stopped = await waitForExit(serverProcess, 5_000);
+				const stopped = await waitForChildProcessClose(serverProcess, 5_000);
 				if (!stopped) {
 					serverProcess.kill("SIGKILL");
-					await waitForExit(serverProcess, 5_000);
+					await waitForChildProcessClose(serverProcess, 5_000);
 				}
+				cleanupChildProcess(serverProcess);
 			}
 		} finally {
 			cleanupProject();

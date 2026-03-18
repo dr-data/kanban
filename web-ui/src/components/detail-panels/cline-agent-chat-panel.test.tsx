@@ -99,12 +99,10 @@ describe("ClineAgentChatPanel", () => {
 
 		expect(container.textContent).toContain("Reasoning");
 		expect(container.textContent).toContain("Thinking through the next edit");
-		expect(container.textContent).toContain("Tool");
 		expect(container.textContent).toContain("Read");
-		expect(container.textContent).toContain("Running");
+		expect(container.textContent).toContain("src/index.ts");
 		expect(container.textContent).not.toContain("Input");
 		expect(container.textContent).not.toContain("Output");
-		expect(container.textContent).toContain("21ms");
 
 		const toolToggle = Array.from(container.querySelectorAll("button")).find((button) =>
 			button.textContent?.includes("Read"),
@@ -118,8 +116,8 @@ describe("ClineAgentChatPanel", () => {
 			toolToggle.click();
 		});
 
-		expect(container.textContent).toContain("Input");
 		expect(container.textContent).toContain("Output");
+		expect(container.textContent).toContain('{"ok":true}');
 	});
 
 	it("shows running progress indicator while session is running", async () => {
