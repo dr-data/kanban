@@ -39,18 +39,18 @@ describe("WebhookService — registration", () => {
 		const svc = createWebhookService();
 		const result = svc.register({ url: "http://localhost:9000/hook" });
 		expect(result.ok).toBe(true);
-		expect(result.registration).not.toBeNull();
-		expect(result.registration!.url).toBe("http://localhost:9000/hook");
-		expect(result.registration!.events).toBeNull();
-		expect(typeof result.registration!.id).toBe("string");
-		expect(typeof result.registration!.createdAt).toBe("number");
+		expect(result.registration).toBeDefined();
+		expect(result.registration?.url).toBe("http://localhost:9000/hook");
+		expect(result.registration?.events).toBeNull();
+		expect(typeof result.registration?.id).toBe("string");
+		expect(typeof result.registration?.createdAt).toBe("number");
 	});
 
 	it("registers a webhook with event filter", () => {
 		const svc = createWebhookService();
 		const result = svc.register({ url: "http://localhost:9000/hook", events: ["task.created", "task.completed"] });
 		expect(result.ok).toBe(true);
-		expect(result.registration!.events).toEqual(["task.created", "task.completed"]);
+		expect(result.registration?.events).toEqual(["task.created", "task.completed"]);
 	});
 
 	it("lists all registered webhooks", () => {
@@ -76,7 +76,7 @@ describe("WebhookService — registration", () => {
 	it("unregisters a webhook by id", () => {
 		const svc = createWebhookService();
 		const result = svc.register({ url: "http://localhost:9000/hook" });
-		const id = result.registration!.id;
+		const id = result.registration?.id ?? "";
 		const unregResult = svc.unregister({ id });
 		expect(unregResult.ok).toBe(true);
 		expect(svc.list().registrations).toHaveLength(0);
@@ -103,12 +103,17 @@ describe("WebhookService — HTTP delivery", () => {
 		svc.dispatch([createEvent()]);
 		await vi.waitFor(() => expect(deliverPayload).toHaveBeenCalledTimes(1));
 
-		const [url, init] = deliverPayload.mock.calls[0]!;
-		expect(url).toBe("http://localhost:9000/hook");
-		expect(init.method).toBe("POST");
-		expect(init.headers).toHaveProperty("Content-Type", "application/json");
-		expect(init.headers).toHaveProperty("X-Kanban-Event", "task.created");
-		expect(init.headers).toHaveProperty("X-Kanban-Delivery", "evt-1");
+		expect(deliverPayload).toHaveBeenCalledWith(
+			"http://localhost:9000/hook",
+			expect.objectContaining({
+				method: "POST",
+				headers: expect.objectContaining({
+					"Content-Type": "application/json",
+					"X-Kanban-Event": "task.created",
+					"X-Kanban-Delivery": "evt-1",
+				}),
+			}),
+		);
 	});
 
 	it("does not deliver events when no registrations match", async () => {
@@ -129,11 +134,11 @@ describe("WebhookService — HTTP delivery", () => {
 		svc.dispatch([createEvent()]);
 		await vi.waitFor(() => expect(deliverPayload).toHaveBeenCalledTimes(1));
 
-		const [, init] = deliverPayload.mock.calls[0]!;
-		const headers = init.headers as Record<string, string>;
-		const body = init.body as string;
-		const expected = `sha256=${createHmac("sha256", "test-secret").update(body).digest("hex")}`;
-		expect(headers["X-Kanban-Signature"]).toBe(expected);
+		const call = deliverPayload.mock.calls[0];
+		const headers = call?.[1]?.headers as Record<string, string> | undefined;
+		const body = call?.[1]?.body as string | undefined;
+		const expected = `sha256=${createHmac("sha256", "test-secret").update(body ?? "").digest("hex")}`;
+		expect(headers?.["X-Kanban-Signature"]).toBe(expected);
 	});
 
 	it("does not include signature header when no secret is configured", async () => {
@@ -144,7 +149,7 @@ describe("WebhookService — HTTP delivery", () => {
 		svc.dispatch([createEvent()]);
 		await vi.waitFor(() => expect(deliverPayload).toHaveBeenCalledTimes(1));
 
-		const headers = deliverPayload.mock.calls[0]![1].headers as Record<string, string>;
+		const headers = deliverPayload.mock.calls[0]?.[1]?.headers as Record<string, string> | undefined;
 		expect(headers).not.toHaveProperty("X-Kanban-Signature");
 	});
 
@@ -163,7 +168,29 @@ describe("WebhookService — HTTP delivery", () => {
 
 		expect(deliverPayload).toHaveBeenCalledTimes(2);
 		expect(warn).toHaveBeenCalledTimes(1);
-		expect(warn.mock.calls[0]![0]).toMatch(/Webhook delivery failed after retry/);
+		expect(warn.mock.calls[0]?.[0]).toMatch(/Webhook delivery failed after retry/);
+
+		vi.useRealTimers();
+	});
+
+	it("retries once on network exception then warns", async () => {
+		vi.useFakeTimers();
+		const warn = vi.fn();
+		const deliverPayload = vi
+			.fn<(url: string, init: RequestInit) => Promise<Response>>()
+			.mockRejectedValue(new TypeError("fetch failed"));
+		const svc = createWebhookService({ deliverPayload, warn });
+		svc.register({ url: "http://localhost:9000/hook" });
+
+		svc.dispatch([createEvent()]);
+
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(1_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(deliverPayload).toHaveBeenCalledTimes(2);
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(warn.mock.calls[0]?.[0]).toMatch(/Webhook delivery failed after retry/);
 
 		vi.useRealTimers();
 	});
@@ -218,6 +245,17 @@ describe("WebhookService — HTTP delivery", () => {
 		expect(urls).toContain("http://localhost:9000/all");
 		expect(urls).not.toContain("http://localhost:9000/moved-only");
 	});
+
+	it("does not deliver to unregistered webhooks", async () => {
+		const deliverPayload = vi.fn<(url: string, init: RequestInit) => Promise<Response>>().mockResolvedValue(okResponse());
+		const svc = createWebhookService({ deliverPayload });
+		const reg = svc.register({ url: "http://localhost:9000/hook" });
+		svc.unregister({ id: reg.registration?.id ?? "" });
+
+		svc.dispatch([createEvent()]);
+		await new Promise((r) => setTimeout(r, 50));
+		expect(deliverPayload).not.toHaveBeenCalled();
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -253,11 +291,11 @@ describe("WebhookService — unix socket delivery", () => {
 
 			await vi.waitFor(() => expect(receivedBodies).toHaveLength(1), { timeout: 3_000 });
 
-			const parsed = JSON.parse(receivedBodies[0]!) as WebhookEvent;
+			const parsed = JSON.parse(receivedBodies[0] ?? "{}") as WebhookEvent;
 			expect(parsed.type).toBe("task.created");
 			expect(parsed.task.id).toBe("aaa");
-			expect(receivedHeaders[0]!["x-kanban-event"]).toBe("task.created");
-			expect(receivedHeaders[0]!["x-kanban-delivery"]).toBe("evt-1");
+			expect(receivedHeaders[0]?.["x-kanban-event"]).toBe("task.created");
+			expect(receivedHeaders[0]?.["x-kanban-delivery"]).toBe("evt-1");
 		} finally {
 			await new Promise<void>((resolve, reject) => {
 				server.close((err) => (err ? reject(err) : resolve()));

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import type { RuntimeBoardData } from "../../../src/core/api-contract.js";
 import { diffBoard } from "../../../src/webhooks/board-diff.js";
@@ -64,6 +64,24 @@ describe("diffBoard", () => {
 		});
 	});
 
+	it("detects task.created when a card appears directly in a non-backlog column", () => {
+		const oldBoard = createBoard({});
+		const newBoard = createBoard({ in_progress: [{ id: "aaa", prompt: "Urgent fix" }] });
+		const events = diffBoard(oldBoard, newBoard, WORKSPACE_ID, NOW, nextId);
+		expect(events).toHaveLength(1);
+		expect(events[0]).toEqual({
+			id: "evt-1",
+			type: "task.created",
+			timestamp: NOW,
+			workspaceId: WORKSPACE_ID,
+			task: {
+				id: "aaa",
+				title: "Urgent fix",
+				columnId: "in_progress",
+			},
+		});
+	});
+
 	it("detects task.moved when a card moves between columns", () => {
 		const oldBoard = createBoard({ backlog: [{ id: "aaa", prompt: "Move me" }] });
 		const newBoard = createBoard({ in_progress: [{ id: "aaa", prompt: "Move me" }] });
@@ -88,12 +106,16 @@ describe("diffBoard", () => {
 		const newBoard = createBoard({ trash: [{ id: "aaa", prompt: "Complete me" }] });
 		const events = diffBoard(oldBoard, newBoard, WORKSPACE_ID, NOW, nextId);
 		expect(events).toHaveLength(2);
-		expect(events[0]!.type).toBe("task.moved");
-		expect(events[0]!.task.columnId).toBe("trash");
-		expect(events[0]!.task.previousColumnId).toBe("review");
-		expect(events[1]!.type).toBe("task.completed");
-		expect(events[1]!.task.columnId).toBe("trash");
-		expect(events[1]!.task.previousColumnId).toBe("review");
+		expect(events).toEqual([
+			expect.objectContaining({
+				type: "task.moved",
+				task: expect.objectContaining({ columnId: "trash", previousColumnId: "review" }),
+			}),
+			expect.objectContaining({
+				type: "task.completed",
+				task: expect.objectContaining({ columnId: "trash", previousColumnId: "review" }),
+			}),
+		]);
 	});
 
 	it("handles multiple changes in a single diff", () => {
