@@ -17,6 +17,7 @@ import { RuntimeSettingsDialog, type RuntimeSettingsSection } from "@/components
 import { TaskCreateDialog } from "@/components/task-create-dialog";
 import { TaskInlineCreateCard } from "@/components/task-inline-create-card";
 import { TaskStartServicePromptDialog } from "@/components/task-start-service-prompt-dialog";
+import { TaskTitleDialog } from "@/components/task-title-dialog";
 import { TopBar } from "@/components/top-bar";
 import { Button } from "@/components/ui/button";
 import {
@@ -55,7 +56,7 @@ import { useRuntimeProjectConfig } from "@/runtime/use-runtime-project-config";
 import { useTerminalConnectionReady } from "@/runtime/use-terminal-connection-ready";
 import { useWorkspacePersistence } from "@/runtime/use-workspace-persistence";
 import { saveWorkspaceState } from "@/runtime/workspace-state-query";
-import { findCardSelection } from "@/state/board-state";
+import { findCardSelection, updateTask } from "@/state/board-state";
 import {
 	getTaskWorkspaceInfo,
 	getTaskWorkspaceSnapshot,
@@ -75,6 +76,8 @@ export default function App(): ReactElement {
 	const [homeSidebarSection, setHomeSidebarSection] = useState<"projects" | "agent">("projects");
 	const [isClearTrashDialogOpen, setIsClearTrashDialogOpen] = useState(false);
 	const [isGitHistoryOpen, setIsGitHistoryOpen] = useState(false);
+	const [editingTitleTaskId, setEditingTitleTaskId] = useState<string | null>(null);
+	const [editingTitleValue, setEditingTitleValue] = useState("");
 	const [pendingTaskStartAfterEditId, setPendingTaskStartAfterEditId] = useState<string | null>(null);
 	const taskEditorResetRef = useRef<() => void>(() => {});
 	const lastStreamErrorRef = useRef<string | null>(null);
@@ -238,6 +241,8 @@ export default function App(): ReactElement {
 
 	const {
 		isInlineTaskCreateOpen,
+		newTaskTitle,
+		setNewTaskTitle,
 		newTaskPrompt,
 		setNewTaskPrompt,
 		newTaskStartInPlanMode,
@@ -250,6 +255,8 @@ export default function App(): ReactElement {
 		newTaskBranchRef,
 		setNewTaskBranchRef,
 		editingTaskId,
+		editTaskTitle,
+		setEditTaskTitle,
 		editTaskPrompt,
 		setEditTaskPrompt,
 		editTaskStartInPlanMode,
@@ -280,6 +287,45 @@ export default function App(): ReactElement {
 		setSelectedTaskId,
 		queueTaskStartAfterEdit,
 	});
+
+	const handleOpenTaskTitleEditor = useCallback(
+		(taskId: string) => {
+			const selection = findCardSelection(board, taskId);
+			if (!selection) {
+				return;
+			}
+			setEditingTitleTaskId(taskId);
+			setEditingTitleValue(selection.card.title);
+		},
+		[board],
+	);
+
+	const handleCloseTaskTitleEditor = useCallback(() => {
+		setEditingTitleTaskId(null);
+		setEditingTitleValue("");
+	}, []);
+
+	const handleSaveTaskTitle = useCallback(() => {
+		if (!editingTitleTaskId) {
+			return;
+		}
+		setBoard((currentBoard) => {
+			const selection = findCardSelection(currentBoard, editingTitleTaskId);
+			if (!selection) {
+				return currentBoard;
+			}
+			const updated = updateTask(currentBoard, editingTitleTaskId, {
+				title: editingTitleValue,
+				prompt: selection.card.prompt,
+				startInPlanMode: selection.card.startInPlanMode,
+				autoReviewEnabled: selection.card.autoReviewEnabled === true,
+				autoReviewMode: selection.card.autoReviewMode,
+				baseRef: selection.card.baseRef,
+			});
+			return updated.updated ? updated.board : currentBoard;
+		});
+		handleCloseTaskTitleEditor();
+	}, [editingTitleTaskId, editingTitleValue, handleCloseTaskTitleEditor]);
 
 	useEffect(() => {
 		taskEditorResetRef.current = resetTaskEditorState;
@@ -688,6 +734,8 @@ export default function App(): ReactElement {
 
 	const inlineTaskEditor = editingTaskId ? (
 		<TaskInlineCreateCard
+			title={editTaskTitle}
+			onTitleChange={setEditTaskTitle}
 			prompt={editTaskPrompt}
 			onPromptChange={setEditTaskPrompt}
 			onCreate={handleSaveEditedTask}
@@ -843,6 +891,7 @@ export default function App(): ReactElement {
 											editingTaskId={editingTaskId}
 											inlineTaskEditor={inlineTaskEditor}
 											onEditTask={handleOpenEditTask}
+											onEditTaskTitle={handleOpenTaskTitleEditor}
 											onCommitTask={handleCommitTask}
 											onOpenPrTask={handleOpenPrTask}
 											onCancelAutomaticTaskAction={handleCancelAutomaticTaskAction}
@@ -925,6 +974,7 @@ export default function App(): ReactElement {
 								onEditTask={(task) => {
 									handleOpenEditTask(task, { preserveDetailSelection: true });
 								}}
+								onEditTaskTitle={handleOpenTaskTitleEditor}
 								onCommitTask={handleCommitTask}
 								onOpenPrTask={handleOpenPrTask}
 								onAgentCommitTask={handleAgentCommitTask}
@@ -993,6 +1043,8 @@ export default function App(): ReactElement {
 			<TaskCreateDialog
 				open={isInlineTaskCreateOpen}
 				onOpenChange={handleCreateDialogOpenChange}
+				title={newTaskTitle}
+				onTitleChange={setNewTaskTitle}
 				prompt={newTaskPrompt}
 				onPromptChange={setNewTaskPrompt}
 				onCreate={handleCreateTask}
@@ -1010,6 +1062,13 @@ export default function App(): ReactElement {
 				branchRef={newTaskBranchRef}
 				branchOptions={createTaskBranchOptions}
 				onBranchRefChange={setNewTaskBranchRef}
+			/>
+			<TaskTitleDialog
+				open={editingTitleTaskId !== null}
+				title={editingTitleValue}
+				onTitleChange={setEditingTitleValue}
+				onClose={handleCloseTaskTitleEditor}
+				onSave={handleSaveTaskTitle}
 			/>
 			<ClearTrashDialog
 				open={isClearTrashDialogOpen}

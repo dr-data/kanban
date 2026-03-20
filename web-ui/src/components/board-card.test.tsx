@@ -65,12 +65,13 @@ vi.mock("@/utils/task-prompt", async () => {
 	return {
 		...actual,
 		truncateTaskPromptLabel: (prompt: string) => prompt.split("||")[0]?.trim() ?? "",
-		splitPromptToTitleDescriptionByWidth: (prompt: string) => {
-			const [title, ...descriptionParts] = prompt.split("||");
-			return {
-				title: title?.trim() ?? "",
-				description: descriptionParts.join("||").trim(),
-			};
+		normalizeTaskTextForDisplay: (value: string) => value.split("||")[0]?.trim() ?? value.trim(),
+		getTaskPromptDescription: (prompt: string, title: string) => {
+			const normalized = prompt.trim();
+			if (!normalized.startsWith(title)) {
+				return normalized;
+			}
+			return normalized.slice(title.length).replace(/^\|\|/, "").trim();
 		},
 	};
 });
@@ -78,6 +79,7 @@ vi.mock("@/utils/task-prompt", async () => {
 function createCard(overrides?: Partial<Parameters<typeof BoardCard>[0]["card"]>) {
 	return {
 		id: "task-1",
+		title: "Review API changes",
 		prompt: "Review API changes",
 		startInPlanMode: false,
 		autoReviewEnabled: false,
@@ -192,7 +194,13 @@ describe("BoardCard", () => {
 			"Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau final hidden segment";
 
 		await act(async () => {
-			root.render(<BoardCard card={createCard({ prompt: `Task title||${description}` })} index={0} columnId="backlog" />);
+			root.render(
+				<BoardCard
+					card={createCard({ title: "Task title", prompt: `Task title||${description}` })}
+					index={0}
+					columnId="backlog"
+				/>,
+			);
 		});
 
 		const findButton = (label: string) =>
@@ -323,7 +331,7 @@ describe("BoardCard", () => {
 		await act(async () => {
 			root.render(
 				<BoardCard
-					card={createCard({ prompt: "Task title||Freshly created task description" })}
+					card={createCard({ title: "Task title", prompt: "Task title||Freshly created task description" })}
 					index={0}
 					columnId="backlog"
 				/>,

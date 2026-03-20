@@ -1,5 +1,5 @@
 import { Draggable } from "@hello-pangea/dnd";
-import { GitBranch, Play, RotateCcw, Trash2 } from "lucide-react";
+import { GitBranch, Pencil, Play, RotateCcw, Trash2 } from "lucide-react";
 import type { MouseEvent } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -11,7 +11,12 @@ import type { BoardCard as BoardCardModel, BoardColumnId } from "@/types";
 import { getTaskAutoReviewCancelButtonLabel } from "@/types";
 import { formatPathForDisplay } from "@/utils/path-display";
 import { useMeasure } from "@/utils/react-use";
-import { clampTextWithInlineSuffix, splitPromptToTitleDescriptionByWidth, truncateTaskPromptLabel } from "@/utils/task-prompt";
+import {
+	clampTextWithInlineSuffix,
+	getTaskPromptDescription,
+	normalizeTaskTextForDisplay,
+	truncateTaskPromptLabel,
+} from "@/utils/task-prompt";
 import { DEFAULT_TEXT_MEASURE_FONT, measureTextWidth, readElementFontShorthand } from "@/utils/text-measure";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -106,6 +111,7 @@ export function BoardCard({
 	onStart,
 	onMoveToTrash,
 	onRestoreFromTrash,
+	onEditTitle,
 	onCommit,
 	onOpenPr,
 	onCancelAutomaticAction,
@@ -128,6 +134,7 @@ export function BoardCard({
 	onStart?: (taskId: string) => void;
 	onMoveToTrash?: (taskId: string) => void;
 	onRestoreFromTrash?: (taskId: string) => void;
+	onEditTitle?: (taskId: string) => void;
 	onCommit?: (taskId: string) => void;
 	onOpenPr?: (taskId: string) => void;
 	onCancelAutomaticAction?: (taskId: string) => void;
@@ -142,78 +149,38 @@ export function BoardCard({
 	workspacePath?: string | null;
 }): React.ReactElement {
 	const [isHovered, setIsHovered] = useState(false);
-	const [titleContainerRef, titleRect] = useMeasure<HTMLDivElement>();
 	const [descriptionContainerRef, descriptionRect] = useMeasure<HTMLDivElement>();
-	const titleRef = useRef<HTMLParagraphElement | null>(null);
 	const descriptionRef = useRef<HTMLParagraphElement | null>(null);
-	const [titleWidthFallback, setTitleWidthFallback] = useState(0);
 	const [descriptionWidthFallback, setDescriptionWidthFallback] = useState(0);
-	const [titleFont, setTitleFont] = useState(DEFAULT_TEXT_MEASURE_FONT);
 	const [descriptionFont, setDescriptionFont] = useState(DEFAULT_TEXT_MEASURE_FONT);
 	const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
 	const reviewWorkspaceSnapshot = useTaskWorkspaceSnapshotValue(card.id);
 	const isTrashCard = columnId === "trash";
 	const isCardInteractive = !isTrashCard;
-	const titleWidth = titleRect.width > 0 ? titleRect.width : titleWidthFallback;
 	const descriptionWidth = descriptionRect.width > 0 ? descriptionRect.width : descriptionWidthFallback;
-	const displayPrompt = useMemo(() => {
-		return card.prompt.trim();
-	}, [card.prompt]);
-	const displayPromptSplit = useMemo(() => {
-		const fallbackTitle = truncateTaskPromptLabel(card.prompt);
-		if (!displayPrompt) {
-			return {
-				title: fallbackTitle,
-				description: "",
-			};
-		}
-		if (titleWidth <= 0) {
-			return {
-				title: fallbackTitle,
-				description: "",
-			};
-		}
-		const split = splitPromptToTitleDescriptionByWidth(displayPrompt, {
-			maxTitleWidthPx: titleWidth,
-			measureText: (value) => measureTextWidth(value, titleFont),
-		});
-		return {
-			title: split.title || fallbackTitle,
-			description: split.description,
-		};
-	}, [card.prompt, displayPrompt, titleFont, titleWidth]);
+	const displayTitle = useMemo(
+		() => normalizeTaskTextForDisplay(card.title) || truncateTaskPromptLabel(card.prompt),
+		[card.prompt, card.title],
+	);
+	const displayDescription = useMemo(() => getTaskPromptDescription(card.prompt, displayTitle), [card.prompt, displayTitle]);
 
 	useLayoutEffect(() => {
-		if (titleRect.width > 0) {
-			return;
-		}
-		const nextWidth = titleRef.current?.parentElement?.getBoundingClientRect().width ?? 0;
-		if (nextWidth > 0 && nextWidth !== titleWidthFallback) {
-			setTitleWidthFallback(nextWidth);
-		}
-	}, [titleRect.width, titleWidthFallback]);
-
-	useLayoutEffect(() => {
-		if (descriptionRect.width > 0 || !displayPromptSplit.description) {
+		if (descriptionRect.width > 0 || !displayDescription) {
 			return;
 		}
 		const nextWidth = descriptionRef.current?.parentElement?.getBoundingClientRect().width ?? 0;
 		if (nextWidth > 0 && nextWidth !== descriptionWidthFallback) {
 			setDescriptionWidthFallback(nextWidth);
 		}
-	}, [descriptionRect.width, descriptionWidthFallback, displayPromptSplit.description]);
-
-	useLayoutEffect(() => {
-		setTitleFont(readElementFontShorthand(titleRef.current, DEFAULT_TEXT_MEASURE_FONT));
-	}, [titleWidth]);
+	}, [descriptionRect.width, descriptionWidthFallback, displayDescription]);
 
 	useLayoutEffect(() => {
 		setDescriptionFont(readElementFontShorthand(descriptionRef.current, DEFAULT_TEXT_MEASURE_FONT));
-	}, [descriptionWidth, displayPromptSplit.description]);
+	}, [descriptionWidth, displayDescription]);
 
 	useEffect(() => {
 		setIsDescriptionExpanded(false);
-	}, [card.id, displayPromptSplit.description]);
+	}, [card.id, displayDescription]);
 
 	const stopEvent = (event: MouseEvent<HTMLElement>) => {
 		event.preventDefault();
@@ -223,7 +190,7 @@ export function BoardCard({
 	const isDescriptionMeasured = descriptionRect.width > 0;
 
 	const descriptionDisplay = useMemo(() => {
-		if (!displayPromptSplit.description) {
+		if (!displayDescription) {
 			return {
 				text: "",
 				isTruncated: false,
@@ -231,17 +198,17 @@ export function BoardCard({
 		}
 		if (descriptionWidth <= 0) {
 			return {
-				text: displayPromptSplit.description,
+				text: displayDescription,
 				isTruncated: false,
 			};
 		}
-		return clampTextWithInlineSuffix(displayPromptSplit.description, {
+		return clampTextWithInlineSuffix(displayDescription, {
 			maxWidthPx: descriptionWidth,
 			maxLines: DESCRIPTION_COLLAPSE_LINES,
 			suffix: DESCRIPTION_COLLAPSE_SUFFIX,
 			measureText: (value) => measureTextWidth(value, descriptionFont),
 		});
-	}, [descriptionFont, descriptionWidth, displayPromptSplit.description]);
+	}, [descriptionFont, descriptionWidth, displayDescription]);
 
 	const renderStatusMarker = () => {
 		if (columnId === "in_progress") {
@@ -352,68 +319,84 @@ export function BoardCard({
 								{statusMarker ? (
 									<div className="inline-flex items-center">{statusMarker}</div>
 								) : null}
-								<div ref={titleContainerRef} className="flex-1 min-w-0">
+								<div className="flex-1 min-w-0">
 									<p
-										ref={titleRef}
 										className={cn(
 											"kb-line-clamp-1 m-0 font-medium text-sm",
 											isTrashCard && "line-through text-text-tertiary",
 										)}
 									>
-										{displayPromptSplit.title}
+										{displayTitle}
 									</p>
 								</div>
-								{columnId === "backlog" ? (
-									<Button
-										icon={<Play size={14} />}
-										variant="ghost"
-										size="sm"
-										aria-label="Start task"
-										onMouseDown={stopEvent}
-										onClick={(event) => {
-											stopEvent(event);
-											onStart?.(card.id);
-										}}
-									/>
-								) : columnId === "review" ? (
-									<Button
-										icon={isMoveToTrashLoading ? <Spinner size={13} /> : <Trash2 size={13} />}
-										variant="ghost"
-										size="sm"
-										disabled={isMoveToTrashLoading}
-										aria-label="Move task to trash"
-										onMouseDown={stopEvent}
-										onClick={(event) => {
-											stopEvent(event);
-											onMoveToTrash?.(card.id);
-										}}
-									/>
-								) : columnId === "trash" ? (
-									<Tooltip
-										side="bottom"
-										content={
-											<>
-												Restore session
-												<br />
-												in new worktree
-											</>
-										}
-									>
+								<div className="flex items-center gap-1">
+									{onEditTitle ? (
+										<Tooltip content="Edit title" side="bottom">
+											<Button
+												icon={<Pencil size={12} />}
+												variant="ghost"
+												size="sm"
+												aria-label="Edit task title"
+												onMouseDown={stopEvent}
+												onClick={(event) => {
+													stopEvent(event);
+													onEditTitle(card.id);
+												}}
+											/>
+										</Tooltip>
+									) : null}
+									{columnId === "backlog" ? (
 										<Button
-											icon={<RotateCcw size={12} />}
+											icon={<Play size={14} />}
 											variant="ghost"
 											size="sm"
-											aria-label="Restore task from trash"
+											aria-label="Start task"
 											onMouseDown={stopEvent}
 											onClick={(event) => {
 												stopEvent(event);
-												onRestoreFromTrash?.(card.id);
+												onStart?.(card.id);
 											}}
 										/>
-									</Tooltip>
-								) : null}
+									) : columnId === "review" ? (
+										<Button
+											icon={isMoveToTrashLoading ? <Spinner size={13} /> : <Trash2 size={13} />}
+											variant="ghost"
+											size="sm"
+											disabled={isMoveToTrashLoading}
+											aria-label="Move task to trash"
+											onMouseDown={stopEvent}
+											onClick={(event) => {
+												stopEvent(event);
+												onMoveToTrash?.(card.id);
+											}}
+										/>
+									) : columnId === "trash" ? (
+										<Tooltip
+											side="bottom"
+											content={
+												<>
+													Restore session
+													<br />
+													in new worktree
+												</>
+											}
+										>
+											<Button
+												icon={<RotateCcw size={12} />}
+												variant="ghost"
+												size="sm"
+												aria-label="Restore task from trash"
+												onMouseDown={stopEvent}
+												onClick={(event) => {
+													stopEvent(event);
+													onRestoreFromTrash?.(card.id);
+												}}
+											/>
+										</Tooltip>
+									) : null}
+								</div>
 							</div>
-							{displayPromptSplit.description ? (
+							{displayDescription ? (
 								<div ref={descriptionContainerRef}>
 									<p
 										ref={descriptionRef}
@@ -426,9 +409,7 @@ export function BoardCard({
 											margin: "2px 0 0",
 										}}
 									>
-										{isDescriptionExpanded || !descriptionDisplay.isTruncated
-											? displayPromptSplit.description
-											: descriptionDisplay.text}
+										{isDescriptionExpanded || !descriptionDisplay.isTruncated ? displayDescription : descriptionDisplay.text}
 										{descriptionDisplay.isTruncated ? (
 											isDescriptionExpanded ? (
 												<>
