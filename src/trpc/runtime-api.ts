@@ -20,6 +20,8 @@ import {
 	parseClineMcpSettingsSaveRequest,
 	parseClineProviderModelsRequest,
 	parseClineProviderSettingsSaveRequest,
+	parseCommitLockAcquireRequest,
+	parseCommitLockReleaseRequest,
 	parseCommandRunRequest,
 	parseRuntimeConfigSaveRequest,
 	parseShellSessionStartRequest,
@@ -36,6 +38,7 @@ import { buildRuntimeConfigResponse, resolveAgentCommand } from "../terminal/age
 import type { TerminalSessionManager } from "../terminal/session-manager.js";
 import { resolveTaskCwd } from "../workspace/task-worktree.js";
 import { captureTaskTurnCheckpoint } from "../workspace/turn-checkpoints.js";
+import type { CommitLockCoordinator } from "../core/commit-lock-coordinator.js";
 import type { RuntimeTrpcContext, RuntimeTrpcWorkspaceScope } from "./app-router.js";
 
 export interface CreateRuntimeApiDependencies {
@@ -46,6 +49,7 @@ export interface CreateRuntimeApiDependencies {
 	getScopedTerminalManager: (scope: RuntimeTrpcWorkspaceScope) => Promise<TerminalSessionManager>;
 	getScopedClineTaskSessionService: (scope: RuntimeTrpcWorkspaceScope) => Promise<ClineTaskSessionService>;
 	resolveInteractiveShellCommand: () => { binary: string; args: string[] };
+	commitLockCoordinator: CommitLockCoordinator;
 	runCommand: (command: string, cwd: string) => Promise<RuntimeCommandRunResponse>;
 	prepareForStateReset?: () => Promise<void>;
 	warn?: (message: string) => void;
@@ -464,6 +468,23 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 					error: message,
 				};
 			}
+		},
+		acquireCommitLock: async (workspaceScope, input) => {
+			const body = parseCommitLockAcquireRequest(input);
+			const result = deps.commitLockCoordinator.acquire(workspaceScope.workspaceId, body.baseRef, body.taskId);
+			if (result.acquired) {
+				return { acquired: true as const };
+			}
+			return {
+				acquired: false as const,
+				holderTaskId: result.holder.taskId,
+				holderBaseRef: result.holder.baseRef,
+			};
+		},
+		releaseCommitLock: async (workspaceScope, input) => {
+			const body = parseCommitLockReleaseRequest(input);
+			const released = deps.commitLockCoordinator.release(workspaceScope.workspaceId, body.baseRef, body.taskId);
+			return { released };
 		},
 		startShellSession: async (workspaceScope, input) => {
 			try {

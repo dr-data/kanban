@@ -8,6 +8,7 @@ import {
 	createInMemoryClineTaskSessionService,
 	type ClineTaskSessionService,
 } from "../cline-sdk/cline-task-session-service.js";
+import { createCommitLockCoordinator } from "../core/commit-lock-coordinator.js";
 import type { RuntimeCommandRunResponse, RuntimeWorkspaceStateResponse } from "../core/api-contract.js";
 import {
 	buildKanbanRuntimeUrl,
@@ -78,6 +79,7 @@ function readWorkspaceIdFromRequest(request: IncomingMessage, requestUrl: URL): 
 
 export async function createRuntimeServer(deps: CreateRuntimeServerDependencies): Promise<RuntimeServer> {
 	const webUiDir = getWebUiDir();
+	const commitLockCoordinator = createCommitLockCoordinator();
 
 	try {
 		await readFile(join(webUiDir, "index.html"));
@@ -153,6 +155,7 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 			workspaceIds.add(activeWorkspaceId);
 		}
 		for (const workspaceId of workspaceIds) {
+			commitLockCoordinator.releaseAllForWorkspace(workspaceId);
 			await disposeClineTaskSessionServiceAsync(workspaceId);
 			deps.disposeWorkspace(workspaceId, {
 				stopTerminalSessions: true,
@@ -175,6 +178,7 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 				getScopedTerminalManager,
 				getScopedClineTaskSessionService,
 				resolveInteractiveShellCommand: deps.resolveInteractiveShellCommand,
+				commitLockCoordinator,
 				runCommand: deps.runCommand,
 				prepareForStateReset,
 				warn: deps.warn,

@@ -71,6 +71,10 @@ import type {
 	RuntimeWorktreeDeleteRequest,
 	RuntimeWorktreeDeleteResponse,
 	RuntimeWorktreeEnsureRequest,
+	RuntimeCommitLockAcquireRequest,
+	RuntimeCommitLockAcquireResponse,
+	RuntimeCommitLockReleaseRequest,
+	RuntimeCommitLockReleaseResponse,
 	RuntimeWorktreeEnsureResponse,
 } from "../core/api-contract.js";
 import {
@@ -139,6 +143,10 @@ import {
 	runtimeWorktreeDeleteRequestSchema,
 	runtimeWorktreeDeleteResponseSchema,
 	runtimeWorktreeEnsureRequestSchema,
+	runtimeCommitLockAcquireRequestSchema,
+	runtimeCommitLockAcquireResponseSchema,
+	runtimeCommitLockReleaseRequestSchema,
+	runtimeCommitLockReleaseResponseSchema,
 	runtimeWorktreeEnsureResponseSchema,
 } from "../core/api-contract.js";
 
@@ -214,6 +222,14 @@ export interface RuntimeTrpcContext {
 			scope: RuntimeTrpcWorkspaceScope | null,
 			input: RuntimeClineMcpSettingsSaveRequest,
 		) => Promise<RuntimeClineMcpSettingsSaveResponse>;
+		acquireCommitLock: (
+			scope: RuntimeTrpcWorkspaceScope,
+			input: RuntimeCommitLockAcquireRequest,
+		) => Promise<RuntimeCommitLockAcquireResponse>;
+		releaseCommitLock: (
+			scope: RuntimeTrpcWorkspaceScope,
+			input: RuntimeCommitLockReleaseRequest,
+		) => Promise<RuntimeCommitLockReleaseResponse>;
 		startShellSession: (
 			scope: RuntimeTrpcWorkspaceScope,
 			input: RuntimeShellSessionStartRequest,
@@ -450,6 +466,18 @@ export const runtimeAppRouter = t.router({
 			.output(runtimeClineOauthLoginResponseSchema)
 			.mutation(async ({ ctx, input }) => {
 				return await ctx.runtimeApi.runClineProviderOAuthLogin(ctx.workspaceScope, input);
+			}),
+		acquireCommitLock: workspaceProcedure
+			.input(runtimeCommitLockAcquireRequestSchema)
+			.output(runtimeCommitLockAcquireResponseSchema)
+			.mutation(async ({ ctx, input }) => {
+				return await ctx.runtimeApi.acquireCommitLock(ctx.workspaceScope, input);
+			}),
+		releaseCommitLock: workspaceProcedure
+			.input(runtimeCommitLockReleaseRequestSchema)
+			.output(runtimeCommitLockReleaseResponseSchema)
+			.mutation(async ({ ctx, input }) => {
+				return await ctx.runtimeApi.releaseCommitLock(ctx.workspaceScope, input);
 			}),
 		startShellSession: workspaceProcedure
 			.input(runtimeShellSessionStartRequestSchema)

@@ -26,6 +26,8 @@ import {
 	type RuntimeWorkspaceFileSearchRequest,
 	type RuntimeWorkspaceStateSaveRequest,
 	type RuntimeWorktreeDeleteRequest,
+	type RuntimeCommitLockAcquireRequest,
+	type RuntimeCommitLockReleaseRequest,
 	type RuntimeWorktreeEnsureRequest,
 	runtimeCommandRunRequestSchema,
 	runtimeConfigSaveRequestSchema,
@@ -52,6 +54,8 @@ import {
 	runtimeWorkspaceFileSearchRequestSchema,
 	runtimeWorkspaceStateSaveRequestSchema,
 	runtimeWorktreeDeleteRequestSchema,
+	runtimeCommitLockAcquireRequestSchema,
+	runtimeCommitLockReleaseRequestSchema,
 	runtimeWorktreeEnsureRequestSchema,
 } from "./api-contract.js";
 
@@ -466,4 +470,30 @@ export function parseTerminalWsClientMessage(value: unknown): RuntimeTerminalWsC
 		return null;
 	}
 	return parsed.data;
+}
+
+export function parseCommitLockAcquireRequest(value: unknown): RuntimeCommitLockAcquireRequest {
+	const parsed = parseWithSchema(runtimeCommitLockAcquireRequestSchema, value);
+	const taskId = parsed.taskId.trim();
+	if (!taskId) {
+		throw new Error("Commit lock taskId cannot be empty.");
+	}
+	const baseRef = parsed.baseRef.trim();
+	if (!baseRef) {
+		throw new Error("Commit lock baseRef cannot be empty.");
+	}
+	return { taskId, baseRef };
+}
+
+export function parseCommitLockReleaseRequest(value: unknown): RuntimeCommitLockReleaseRequest {
+	const parsed = parseWithSchema(runtimeCommitLockReleaseRequestSchema, value);
+	const taskId = parsed.taskId.trim();
+	if (!taskId) {
+		throw new Error("Commit lock release taskId cannot be empty.");
+	}
+	const baseRef = parsed.baseRef.trim();
+	if (!baseRef) {
+		throw new Error("Commit lock release baseRef cannot be empty.");
+	}
+	return { taskId, baseRef };
 }

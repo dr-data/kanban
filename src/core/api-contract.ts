@@ -940,3 +940,32 @@ export const runtimeHookIngestResponseSchema = z.object({
 	error: z.string().optional(),
 });
 export type RuntimeHookIngestResponse = z.infer<typeof runtimeHookIngestResponseSchema>;
+
+// --- Commit lock coordination ---
+
+export const runtimeCommitLockAcquireRequestSchema = z.object({
+	taskId: z.string(),
+	baseRef: z.string(),
+});
+export type RuntimeCommitLockAcquireRequest = z.infer<typeof runtimeCommitLockAcquireRequestSchema>;
+
+export const runtimeCommitLockAcquireResponseSchema = z.discriminatedUnion("acquired", [
+	z.object({ acquired: z.literal(true) }),
+	z.object({
+		acquired: z.literal(false),
+		holderTaskId: z.string(),
+		holderBaseRef: z.string(),
+	}),
+]);
+export type RuntimeCommitLockAcquireResponse = z.infer<typeof runtimeCommitLockAcquireResponseSchema>;
+
+export const runtimeCommitLockReleaseRequestSchema = z.object({
+	taskId: z.string(),
+	baseRef: z.string(),
+});
+export type RuntimeCommitLockReleaseRequest = z.infer<typeof runtimeCommitLockReleaseRequestSchema>;
+
+export const runtimeCommitLockReleaseResponseSchema = z.object({
+	released: z.boolean(),
+});
+export type RuntimeCommitLockReleaseResponse = z.infer<typeof runtimeCommitLockReleaseResponseSchema>;

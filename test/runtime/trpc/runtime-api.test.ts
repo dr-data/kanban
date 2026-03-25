@@ -81,6 +81,7 @@ vi.mock("../../../src/server/browser.js", () => ({
 	openInBrowser: browserMocks.openInBrowser,
 }));
 
+import { createCommitLockCoordinator } from "../../../src/core/commit-lock-coordinator.js";
 import { createRuntimeApi } from "../../../src/trpc/runtime-api.js";
 
 function createSummary(overrides: Partial<RuntimeTaskSessionSummary> = {}): RuntimeTaskSessionSummary {
@@ -311,6 +312,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		};
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -358,6 +360,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		};
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -411,6 +414,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.startTaskSession.mockResolvedValue(createSummary({ agentId: "cline", pid: null }));
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				const runtimeConfigState = createRuntimeConfigState();
@@ -482,6 +486,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				const runtimeConfigState = createRuntimeConfigState();
@@ -531,6 +536,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.startTaskSession.mockResolvedValue(createSummary({ agentId: "cline", pid: null }));
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				const runtimeConfigState = createRuntimeConfigState();
@@ -573,6 +579,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		};
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -634,6 +641,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		});
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				const runtimeConfigState = createRuntimeConfigState();
@@ -698,6 +706,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		});
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				const runtimeConfigState = createRuntimeConfigState();
@@ -767,6 +776,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		});
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				const runtimeConfigState = createRuntimeConfigState();
@@ -814,6 +824,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.stopTaskSession.mockResolvedValue(summary);
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -858,6 +869,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.getSummary.mockReturnValue(summary);
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -906,6 +918,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.listMessages.mockReturnValue([]);
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -952,6 +965,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.loadTaskSessionMessages.mockResolvedValue([persistedMessage]);
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -985,6 +999,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.listMessages.mockReturnValue([latestMessage]);
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1032,6 +1047,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.listMessages.mockReturnValue([latestMessage]);
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => runtimeConfigState),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1086,6 +1102,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.startTaskSession.mockResolvedValue(summary);
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => runtimeConfigState),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1117,6 +1134,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				return createRuntimeConfigState();
@@ -1154,6 +1172,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1222,6 +1241,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		);
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1251,6 +1271,7 @@ describe("createRuntimeApi startTaskSession", () => {
 
 	it("saves Cline MCP settings", async () => {
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1337,6 +1358,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		);
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1390,6 +1412,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		);
 
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1428,6 +1451,7 @@ describe("createRuntimeApi startTaskSession", () => {
 			}
 		});
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1467,6 +1491,7 @@ describe("createRuntimeApi startTaskSession", () => {
 			writeFileSync(join(path, "marker.txt"), "present");
 		}
 		const api = createRuntimeApi({
+			commitLockCoordinator: createCommitLockCoordinator(),
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),

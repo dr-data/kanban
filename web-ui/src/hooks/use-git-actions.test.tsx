@@ -10,6 +10,22 @@ import type { BoardData } from "@/types";
 const showAppToastMock = vi.hoisted(() => vi.fn());
 const useGitHistoryDataMock = vi.hoisted(() => vi.fn());
 
+const acquireCommitLockMutateMock = vi.hoisted(() => vi.fn());
+const releaseCommitLockMutateMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/runtime/trpc-client", () => ({
+	getRuntimeTrpcClient: () => ({
+		runtime: {
+			acquireCommitLock: {
+				mutate: acquireCommitLockMutateMock,
+			},
+			releaseCommitLock: {
+				mutate: releaseCommitLockMutateMock,
+			},
+		},
+	}),
+}));
+
 vi.mock("@/components/app-toaster", () => ({
 	showAppToast: showAppToastMock,
 }));
@@ -164,6 +180,10 @@ describe("useGitActions", () => {
 
 	beforeEach(() => {
 		showAppToastMock.mockReset();
+		acquireCommitLockMutateMock.mockReset();
+		acquireCommitLockMutateMock.mockResolvedValue({ acquired: true });
+		releaseCommitLockMutateMock.mockReset();
+		releaseCommitLockMutateMock.mockResolvedValue({ released: true });
 		useGitHistoryDataMock.mockReset();
 		useGitHistoryDataMock.mockReturnValue(createGitHistoryResult());
 		clearTaskWorkspaceInfo("task-1");

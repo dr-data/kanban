@@ -272,6 +272,25 @@ export function useGitActions({
 				}
 				setTaskWorkspaceInfo(workspaceInfo);
 
+				// Serialize same-baseRef commits at the runtime layer to prevent
+				// concurrent shared-base-worktree mutations.
+				if (action === "commit" && currentProjectId) {
+					const trpcClient = getRuntimeTrpcClient(currentProjectId);
+					const lockResult = await trpcClient.runtime.acquireCommitLock.mutate({
+						taskId,
+						baseRef: selection.card.baseRef,
+					});
+					if (!lockResult.acquired) {
+						showAppToast({
+							intent: "warning",
+							icon: "warning-sign",
+							message: `Another task is already committing to ${selection.card.baseRef}. Try again when it finishes.`,
+							timeout: 7000,
+						});
+						return false;
+					}
+				}
+
 				const prompt = buildTaskGitActionPrompt({
 					action,
 					workspaceInfo,
@@ -323,10 +342,22 @@ export function useGitActions({
 				return true;
 			} finally {
 				setTaskGitActionLoading(taskId, action, null);
+				if (action === "commit" && currentProjectId) {
+					try {
+						const trpcClient = getRuntimeTrpcClient(currentProjectId);
+						await trpcClient.runtime.releaseCommitLock.mutate({
+							taskId,
+							baseRef: findCardSelection(board, taskId)?.card.baseRef ?? "",
+						});
+					} catch {
+						// Best-effort release; runtime cleanup handles orphans on workspace dispose.
+					}
+				}
 			}
 		},
 		[
 			board,
+			currentProjectId,
 			fetchTaskWorkspaceInfo,
 			runtimeProjectConfig,
 			sendTaskChatMessage,
