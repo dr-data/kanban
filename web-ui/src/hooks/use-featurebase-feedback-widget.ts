@@ -1,12 +1,31 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { notifyError } from "@/components/app-toaster";
+import { isClineOauthAuthenticated } from "@/runtime/native-agent";
 import { fetchFeaturebaseToken } from "@/runtime/runtime-config-query";
 import type { RuntimeClineProviderSettings } from "@/runtime/types";
 
 const FEATUREBASE_SDK_ID = "featurebase-sdk";
 const FEATUREBASE_SDK_SRC = "https://do.featurebase.app/js/sdk.js";
 const FEATUREBASE_ORGANIZATION = "cline";
+
+// ---------------------------------------------------------------------------
+// Featurebase auth readiness state machine
+// ---------------------------------------------------------------------------
+
+/** Tracks whether the Featurebase SDK has been successfully identified. */
+export type FeaturebaseAuthState = "idle" | "loading" | "ready" | "error";
+
+export interface FeaturebaseFeedbackState {
+	/** Current pre-identify readiness. */
+	authState: FeaturebaseAuthState;
+	/** Re-run the token fetch + identify flow on demand. */
+	retry: () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Featurebase SDK internals
+// ---------------------------------------------------------------------------
 
 interface FeaturebaseCallbackPayload {
 	action?: string;
@@ -79,23 +98,21 @@ function ensureFeaturebaseSdkLoaded(): Promise<void> {
 	return featurebaseSdkLoadPromise;
 }
 
-/**
- * No-op click handler. The Featurebase SDK opens the widget automatically
- * via the `data-featurebase-feedback` attribute on the button.
- *
- * Identity is pre-attached by useFeaturebaseFeedbackWidget when auth state
- * changes, so the widget opens already authenticated — no first-click race.
- */
-export function openFeaturebaseFeedbackWidget(): void {
-	// Intentionally empty: the SDK handles open via data-featurebase-feedback,
-	// and identity is pre-attached by the useEffect in useFeaturebaseFeedbackWidget.
-}
+// ---------------------------------------------------------------------------
+// Hook
+// ---------------------------------------------------------------------------
 
 export function useFeaturebaseFeedbackWidget(input: {
 	workspaceId: string | null;
 	clineProviderSettings: RuntimeClineProviderSettings | null;
-}): void {
+}): FeaturebaseFeedbackState {
 	const { workspaceId, clineProviderSettings } = input;
+	const isAuthenticated = isClineOauthAuthenticated(clineProviderSettings);
+
+	const [authState, setAuthState] = useState<FeaturebaseAuthState>("idle");
+
+	// Track the latest attempt so we can cancel stale ones.
+	const attemptRef = useRef(0);
 
 	// Initialize the Featurebase feedback widget once on mount.
 	useEffect(() => {
@@ -123,49 +140,77 @@ export function useFeaturebaseFeedbackWidget(input: {
 		};
 	}, []);
 
-	// Pre-identify the user whenever auth state changes so the widget is
-	// already authenticated before the first click — no flash / race.
-	const isAuthenticated =
-		clineProviderSettings?.oauthAccessTokenConfigured === true &&
-		clineProviderSettings?.oauthRefreshTokenConfigured === true;
+	// Core pre-identify routine, callable from the effect and from retry().
+	const runPreIdentify = useCallback(
+		(attempt: number) => {
+			if (!workspaceId || !isAuthenticated) {
+				return;
+			}
 
+			setAuthState("loading");
+			const win = window as FeaturebaseWindow;
+
+			void ensureFeaturebaseSdkLoaded()
+				.then(async () => {
+					if (attemptRef.current !== attempt) {
+						return;
+					}
+					const tokenResponse = await fetchFeaturebaseToken(workspaceId);
+					if (attemptRef.current !== attempt) {
+						return;
+					}
+					const featurebase = ensureFeaturebaseCommand(win);
+					featurebase(
+						"identify",
+						{
+							organization: FEATUREBASE_ORGANIZATION,
+							featurebaseJwt: tokenResponse.featurebaseJwt,
+						},
+						(error) => {
+							if (attemptRef.current !== attempt) {
+								return;
+							}
+							if (error) {
+								setAuthState("error");
+								notifyError("Unable to authenticate with Featurebase.");
+								return;
+							}
+							setAuthState("ready");
+						},
+					);
+				})
+				.catch(() => {
+					if (attemptRef.current !== attempt) {
+						return;
+					}
+					setAuthState("error");
+				});
+		},
+		[workspaceId, isAuthenticated],
+	);
+
+	// Pre-identify whenever auth state or workspace changes.
 	useEffect(() => {
 		if (!workspaceId || !isAuthenticated) {
+			// Reset to idle when the user signs out or workspace disappears.
+			setAuthState("idle");
 			return;
 		}
 
-		const win = window as FeaturebaseWindow;
-		let cancelled = false;
-
-		void ensureFeaturebaseSdkLoaded()
-			.then(async () => {
-				if (cancelled) {
-					return;
-				}
-				const tokenResponse = await fetchFeaturebaseToken(workspaceId);
-				if (cancelled) {
-					return;
-				}
-				const featurebase = ensureFeaturebaseCommand(win);
-				featurebase(
-					"identify",
-					{
-						organization: FEATUREBASE_ORGANIZATION,
-						featurebaseJwt: tokenResponse.featurebaseJwt,
-					},
-					(error) => {
-						if (error && !cancelled) {
-							notifyError("Unable to authenticate with Featurebase.");
-						}
-					},
-				);
-			})
-			.catch(() => {
-				// Pre-identify failed silently; will retry on next auth change.
-			});
+		const attempt = ++attemptRef.current;
+		runPreIdentify(attempt);
 
 		return () => {
-			cancelled = true;
+			// Cancel this attempt so stale callbacks are ignored.
+			attemptRef.current++;
 		};
-	}, [workspaceId, isAuthenticated]);
+	}, [workspaceId, isAuthenticated, runPreIdentify]);
+
+	// Retry: bump the attempt counter and re-run.
+	const retry = useCallback(() => {
+		const attempt = ++attemptRef.current;
+		runPreIdentify(attempt);
+	}, [runPreIdentify]);
+
+	return { authState, retry };
 }

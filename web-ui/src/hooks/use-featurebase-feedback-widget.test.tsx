@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RuntimeClineProviderSettings } from "@/runtime/types";
+import type { FeaturebaseFeedbackState } from "@/hooks/use-featurebase-feedback-widget";
 
 const defaultClineProviderSettings: RuntimeClineProviderSettings = {
 	providerId: null,
@@ -24,6 +25,13 @@ const authenticatedClineSettings: RuntimeClineProviderSettings = {
 	oauthAccountId: "acc-1",
 };
 
+const tokensOnlySettings: RuntimeClineProviderSettings = {
+	...defaultClineProviderSettings,
+	oauthProvider: null,
+	oauthAccessTokenConfigured: true,
+	oauthRefreshTokenConfigured: true,
+};
+
 async function importFeaturebaseModule() {
 	const fetchFeaturebaseTokenMock = vi.fn();
 	const notifyErrorMock = vi.fn();
@@ -33,6 +41,12 @@ async function importFeaturebaseModule() {
 	}));
 	vi.doMock("@/components/app-toaster", () => ({
 		notifyError: notifyErrorMock,
+	}));
+	// Re-export the real isClineOauthAuthenticated so the hook resolves it.
+	const nativeAgent = await import("@/runtime/native-agent");
+	vi.doMock("@/runtime/native-agent", () => ({
+		...nativeAgent,
+		isClineOauthAuthenticated: nativeAgent.isClineOauthAuthenticated,
 	}));
 	const module = await import("@/hooks/use-featurebase-feedback-widget");
 	return {
@@ -75,11 +89,8 @@ describe("useFeaturebaseFeedbackWidget", () => {
 			previousActEnvironment;
 	});
 
-	it("initializes the feedback widget even if the SDK load event fires immediately", async () => {
-		const { module } = await importFeaturebaseModule();
-		const featurebaseMock = vi.fn();
+	function mockSdkLoad(featurebaseMock: ReturnType<typeof vi.fn>) {
 		const originalAppendChild = document.head.appendChild.bind(document.head);
-
 		vi.spyOn(document.head, "appendChild").mockImplementation((node) => {
 			const result = originalAppendChild(node);
 			if (node instanceof HTMLScriptElement && node.id === "featurebase-sdk") {
@@ -88,6 +99,12 @@ describe("useFeaturebaseFeedbackWidget", () => {
 			}
 			return result;
 		});
+	}
+
+	it("initializes the feedback widget on mount", async () => {
+		const { module } = await importFeaturebaseModule();
+		const featurebaseMock = vi.fn();
+		mockSdkLoad(featurebaseMock);
 
 		function HookHarness(): null {
 			module.useFeaturebaseFeedbackWidget({
@@ -115,22 +132,14 @@ describe("useFeaturebaseFeedbackWidget", () => {
 		);
 	});
 
-	it("does NOT pre-identify when user is not authenticated", async () => {
+	it("returns idle state when unauthenticated", async () => {
 		const { module, fetchFeaturebaseTokenMock } = await importFeaturebaseModule();
 		const featurebaseMock = vi.fn();
-		const originalAppendChild = document.head.appendChild.bind(document.head);
+		mockSdkLoad(featurebaseMock);
 
-		vi.spyOn(document.head, "appendChild").mockImplementation((node) => {
-			const result = originalAppendChild(node);
-			if (node instanceof HTMLScriptElement && node.id === "featurebase-sdk") {
-				(window as Window & { Featurebase?: unknown }).Featurebase = featurebaseMock;
-				node.dispatchEvent(new Event("load"));
-			}
-			return result;
-		});
-
+		let hookResult: FeaturebaseFeedbackState | null = null;
 		function HookHarness(): null {
-			module.useFeaturebaseFeedbackWidget({
+			hookResult = module.useFeaturebaseFeedbackWidget({
 				workspaceId: "workspace-1",
 				clineProviderSettings: defaultClineProviderSettings,
 			});
@@ -143,30 +152,43 @@ describe("useFeaturebaseFeedbackWidget", () => {
 			await Promise.resolve();
 		});
 
-		// No token fetch for unauthenticated users
+		expect(hookResult!.authState).toBe("idle");
 		expect(fetchFeaturebaseTokenMock).not.toHaveBeenCalled();
-		// No identify call
-		const identifyCall = featurebaseMock.mock.calls.find((call: unknown[]) => call[0] === "identify");
-		expect(identifyCall).toBeUndefined();
 	});
 
-	it("pre-identifies the user when authenticated (no first-click race)", async () => {
+	it("requires oauthProvider=cline (tokens alone stay idle)", async () => {
+		const { module, fetchFeaturebaseTokenMock } = await importFeaturebaseModule();
+		const featurebaseMock = vi.fn();
+		mockSdkLoad(featurebaseMock);
+
+		let hookResult: FeaturebaseFeedbackState | null = null;
+		function HookHarness(): null {
+			hookResult = module.useFeaturebaseFeedbackWidget({
+				workspaceId: "workspace-1",
+				clineProviderSettings: tokensOnlySettings,
+			});
+			return null;
+		}
+
+		await act(async () => {
+			root.render(<HookHarness />);
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+
+		expect(hookResult!.authState).toBe("idle");
+		expect(fetchFeaturebaseTokenMock).not.toHaveBeenCalled();
+	});
+
+	it("transitions to ready on successful pre-identify", async () => {
 		const { module, fetchFeaturebaseTokenMock } = await importFeaturebaseModule();
 		fetchFeaturebaseTokenMock.mockResolvedValue({ featurebaseJwt: "jwt-abc" });
 		const featurebaseMock = vi.fn();
-		const originalAppendChild = document.head.appendChild.bind(document.head);
+		mockSdkLoad(featurebaseMock);
 
-		vi.spyOn(document.head, "appendChild").mockImplementation((node) => {
-			const result = originalAppendChild(node);
-			if (node instanceof HTMLScriptElement && node.id === "featurebase-sdk") {
-				(window as Window & { Featurebase?: unknown }).Featurebase = featurebaseMock;
-				node.dispatchEvent(new Event("load"));
-			}
-			return result;
-		});
-
+		let hookResult: FeaturebaseFeedbackState | null = null;
 		function HookHarness(): null {
-			module.useFeaturebaseFeedbackWidget({
+			hookResult = module.useFeaturebaseFeedbackWidget({
 				workspaceId: "workspace-1",
 				clineProviderSettings: authenticatedClineSettings,
 			});
@@ -180,36 +202,129 @@ describe("useFeaturebaseFeedbackWidget", () => {
 			await Promise.resolve();
 		});
 
-		// Token should be fetched proactively
-		expect(fetchFeaturebaseTokenMock).toHaveBeenCalledWith("workspace-1");
-
-		// identify should be called with the JWT
+		// identify should have been called
 		const identifyCall = featurebaseMock.mock.calls.find((call: unknown[]) => call[0] === "identify");
 		expect(identifyCall).toBeTruthy();
-		expect(identifyCall?.[1]).toEqual(
-			expect.objectContaining({
-				organization: "cline",
-				featurebaseJwt: "jwt-abc",
-			}),
-		);
+
+		// Simulate the identify callback succeeding
+		const identifyCallback = identifyCall?.[2] as ((error: unknown) => void) | undefined;
+		await act(async () => {
+			identifyCallback?.(null);
+			await Promise.resolve();
+		});
+
+		expect(hookResult!.authState).toBe("ready");
+	});
+
+	it("transitions to error on token fetch failure", async () => {
+		const { module, fetchFeaturebaseTokenMock } = await importFeaturebaseModule();
+		fetchFeaturebaseTokenMock.mockRejectedValue(new Error("Network error"));
+		const featurebaseMock = vi.fn();
+		mockSdkLoad(featurebaseMock);
+
+		let hookResult: FeaturebaseFeedbackState | null = null;
+		function HookHarness(): null {
+			hookResult = module.useFeaturebaseFeedbackWidget({
+				workspaceId: "workspace-1",
+				clineProviderSettings: authenticatedClineSettings,
+			});
+			return null;
+		}
+
+		await act(async () => {
+			root.render(<HookHarness />);
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+
+		expect(hookResult!.authState).toBe("error");
+		expect(fetchFeaturebaseTokenMock).toHaveBeenCalledWith("workspace-1");
+	});
+
+	it("transitions to error on identify callback error", async () => {
+		const { module, fetchFeaturebaseTokenMock, notifyErrorMock } = await importFeaturebaseModule();
+		fetchFeaturebaseTokenMock.mockResolvedValue({ featurebaseJwt: "jwt-abc" });
+		const featurebaseMock = vi.fn();
+		mockSdkLoad(featurebaseMock);
+
+		let hookResult: FeaturebaseFeedbackState | null = null;
+		function HookHarness(): null {
+			hookResult = module.useFeaturebaseFeedbackWidget({
+				workspaceId: "workspace-1",
+				clineProviderSettings: authenticatedClineSettings,
+			});
+			return null;
+		}
+
+		await act(async () => {
+			root.render(<HookHarness />);
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+
+		const identifyCall = featurebaseMock.mock.calls.find((call: unknown[]) => call[0] === "identify");
+		const identifyCallback = identifyCall?.[2] as ((error: unknown) => void) | undefined;
+		await act(async () => {
+			identifyCallback?.(new Error("Featurebase error"));
+			await Promise.resolve();
+		});
+
+		expect(hookResult!.authState).toBe("error");
+		expect(notifyErrorMock).toHaveBeenCalledWith("Unable to authenticate with Featurebase.");
+	});
+
+	it("retry re-runs pre-identify after error", async () => {
+		const { module, fetchFeaturebaseTokenMock } = await importFeaturebaseModule();
+		// First call fails, second succeeds
+		fetchFeaturebaseTokenMock
+			.mockRejectedValueOnce(new Error("Network error"))
+			.mockResolvedValueOnce({ featurebaseJwt: "jwt-retry" });
+		const featurebaseMock = vi.fn();
+		mockSdkLoad(featurebaseMock);
+
+		let hookResult: FeaturebaseFeedbackState | null = null;
+		function HookHarness(): null {
+			hookResult = module.useFeaturebaseFeedbackWidget({
+				workspaceId: "workspace-1",
+				clineProviderSettings: authenticatedClineSettings,
+			});
+			return null;
+		}
+
+		await act(async () => {
+			root.render(<HookHarness />);
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+
+		expect(hookResult!.authState).toBe("error");
+		expect(fetchFeaturebaseTokenMock).toHaveBeenCalledTimes(1);
+
+		// Call retry
+		await act(async () => {
+			hookResult!.retry();
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+
+		expect(fetchFeaturebaseTokenMock).toHaveBeenCalledTimes(2);
+		// After successful retry, identify is called
+		const identifyCalls = featurebaseMock.mock.calls.filter((call: unknown[]) => call[0] === "identify");
+		expect(identifyCalls.length).toBeGreaterThanOrEqual(1);
 	});
 
 	it("does not pre-identify when workspaceId is null", async () => {
 		const { module, fetchFeaturebaseTokenMock } = await importFeaturebaseModule();
 		const featurebaseMock = vi.fn();
-		const originalAppendChild = document.head.appendChild.bind(document.head);
+		mockSdkLoad(featurebaseMock);
 
-		vi.spyOn(document.head, "appendChild").mockImplementation((node) => {
-			const result = originalAppendChild(node);
-			if (node instanceof HTMLScriptElement && node.id === "featurebase-sdk") {
-				(window as Window & { Featurebase?: unknown }).Featurebase = featurebaseMock;
-				node.dispatchEvent(new Event("load"));
-			}
-			return result;
-		});
-
+		let hookResult: FeaturebaseFeedbackState | null = null;
 		function HookHarness(): null {
-			module.useFeaturebaseFeedbackWidget({
+			hookResult = module.useFeaturebaseFeedbackWidget({
 				workspaceId: null,
 				clineProviderSettings: authenticatedClineSettings,
 			});
@@ -222,55 +337,7 @@ describe("useFeaturebaseFeedbackWidget", () => {
 			await Promise.resolve();
 		});
 
+		expect(hookResult!.authState).toBe("idle");
 		expect(fetchFeaturebaseTokenMock).not.toHaveBeenCalled();
-	});
-
-	it("pre-identify failure shows error toast but does not crash", async () => {
-		const { module, fetchFeaturebaseTokenMock } = await importFeaturebaseModule();
-		fetchFeaturebaseTokenMock.mockRejectedValue(new Error("No token"));
-		const featurebaseMock = vi.fn();
-		const originalAppendChild = document.head.appendChild.bind(document.head);
-
-		vi.spyOn(document.head, "appendChild").mockImplementation((node) => {
-			const result = originalAppendChild(node);
-			if (node instanceof HTMLScriptElement && node.id === "featurebase-sdk") {
-				(window as Window & { Featurebase?: unknown }).Featurebase = featurebaseMock;
-				node.dispatchEvent(new Event("load"));
-			}
-			return result;
-		});
-
-		function HookHarness(): null {
-			module.useFeaturebaseFeedbackWidget({
-				workspaceId: "workspace-1",
-				clineProviderSettings: authenticatedClineSettings,
-			});
-			return null;
-		}
-
-		await act(async () => {
-			root.render(<HookHarness />);
-			await Promise.resolve();
-			await Promise.resolve();
-			await Promise.resolve();
-		});
-
-		// Token was requested
-		expect(fetchFeaturebaseTokenMock).toHaveBeenCalledWith("workspace-1");
-		// No identify call (token fetch failed)
-		const identifyCall = featurebaseMock.mock.calls.find((call: unknown[]) => call[0] === "identify");
-		expect(identifyCall).toBeUndefined();
-		// Error is caught silently (pre-identify failure will retry on next auth change)
-	});
-
-	it("openFeaturebaseFeedbackWidget is a no-op (SDK handles open via attribute)", async () => {
-		const { module, fetchFeaturebaseTokenMock } = await importFeaturebaseModule();
-		const postMessageMock = vi.spyOn(window, "postMessage");
-
-		// Call the function — it should do nothing
-		module.openFeaturebaseFeedbackWidget();
-
-		expect(fetchFeaturebaseTokenMock).not.toHaveBeenCalled();
-		expect(postMessageMock).not.toHaveBeenCalled();
 	});
 });

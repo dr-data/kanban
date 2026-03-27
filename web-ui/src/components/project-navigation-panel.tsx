@@ -3,7 +3,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ChevronDown, ChevronUp, Ellipsis, Plus } from "lucide-react";
 import { type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { openFeaturebaseFeedbackWidget } from "@/hooks/use-featurebase-feedback-widget";
+import type { FeaturebaseFeedbackState } from "@/hooks/use-featurebase-feedback-widget";
 import { ClineIcon } from "@/components/ui/cline-icon";
 import { cn } from "@/components/ui/cn";
 import {
@@ -45,6 +45,7 @@ export function ProjectNavigationPanel({
 	onOpenSettings,
 	selectedAgentId = null,
 	clineProviderSettings = null,
+	featurebaseFeedbackState,
 }: {
 	projects: RuntimeProjectSummary[];
 	isLoadingProjects?: boolean;
@@ -60,6 +61,7 @@ export function ProjectNavigationPanel({
 	onOpenSettings?: () => void;
 	selectedAgentId?: RuntimeAgentId | null;
 	clineProviderSettings?: RuntimeClineProviderSettings | null;
+	featurebaseFeedbackState?: FeaturebaseFeedbackState;
 }): React.ReactElement {
 	const sortedProjects = [...projects].sort((a, b) => a.path.localeCompare(b.path));
 
@@ -255,7 +257,7 @@ export function ProjectNavigationPanel({
 						) : null}
 					</div>
 					<ShortcutsCard />
-					<FeedbackCard selectedAgentId={selectedAgentId} clineProviderSettings={clineProviderSettings} onOpenSettings={onOpenSettings} />
+					<FeedbackCard selectedAgentId={selectedAgentId} clineProviderSettings={clineProviderSettings} onOpenSettings={onOpenSettings} featurebaseFeedbackState={featurebaseFeedbackState} />
 				</>
 			) : (
 				<div className="flex flex-1 min-h-0 flex-col">
@@ -401,20 +403,60 @@ function ShortcutsCard(): React.ReactElement {
 	);
 }
 
-export function FeedbackCard({ selectedAgentId, clineProviderSettings, onOpenSettings }: { selectedAgentId?: RuntimeAgentId | null; clineProviderSettings?: RuntimeClineProviderSettings | null; onOpenSettings?: () => void }): React.ReactElement | null {
+export function FeedbackCard({
+	selectedAgentId,
+	clineProviderSettings,
+	onOpenSettings,
+	featurebaseFeedbackState,
+}: {
+	selectedAgentId?: RuntimeAgentId | null;
+	clineProviderSettings?: RuntimeClineProviderSettings | null;
+	onOpenSettings?: () => void;
+	featurebaseFeedbackState?: FeaturebaseFeedbackState;
+}): React.ReactElement | null {
 	const isClineAgent = isNativeClineAgentSelected(selectedAgentId);
 	const isAuthenticated = isClineOauthAuthenticated(clineProviderSettings);
-	const isEligible = isClineAgent && isAuthenticated;
 
-	const handleOpenFeedback = useCallback(() => {
-		openFeaturebaseFeedbackWidget();
-	}, []);
+	const fbAuthState = featurebaseFeedbackState?.authState ?? "idle";
+
+	const isReady = fbAuthState === "ready";
 
 	// Only show the feedback card when the Cline agent is selected.
 	if (!isClineAgent) {
 		return null;
 	}
 
+	// Not signed in to Cline: show sign-in CTA.
+	if (!isAuthenticated) {
+		return (
+			<div style={{ padding: "0 12px 10px" }}>
+				<Button
+					fill
+					size="sm"
+					variant="ghost"
+					className="!border !border-border-bright bg-transparent text-text-secondary"
+					disabled
+				>
+					Share Feedback
+				</Button>
+				<button
+					type="button"
+					className="w-full text-text-tertiary text-xs mt-1 text-center bg-transparent border-none p-0 cursor-pointer hover:text-accent hover:underline"
+					onClick={onOpenSettings}
+				>
+					Sign in to Cline to share feedback
+				</button>
+			</div>
+		);
+	}
+
+	// Signed in but Featurebase not ready (loading, idle, or error): hide entirely.
+	// Don't show a broken-looking disabled button — just render nothing until ready.
+	if (!isReady) {
+		return null;
+	}
+
+	// Signed in and Featurebase ready: render the active button with data attribute.
 	return (
 		<div style={{ padding: "0 12px 10px" }}>
 			<Button
@@ -423,20 +465,9 @@ export function FeedbackCard({ selectedAgentId, clineProviderSettings, onOpenSet
 				variant="ghost"
 				className="!border !border-border-bright bg-transparent text-text-secondary hover:bg-surface-2 hover:text-text-primary"
 				data-featurebase-feedback
-				disabled={!isEligible}
-				onClick={isEligible ? handleOpenFeedback : undefined}
 			>
 				Share Feedback
 			</Button>
-			{!isEligible ? (
-				<button
-					type="button"
-					className="w-full text-text-tertiary text-xs mt-1 text-center bg-transparent border-none p-0 cursor-pointer hover:text-accent hover:underline"
-					onClick={onOpenSettings}
-				>
-					Sign in to Cline to share feedback
-				</button>
-			) : null}
 		</div>
 	);
 }

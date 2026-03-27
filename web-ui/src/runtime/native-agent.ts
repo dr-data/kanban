@@ -59,7 +59,11 @@ export function isClineOauthAuthenticated(
 	if (!settings) {
 		return false;
 	}
-	return settings.oauthProvider === "cline" && settings.oauthAccessTokenConfigured;
+	return (
+		settings.oauthProvider === "cline" &&
+		settings.oauthAccessTokenConfigured === true &&
+		settings.oauthRefreshTokenConfigured === true
+	);
 }
 
 export function isTaskAgentSetupSatisfied(
