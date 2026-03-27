@@ -18,8 +18,8 @@ import {
 } from "@/components/ui/dialog";
 import { Kbd } from "@/components/ui/kbd";
 import { Spinner } from "@/components/ui/spinner";
-import type { RuntimeClineProviderSettings, RuntimeProjectSummary } from "@/runtime/types";
-import { isClineOauthAuthenticated } from "@/runtime/native-agent";
+import type { RuntimeAgentId, RuntimeClineProviderSettings, RuntimeProjectSummary } from "@/runtime/types";
+import { isClineOauthAuthenticated, isNativeClineAgentSelected } from "@/runtime/native-agent";
 import { formatPathForDisplay } from "@/utils/path-display";
 import { isMacPlatform, modifierKeyLabel } from "@/utils/platform";
 interface TaskCountBadge {
@@ -42,6 +42,7 @@ export function ProjectNavigationPanel({
 	onSelectProject,
 	onRemoveProject,
 	onAddProject,
+	selectedAgentId = null,
 	clineProviderSettings = null,
 }: {
 	projects: RuntimeProjectSummary[];
@@ -55,6 +56,7 @@ export function ProjectNavigationPanel({
 	onSelectProject: (projectId: string) => void;
 	onRemoveProject: (projectId: string) => Promise<boolean>;
 	onAddProject: () => void;
+	selectedAgentId?: RuntimeAgentId | null;
 	clineProviderSettings?: RuntimeClineProviderSettings | null;
 }): React.ReactElement {
 	const sortedProjects = [...projects].sort((a, b) => a.path.localeCompare(b.path));
@@ -251,7 +253,7 @@ export function ProjectNavigationPanel({
 						) : null}
 					</div>
 					<ShortcutsCard />
-					<FeedbackCard clineProviderSettings={clineProviderSettings} />
+					<FeedbackCard selectedAgentId={selectedAgentId} clineProviderSettings={clineProviderSettings} />
 				</>
 			) : (
 				<div className="flex flex-1 min-h-0 flex-col">
@@ -397,8 +399,8 @@ function ShortcutsCard(): React.ReactElement {
 	);
 }
 
-export function FeedbackCard({ clineProviderSettings }: { clineProviderSettings?: RuntimeClineProviderSettings | null }): React.ReactElement {
-	const isEligible = isClineOauthAuthenticated(clineProviderSettings);
+export function FeedbackCard({ selectedAgentId, clineProviderSettings }: { selectedAgentId?: RuntimeAgentId | null; clineProviderSettings?: RuntimeClineProviderSettings | null }): React.ReactElement {
+	const isEligible = isNativeClineAgentSelected(selectedAgentId) && isClineOauthAuthenticated(clineProviderSettings);
 
 	const handleOpenFeedback = useCallback(() => {
 		openFeaturebaseFeedbackWidget();

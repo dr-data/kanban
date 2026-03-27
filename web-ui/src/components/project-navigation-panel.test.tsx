@@ -64,7 +64,7 @@ describe("FeedbackCard", () => {
 		};
 
 		await act(async () => {
-			root.render(<FeedbackCard clineProviderSettings={unauthSettings} />);
+			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={unauthSettings} />);
 		});
 
 		const button = container.querySelector("button");
@@ -72,9 +72,9 @@ describe("FeedbackCard", () => {
 		expect(container.textContent).toContain("Sign in to Cline to share feedback");
 	});
 
-	it("enables the button and hides sign-in message when provider is authenticated", async () => {
+	it("enables the button and hides sign-in message when Cline agent is selected and provider is authenticated", async () => {
 		await act(async () => {
-			root.render(<FeedbackCard clineProviderSettings={authenticatedSettings} />);
+			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={authenticatedSettings} />);
 		});
 
 		const button = container.querySelector("button");
@@ -84,7 +84,7 @@ describe("FeedbackCard", () => {
 
 	it("renders the data-featurebase-feedback attribute on the Share Feedback button (regression)", async () => {
 		await act(async () => {
-			root.render(<FeedbackCard clineProviderSettings={authenticatedSettings} />);
+			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={authenticatedSettings} />);
 		});
 
 		const button = container.querySelector("button");
@@ -106,7 +106,7 @@ describe("FeedbackCard", () => {
 		};
 
 		await act(async () => {
-			root.render(<FeedbackCard clineProviderSettings={claudeSettings} />);
+			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={claudeSettings} />);
 		});
 
 		const button = container.querySelector("button");
@@ -128,7 +128,27 @@ describe("FeedbackCard", () => {
 		};
 
 		await act(async () => {
-			root.render(<FeedbackCard clineProviderSettings={ocaSettings} />);
+			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={ocaSettings} />);
+		});
+
+		const button = container.querySelector("button");
+		expect(button?.disabled).toBe(true);
+		expect(container.textContent).toContain("Sign in to Cline to share feedback");
+	});
+
+	it("disables the button when a non-Cline agent is selected even with Cline OAuth configured", async () => {
+		await act(async () => {
+			root.render(<FeedbackCard selectedAgentId="claude-code" clineProviderSettings={authenticatedSettings} />);
+		});
+
+		const button = container.querySelector("button");
+		expect(button?.disabled).toBe(true);
+		expect(container.textContent).toContain("Sign in to Cline to share feedback");
+	});
+
+	it("disables the button when selectedAgentId is null", async () => {
+		await act(async () => {
+			root.render(<FeedbackCard selectedAgentId={null} clineProviderSettings={authenticatedSettings} />);
 		});
 
 		const button = container.querySelector("button");

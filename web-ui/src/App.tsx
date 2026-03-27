@@ -771,6 +771,7 @@ export default function App(): ReactElement {
 					onAddProject={() => {
 						void handleAddProject();
 					}}
+									selectedAgentId={settingsRuntimeProjectConfig?.selectedAgentId ?? null}
 									clineProviderSettings={settingsRuntimeProjectConfig?.clineProviderSettings ?? null}
 				/>
 			) : null}
