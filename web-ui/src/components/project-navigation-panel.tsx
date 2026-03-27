@@ -406,7 +406,6 @@ function ShortcutsCard(): React.ReactElement {
 export function FeedbackCard({
 	selectedAgentId,
 	clineProviderSettings,
-	onOpenSettings,
 	featurebaseFeedbackState,
 }: {
 	selectedAgentId?: RuntimeAgentId | null;
@@ -416,47 +415,14 @@ export function FeedbackCard({
 }): React.ReactElement | null {
 	const isClineAgent = isNativeClineAgentSelected(selectedAgentId);
 	const isAuthenticated = isClineOauthAuthenticated(clineProviderSettings);
+	const isReady = (featurebaseFeedbackState?.authState ?? "idle") === "ready";
 
-	const fbAuthState = featurebaseFeedbackState?.authState ?? "idle";
-
-	const isReady = fbAuthState === "ready";
-
-	// Only show the feedback card when the Cline agent is selected.
-	if (!isClineAgent) {
+	// Only show for authenticated Cline OAuth users when Featurebase is ready.
+	// Everything else renders nothing — no CTAs, no disabled buttons.
+	if (!isClineAgent || !isAuthenticated || !isReady) {
 		return null;
 	}
 
-	// Not signed in to Cline: show sign-in CTA.
-	if (!isAuthenticated) {
-		return (
-			<div style={{ padding: "0 12px 10px" }}>
-				<Button
-					fill
-					size="sm"
-					variant="ghost"
-					className="!border !border-border-bright bg-transparent text-text-secondary"
-					disabled
-				>
-					Share Feedback
-				</Button>
-				<button
-					type="button"
-					className="w-full text-text-tertiary text-xs mt-1 text-center bg-transparent border-none p-0 cursor-pointer hover:text-accent hover:underline"
-					onClick={onOpenSettings}
-				>
-					Sign in to Cline to share feedback
-				</button>
-			</div>
-		);
-	}
-
-	// Signed in but Featurebase not ready (loading, idle, or error): hide entirely.
-	// Don't show a broken-looking disabled button — just render nothing until ready.
-	if (!isReady) {
-		return null;
-	}
-
-	// Signed in and Featurebase ready: render the active button with data attribute.
 	return (
 		<div style={{ padding: "0 12px 10px" }}>
 			<Button
