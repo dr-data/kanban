@@ -7,13 +7,6 @@ import type { RuntimeClineProviderSettings } from "@/runtime/types";
 const FEATUREBASE_SDK_ID = "featurebase-sdk";
 const FEATUREBASE_SDK_SRC = "https://do.featurebase.app/js/sdk.js";
 const FEATUREBASE_ORGANIZATION = "cline";
-const FEATUREBASE_OPEN_RETRY_DELAY_MS = 50;
-const FEATUREBASE_OPEN_WIDGET_MESSAGE = {
-	target: "FeaturebaseWidget",
-	data: {
-		action: "openFeedbackWidget",
-	},
-} as const;
 
 interface FeaturebaseCallbackPayload {
 	action?: string;
@@ -32,8 +25,6 @@ interface FeaturebaseWindow extends Window {
 }
 
 let featurebaseSdkLoadPromise: Promise<void> | null = null;
-let isFeaturebaseFeedbackWidgetReady = false;
-let isFeaturebaseFeedbackWidgetOpenRequested = false;
 let currentWorkspaceId: string | null = null;
 
 function ensureFeaturebaseCommand(win: FeaturebaseWindow): FeaturebaseCommand {
@@ -89,21 +80,6 @@ function ensureFeaturebaseSdkLoaded(): Promise<void> {
 	return featurebaseSdkLoadPromise;
 }
 
-function postOpenFeedbackWidgetMessage(): void {
-	window.postMessage(FEATUREBASE_OPEN_WIDGET_MESSAGE, "*");
-}
-
-function flushFeaturebaseFeedbackWidgetOpenRequest(): void {
-	if (!isFeaturebaseFeedbackWidgetOpenRequested || !isFeaturebaseFeedbackWidgetReady) {
-		return;
-	}
-	isFeaturebaseFeedbackWidgetOpenRequested = false;
-	postOpenFeedbackWidgetMessage();
-	window.setTimeout(() => {
-		postOpenFeedbackWidgetMessage();
-	}, FEATUREBASE_OPEN_RETRY_DELAY_MS);
-}
-
 export function openFeaturebaseFeedbackWidget(): void {
 	const workspaceId = currentWorkspaceId;
 	if (workspaceId === null) {
@@ -128,9 +104,9 @@ export function openFeaturebaseFeedbackWidget(): void {
 						notifyError("Unable to authenticate with Featurebase. Please try again.");
 						return;
 					}
-					// Only request open after successful authentication.
-					isFeaturebaseFeedbackWidgetOpenRequested = true;
-					flushFeaturebaseFeedbackWidgetOpenRequest();
+					// The widget is opened by the Featurebase SDK via data-featurebase-feedback.
+					// We only need to identify here; do NOT manually post an open message
+					// as that would cause a double-open flicker.
 				},
 			);
 		})
@@ -162,23 +138,12 @@ export function useFeaturebaseFeedbackWidget(input: {
 					return;
 				}
 				const featurebase = ensureFeaturebaseCommand(win);
-				isFeaturebaseFeedbackWidgetReady = false;
-				featurebase(
-					"initialize_feedback_widget",
-					{
-						organization: FEATUREBASE_ORGANIZATION,
-						theme: "dark",
-						locale: "en",
-						metadata: { app: "kanban" },
-					},
-					(_error, callback) => {
-						if (callback?.action !== "widgetReady") {
-							return;
-						}
-						isFeaturebaseFeedbackWidgetReady = true;
-						flushFeaturebaseFeedbackWidgetOpenRequest();
-					},
-				);
+				featurebase("initialize_feedback_widget", {
+					organization: FEATUREBASE_ORGANIZATION,
+					theme: "dark",
+					locale: "en",
+					metadata: { app: "kanban" },
+				});
 			})
 			.catch(() => {});
 
