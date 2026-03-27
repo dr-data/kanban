@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect } from "react";
 
-import { fetchClineAccountProfile } from "@/runtime/runtime-config-query";
+import { notifyError } from "@/components/app-toaster";
+import { fetchFeaturebaseToken } from "@/runtime/runtime-config-query";
 import type { RuntimeClineProviderSettings } from "@/runtime/types";
 
 const FEATUREBASE_SDK_ID = "featurebase-sdk";
@@ -30,15 +31,10 @@ interface FeaturebaseWindow extends Window {
 	Featurebase?: FeaturebaseCommand;
 }
 
-interface ClineAccountProfile {
-	accountId: string | null;
-	email: string | null;
-	displayName: string | null;
-}
-
 let featurebaseSdkLoadPromise: Promise<void> | null = null;
 let isFeaturebaseFeedbackWidgetReady = false;
 let isFeaturebaseFeedbackWidgetOpenRequested = false;
+let currentWorkspaceId: string | null = null;
 
 function ensureFeaturebaseCommand(win: FeaturebaseWindow): FeaturebaseCommand {
 	if (typeof win.Featurebase === "function") {
@@ -109,15 +105,38 @@ function flushFeaturebaseFeedbackWidgetOpenRequest(): void {
 }
 
 export function openFeaturebaseFeedbackWidget(): void {
+	const workspaceId = currentWorkspaceId;
+	if (workspaceId === null) {
+		return;
+	}
+
 	const win = window as FeaturebaseWindow;
 	ensureFeaturebaseCommand(win);
-	isFeaturebaseFeedbackWidgetOpenRequested = true;
+
 	void ensureFeaturebaseSdkLoaded()
-		.then(() => {
-			flushFeaturebaseFeedbackWidgetOpenRequest();
+		.then(async () => {
+			const tokenResponse = await fetchFeaturebaseToken(workspaceId);
+			const featurebase = ensureFeaturebaseCommand(win);
+			featurebase(
+				"identify",
+				{
+					organization: FEATUREBASE_ORGANIZATION,
+					featurebaseJwt: tokenResponse.featurebaseJwt,
+				},
+				(error) => {
+					if (error) {
+						notifyError("Unable to authenticate with Featurebase. Please try again.");
+						return;
+					}
+					// Only request open after successful authentication.
+					isFeaturebaseFeedbackWidgetOpenRequested = true;
+					flushFeaturebaseFeedbackWidgetOpenRequest();
+				},
+			);
 		})
 		.catch(() => {
-			// Best effort only.
+			// Fail closed: do not open the widget without valid JWT auth.
+			notifyError("Unable to load feedback. Please try again.");
 		});
 }
 
@@ -125,102 +144,32 @@ export function useFeaturebaseFeedbackWidget(input: {
 	workspaceId: string | null;
 	clineProviderSettings: RuntimeClineProviderSettings | null;
 }): void {
-	const { workspaceId, clineProviderSettings } = input;
-	const [clineProfile, setClineProfile] = useState<ClineAccountProfile | null>(null);
-	const [isClineProfileResolved, setIsClineProfileResolved] = useState(false);
-	const lastInitializedSignatureRef = useRef<string | null>(null);
-	const isManagedClineOauth =
-		clineProviderSettings?.oauthProvider === "cline" && clineProviderSettings.oauthAccessTokenConfigured;
+	const { workspaceId } = input;
 
+	// Keep module-level workspace ID in sync for openFeaturebaseFeedbackWidget.
 	useEffect(() => {
-		if (!isManagedClineOauth) {
-			setClineProfile(null);
-			setIsClineProfileResolved(true);
-			return;
-		}
-		let cancelled = false;
-		setIsClineProfileResolved(false);
-		void fetchClineAccountProfile(workspaceId)
-			.then((response) => {
-				if (cancelled) {
-					return;
-				}
-				setClineProfile(response.profile ?? null);
-			})
-			.catch(() => {
-				if (!cancelled) {
-					setClineProfile(null);
-				}
-			})
-			.finally(() => {
-				if (!cancelled) {
-					setIsClineProfileResolved(true);
-				}
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [isManagedClineOauth, workspaceId]);
-
-	const clineAccountId = clineProfile?.accountId ?? clineProviderSettings?.oauthAccountId ?? null;
-	const metadata = useMemo(() => {
-		const nextMetadata: Record<string, string> = {
-			app: "kanban",
-		};
-		if (clineAccountId) {
-			nextMetadata.cline_account_id = clineAccountId;
-		}
-		if (clineProfile?.displayName) {
-			nextMetadata.cline_display_name = clineProfile.displayName;
-		}
-		if (clineProfile?.email) {
-			nextMetadata.cline_email = clineProfile.email;
-		}
-		return nextMetadata;
-	}, [clineAccountId, clineProfile?.displayName, clineProfile?.email]);
-
-	const email = clineProfile?.email ?? undefined;
-	const displayName = clineProfile?.displayName ?? undefined;
-	const shouldIdentifyClineUser = isManagedClineOauth && Boolean(email || clineAccountId);
-	const signature = useMemo(
-		() =>
-			JSON.stringify({
-				email: email ?? null,
-				displayName: displayName ?? null,
-				shouldIdentifyClineUser,
-				metadata,
-			}),
-		[displayName, email, metadata, shouldIdentifyClineUser],
-	);
+		currentWorkspaceId = workspaceId;
+	}, [workspaceId]);
 
 	useEffect(() => {
 		const win = window as FeaturebaseWindow;
 		ensureFeaturebaseCommand(win);
 		let cancelled = false;
+
 		void ensureFeaturebaseSdkLoaded()
 			.then(() => {
-				if (cancelled || lastInitializedSignatureRef.current === signature) {
+				if (cancelled) {
 					return;
 				}
 				const featurebase = ensureFeaturebaseCommand(win);
-				lastInitializedSignatureRef.current = signature;
 				isFeaturebaseFeedbackWidgetReady = false;
-				if (shouldIdentifyClineUser) {
-					featurebase("identify", {
-						organization: FEATUREBASE_ORGANIZATION,
-						email,
-						name: displayName,
-						userId: clineAccountId ?? undefined,
-					});
-				}
 				featurebase(
 					"initialize_feedback_widget",
 					{
 						organization: FEATUREBASE_ORGANIZATION,
 						theme: "dark",
 						locale: "en",
-						email,
-						metadata,
+						metadata: { app: "kanban" },
 					},
 					(_error, callback) => {
 						if (callback?.action !== "widgetReady") {
@@ -232,17 +181,9 @@ export function useFeaturebaseFeedbackWidget(input: {
 				);
 			})
 			.catch(() => {});
+
 		return () => {
 			cancelled = true;
 		};
-	}, [
-		clineAccountId,
-		displayName,
-		email,
-		isClineProfileResolved,
-		isManagedClineOauth,
-		metadata,
-		shouldIdentifyClineUser,
-		signature,
-	]);
+	}, []);
 }

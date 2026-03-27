@@ -18,6 +18,7 @@ import { z } from "zod";
 import {
 	fetchSdkClineAccountProfile,
 	fetchSdkClineUserRemoteConfig,
+	fetchSdkFeaturebaseToken,
 	type ManagedClineOauthProviderId,
 	type SdkProviderSettings,
 	getLastUsedSdkProviderSettings,
@@ -409,6 +410,43 @@ export function createClineProviderService() {
 					error: toErrorMessage(error),
 				};
 			}
+		},
+
+		async getFeaturebaseToken(): Promise<{ featurebaseJwt: string }> {
+			const selectedSettings = getSelectedProviderSettings();
+			if (!selectedSettings) {
+				throw new Error("No provider settings configured.");
+			}
+
+			const normalizedProviderId = selectedSettings.provider.trim().toLowerCase();
+			if (normalizedProviderId !== "cline") {
+				throw new Error("Featurebase token requires a Cline provider.");
+			}
+
+			const tryFetchToken = async (
+				settings: SdkProviderSettings,
+			): Promise<{ featurebaseJwt: string }> => {
+				const rawAccessToken = settings.auth?.accessToken?.trim() ?? "";
+				if (!rawAccessToken) {
+					throw new Error("No access token configured for Cline provider.");
+				}
+				return await fetchSdkFeaturebaseToken({
+					apiBaseUrl: settings.baseUrl?.trim() || DEFAULT_CLINE_API_BASE_URL,
+					accessToken: ensureWorkosPrefix(rawAccessToken),
+				});
+			};
+
+			try {
+				return await tryFetchToken(selectedSettings);
+			} catch {
+				// Retry once after OAuth refresh.
+			}
+
+			const oauthResolution = await refreshManagedOauthSettings(selectedSettings);
+			if (oauthResolution?.settings) {
+				return await tryFetchToken(oauthResolution.settings);
+			}
+			throw new Error("Failed to fetch Featurebase token.");
 		},
 
 		async resolveLaunchConfig(): Promise<ResolvedClineLaunchConfig> {

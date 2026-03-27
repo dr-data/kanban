@@ -3,9 +3,9 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ChevronDown, ChevronUp, Ellipsis, Plus } from "lucide-react";
 import { type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { openFeaturebaseFeedbackWidget } from "@/hooks/use-featurebase-feedback-widget";
 import { ClineIcon } from "@/components/ui/cline-icon";
 import { cn } from "@/components/ui/cn";
-import { openFeaturebaseFeedbackWidget } from "@/hooks/use-featurebase-feedback-widget";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -18,7 +18,8 @@ import {
 } from "@/components/ui/dialog";
 import { Kbd } from "@/components/ui/kbd";
 import { Spinner } from "@/components/ui/spinner";
-import type { RuntimeProjectSummary } from "@/runtime/types";
+import type { RuntimeClineProviderSettings, RuntimeProjectSummary } from "@/runtime/types";
+import { isClineProviderAuthenticated } from "@/runtime/native-agent";
 import { formatPathForDisplay } from "@/utils/path-display";
 import { isMacPlatform, modifierKeyLabel } from "@/utils/platform";
 interface TaskCountBadge {
@@ -41,6 +42,7 @@ export function ProjectNavigationPanel({
 	onSelectProject,
 	onRemoveProject,
 	onAddProject,
+	clineProviderSettings = null,
 }: {
 	projects: RuntimeProjectSummary[];
 	isLoadingProjects?: boolean;
@@ -53,6 +55,7 @@ export function ProjectNavigationPanel({
 	onSelectProject: (projectId: string) => void;
 	onRemoveProject: (projectId: string) => Promise<boolean>;
 	onAddProject: () => void;
+	clineProviderSettings?: RuntimeClineProviderSettings | null;
 }): React.ReactElement {
 	const sortedProjects = [...projects].sort((a, b) => a.path.localeCompare(b.path));
 
@@ -248,6 +251,7 @@ export function ProjectNavigationPanel({
 						) : null}
 					</div>
 					<ShortcutsCard />
+					<FeedbackCard clineProviderSettings={clineProviderSettings} />
 				</>
 			) : (
 				<div className="flex flex-1 min-h-0 flex-col">
@@ -389,6 +393,32 @@ function ShortcutsCard(): React.ReactElement {
 					</Collapsible.Trigger>
 				</Collapsible.Root>
 			</div>
+		</div>
+	);
+}
+
+export function FeedbackCard({ clineProviderSettings }: { clineProviderSettings?: RuntimeClineProviderSettings | null }): React.ReactElement {
+	const isEligible = isClineProviderAuthenticated(clineProviderSettings);
+
+	const handleOpenFeedback = useCallback(() => {
+		openFeaturebaseFeedbackWidget();
+	}, []);
+
+	return (
+		<div style={{ padding: "0 12px 10px" }}>
+			<Button
+				fill
+				size="sm"
+				variant="ghost"
+				className="!border !border-border-bright bg-transparent text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+				disabled={!isEligible}
+				onClick={isEligible ? handleOpenFeedback : undefined}
+			>
+				Share Feedback
+			</Button>
+			{!isEligible ? (
+				<p className="text-text-tertiary text-xs mt-1 text-center">Sign in to Cline to share feedback</p>
+			) : null}
 		</div>
 	);
 }
