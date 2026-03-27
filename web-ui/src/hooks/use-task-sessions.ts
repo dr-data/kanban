@@ -13,7 +13,6 @@ import { selectNewestTaskSessionSummary } from "@/hooks/home-sidebar-agent-panel
 import { estimateTaskSessionGeometry } from "@/runtime/task-session-geometry";
 import { getRuntimeTrpcClient } from "@/runtime/trpc-client";
 import type {
-	RuntimeAgentId,
 	RuntimeTaskChatMessage,
 	RuntimeTaskSessionMode,
 	RuntimeTaskSessionSummary,
@@ -50,7 +49,6 @@ interface StartTaskSessionResult {
 
 interface StartTaskSessionOptions {
 	resumeFromTrash?: boolean;
-	resumeAgentId?: RuntimeAgentId | null;
 }
 
 export interface UseTaskSessionsResult {
@@ -168,8 +166,7 @@ export function useTaskSessions({
 					images: options?.resumeFromTrash ? undefined : task.images,
 					startInPlanMode: options?.resumeFromTrash ? undefined : task.startInPlanMode,
 					resumeFromTrash: options?.resumeFromTrash,
-					resumeAgentId: options?.resumeFromTrash ? (options.resumeAgentId ?? null) : undefined,
-					baseRef: task.baseRef,
+				baseRef: task.baseRef,
 					cols: geometry.cols,
 					rows: geometry.rows,
 				});

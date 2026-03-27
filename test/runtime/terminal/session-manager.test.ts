@@ -69,6 +69,7 @@ describe("TerminalSessionManager", () => {
 		expect(typeof updated?.lastHookAt).toBe("number");
 	});
 
+
 	it("resets stale running sessions without active processes", () => {
 		const manager = new TerminalSessionManager();
 		manager.hydrateFromRecord({
@@ -79,8 +80,10 @@ describe("TerminalSessionManager", () => {
 
 		expect(recovered?.state).toBe("idle");
 		expect(recovered?.pid).toBeNull();
-		expect(recovered?.agentId).toBeNull();
-		expect(recovered?.workspacePath).toBeNull();
+			// agentId is preserved so the server can route to the correct agent
+			// when a task is restored from trash.
+			expect(recovered?.agentId).toBe("claude");
+			expect(recovered?.workspacePath).toBeNull();
 		expect(recovered?.reviewReason).toBeNull();
 	});
 

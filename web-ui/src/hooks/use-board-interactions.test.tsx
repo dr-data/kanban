@@ -502,7 +502,7 @@ describe("useBoardInteractions", () => {
 			createdAt: trashTask.createdAt,
 		});
 		expect(ensureTaskWorkspace).toHaveBeenCalledWith(expectedTask);
-		expect(startTaskSession).toHaveBeenCalledWith(expectedTask, { resumeFromTrash: true, resumeAgentId: null });
+		expect(startTaskSession).toHaveBeenCalledWith(expectedTask, { resumeFromTrash: true });
 		expect(showAppToastMock).toHaveBeenCalledWith({
 			intent: "warning",
 			icon: "warning-sign",

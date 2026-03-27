@@ -559,10 +559,7 @@ export function useBoardInteractions({
 					timeout: 7000,
 				});
 			}
-			// Pass the original agent so the server resumes with the same agent
-			// type (Cline SDK vs terminal PTY) that produced the task's history.
-			const originalAgentId = sessions[taskId]?.agentId ?? null;
-			const resumed = await startTaskSession(task, { resumeFromTrash: true, resumeAgentId: originalAgentId });
+			const resumed = await startTaskSession(task, { resumeFromTrash: true });
 			if (resumed.ok) {
 				setBoard((currentBoard) => {
 					const disabledAutoReview = disableTaskAutoReview(currentBoard, taskId);
@@ -586,7 +583,7 @@ export function useBoardInteractions({
 				return reverted.moved ? reverted.board : currentBoard;
 			});
 		},
-		[ensureTaskWorkspace, sessions, setBoard, startTaskSession],
+		[ensureTaskWorkspace, setBoard, startTaskSession],
 	);
 
 	const handleDragEnd = useCallback(

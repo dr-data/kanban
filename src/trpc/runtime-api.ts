@@ -156,13 +156,28 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 						});
 				const shouldCaptureTurnCheckpoint = !body.resumeFromTrash && !isHomeAgentSessionId(body.taskId);
 
-				// When restoring from trash, honour the agent that originally ran the
-				// task so the correct session type (Cline SDK vs terminal PTY) is used
-				// and the existing conversation history can be resumed.
-				const effectiveAgentId =
-					body.resumeFromTrash && body.resumeAgentId ? body.resumeAgentId : scopedRuntimeConfig.selectedAgentId;
+				// When restoring from trash, use the agent that originally ran the task
+				// so the correct session type (Cline SDK vs terminal PTY) is used and
+				// the existing conversation history can be resumed.  For Cline we also
+				// probe persisted SDK sessions as a fallback; for terminal agents the
+				// browser passes the original agentId via resumeAgentId.
+				// Check if the terminal manager has a preserved agentId from a
+				// previous session for this task (hydrated from workspace state).
+				const terminalManager = await deps.getScopedTerminalManager(workspaceScope);
+				const previousTerminalAgentId = body.resumeFromTrash
+					? (terminalManager.getSummary(body.taskId)?.agentId ?? null)
+					: null;
+				const effectiveAgentId = previousTerminalAgentId ?? scopedRuntimeConfig.selectedAgentId;
+				let useClinePath = effectiveAgentId === "cline";
+				if (body.resumeFromTrash && !useClinePath) {
+					const clineSessionService = await deps.getScopedClineTaskSessionService(workspaceScope);
+					const persistedSession = await clineSessionService.rebindPersistedTaskSession(body.taskId).catch(() => null);
+					if (persistedSession) {
+						useClinePath = true;
+					}
+				}
 
-				if (effectiveAgentId === "cline") {
+				if (useClinePath) {
 					const clineLaunchConfig = await clineProviderService.resolveLaunchConfig();
 					const clineTaskSessionService = await deps.getScopedClineTaskSessionService(workspaceScope);
 					const summary = await clineTaskSessionService.startTaskSession({
@@ -212,7 +227,6 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 						error: "No runnable agent command is configured. Open Settings, install a supported CLI, and select it.",
 					};
 				}
-				const terminalManager = await deps.getScopedTerminalManager(workspaceScope);
 				const summary = await terminalManager.startTaskSession({
 					taskId: body.taskId,
 					agentId: resolved.agentId,
