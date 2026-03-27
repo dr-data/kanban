@@ -91,4 +91,48 @@ describe("FeedbackCard", () => {
 		expect(button).not.toBeNull();
 		expect(button?.hasAttribute("data-featurebase-feedback")).toBe(true);
 	});
+
+	it("disables the button when provider is Claude with API key (non-Cline OAuth)", async () => {
+		const claudeSettings: RuntimeClineProviderSettings = {
+			providerId: "anthropic",
+			modelId: "claude-sonnet-4-20250514",
+			baseUrl: null,
+			apiKeyConfigured: true,
+			oauthProvider: null,
+			oauthAccessTokenConfigured: false,
+			oauthRefreshTokenConfigured: false,
+			oauthAccountId: null,
+			oauthExpiresAt: null,
+		};
+
+		await act(async () => {
+			root.render(<FeedbackCard clineProviderSettings={claudeSettings} />);
+		});
+
+		const button = container.querySelector("button");
+		expect(button?.disabled).toBe(true);
+		expect(container.textContent).toContain("Sign in to Cline to share feedback");
+	});
+
+	it("disables the button when provider is OCA OAuth (non-Cline)", async () => {
+		const ocaSettings: RuntimeClineProviderSettings = {
+			providerId: null,
+			modelId: null,
+			baseUrl: null,
+			apiKeyConfigured: false,
+			oauthProvider: "oca",
+			oauthAccessTokenConfigured: true,
+			oauthRefreshTokenConfigured: true,
+			oauthAccountId: "oca-acc-1",
+			oauthExpiresAt: null,
+		};
+
+		await act(async () => {
+			root.render(<FeedbackCard clineProviderSettings={ocaSettings} />);
+		});
+
+		const button = container.querySelector("button");
+		expect(button?.disabled).toBe(true);
+		expect(container.textContent).toContain("Sign in to Cline to share feedback");
+	});
 });

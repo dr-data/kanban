@@ -19,7 +19,7 @@ import {
 import { Kbd } from "@/components/ui/kbd";
 import { Spinner } from "@/components/ui/spinner";
 import type { RuntimeClineProviderSettings, RuntimeProjectSummary } from "@/runtime/types";
-import { isClineProviderAuthenticated } from "@/runtime/native-agent";
+import { isClineOauthAuthenticated } from "@/runtime/native-agent";
 import { formatPathForDisplay } from "@/utils/path-display";
 import { isMacPlatform, modifierKeyLabel } from "@/utils/platform";
 interface TaskCountBadge {
@@ -398,7 +398,7 @@ function ShortcutsCard(): React.ReactElement {
 }
 
 export function FeedbackCard({ clineProviderSettings }: { clineProviderSettings?: RuntimeClineProviderSettings | null }): React.ReactElement {
-	const isEligible = isClineProviderAuthenticated(clineProviderSettings);
+	const isEligible = isClineOauthAuthenticated(clineProviderSettings);
 
 	const handleOpenFeedback = useCallback(() => {
 		openFeaturebaseFeedbackWidget();
