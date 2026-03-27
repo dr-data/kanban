@@ -399,12 +399,19 @@ function ShortcutsCard(): React.ReactElement {
 	);
 }
 
-export function FeedbackCard({ selectedAgentId, clineProviderSettings }: { selectedAgentId?: RuntimeAgentId | null; clineProviderSettings?: RuntimeClineProviderSettings | null }): React.ReactElement {
-	const isEligible = isNativeClineAgentSelected(selectedAgentId) && isClineOauthAuthenticated(clineProviderSettings);
+export function FeedbackCard({ selectedAgentId, clineProviderSettings }: { selectedAgentId?: RuntimeAgentId | null; clineProviderSettings?: RuntimeClineProviderSettings | null }): React.ReactElement | null {
+	const isClineAgent = isNativeClineAgentSelected(selectedAgentId);
+	const isAuthenticated = isClineOauthAuthenticated(clineProviderSettings);
+	const isEligible = isClineAgent && isAuthenticated;
 
 	const handleOpenFeedback = useCallback(() => {
 		openFeaturebaseFeedbackWidget();
 	}, []);
+
+	// Only show the feedback card when the Cline agent is selected.
+	if (!isClineAgent) {
+		return null;
+	}
 
 	return (
 		<div style={{ padding: "0 12px 10px" }}>

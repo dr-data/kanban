@@ -9,7 +9,7 @@ vi.mock("@/hooks/use-featurebase-feedback-widget", () => ({
 	openFeaturebaseFeedbackWidget: vi.fn(),
 }));
 
-const authenticatedSettings: RuntimeClineProviderSettings = {
+const authenticatedClineSettings: RuntimeClineProviderSettings = {
 	providerId: null,
 	modelId: null,
 	baseUrl: null,
@@ -18,6 +18,18 @@ const authenticatedSettings: RuntimeClineProviderSettings = {
 	oauthAccessTokenConfigured: true,
 	oauthRefreshTokenConfigured: true,
 	oauthAccountId: "acc-1",
+	oauthExpiresAt: null,
+};
+
+const unauthenticatedClineSettings: RuntimeClineProviderSettings = {
+	providerId: null,
+	modelId: null,
+	baseUrl: null,
+	apiKeyConfigured: false,
+	oauthProvider: "cline",
+	oauthAccessTokenConfigured: false,
+	oauthRefreshTokenConfigured: false,
+	oauthAccountId: null,
 	oauthExpiresAt: null,
 };
 
@@ -39,60 +51,9 @@ describe("FeedbackCard", () => {
 		vi.clearAllMocks();
 	});
 
-	it("disables the button and shows sign-in message when clineProviderSettings is null", async () => {
-		await act(async () => {
-			root.render(<FeedbackCard clineProviderSettings={null} />);
-		});
+	// ── Non-Cline provider: renders nothing ──
 
-		const button = container.querySelector("button");
-		expect(button).not.toBeNull();
-		expect(button?.disabled).toBe(true);
-		expect(container.textContent).toContain("Sign in to Cline to share feedback");
-	});
-
-	it("disables the button and shows sign-in message when no provider is selected", async () => {
-		const unauthSettings: RuntimeClineProviderSettings = {
-			providerId: null,
-			modelId: null,
-			baseUrl: null,
-			apiKeyConfigured: false,
-			oauthProvider: null,
-			oauthAccessTokenConfigured: false,
-			oauthRefreshTokenConfigured: false,
-			oauthAccountId: null,
-			oauthExpiresAt: null,
-		};
-
-		await act(async () => {
-			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={unauthSettings} />);
-		});
-
-		const button = container.querySelector("button");
-		expect(button?.disabled).toBe(true);
-		expect(container.textContent).toContain("Sign in to Cline to share feedback");
-	});
-
-	it("enables the button and hides sign-in message when Cline agent is selected and provider is authenticated", async () => {
-		await act(async () => {
-			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={authenticatedSettings} />);
-		});
-
-		const button = container.querySelector("button");
-		expect(button?.disabled).toBe(false);
-		expect(container.textContent).not.toContain("Sign in to Cline to share feedback");
-	});
-
-	it("renders the data-featurebase-feedback attribute on the Share Feedback button (regression)", async () => {
-		await act(async () => {
-			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={authenticatedSettings} />);
-		});
-
-		const button = container.querySelector("button");
-		expect(button).not.toBeNull();
-		expect(button?.hasAttribute("data-featurebase-feedback")).toBe(true);
-	});
-
-	it("disables the button when provider is Claude with API key (non-Cline OAuth)", async () => {
+	it("renders nothing when selected agent is not Cline (Claude API key)", async () => {
 		const claudeSettings: RuntimeClineProviderSettings = {
 			providerId: "anthropic",
 			modelId: "claude-sonnet-4-20250514",
@@ -106,53 +67,71 @@ describe("FeedbackCard", () => {
 		};
 
 		await act(async () => {
-			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={claudeSettings} />);
+			root.render(<FeedbackCard selectedAgentId="claude-code" clineProviderSettings={claudeSettings} />);
+		});
+
+		expect(container.querySelector("button")).toBeNull();
+		expect(container.textContent).not.toContain("Share Feedback");
+		expect(container.textContent).not.toContain("Sign in to Cline to share feedback");
+	});
+
+	it("renders nothing when selectedAgentId is null", async () => {
+		await act(async () => {
+			root.render(<FeedbackCard selectedAgentId={null} clineProviderSettings={authenticatedClineSettings} />);
+		});
+
+		expect(container.querySelector("button")).toBeNull();
+		expect(container.textContent).not.toContain("Share Feedback");
+		expect(container.textContent).not.toContain("Sign in to Cline to share feedback");
+	});
+
+	// ── Cline provider, not signed in: disabled + sign-in message ──
+
+	it("shows disabled button and sign-in message when Cline agent is selected but not authenticated", async () => {
+		await act(async () => {
+			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={unauthenticatedClineSettings} />);
 		});
 
 		const button = container.querySelector("button");
+		expect(button).not.toBeNull();
+		expect(button?.disabled).toBe(true);
+		expect(container.textContent).toContain("Share Feedback");
+		expect(container.textContent).toContain("Sign in to Cline to share feedback");
+	});
+
+	it("shows disabled button and sign-in message when Cline agent is selected and clineProviderSettings is null", async () => {
+		await act(async () => {
+			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={null} />);
+		});
+
+		const button = container.querySelector("button");
+		expect(button).not.toBeNull();
 		expect(button?.disabled).toBe(true);
 		expect(container.textContent).toContain("Sign in to Cline to share feedback");
 	});
 
-	it("disables the button when provider is OCA OAuth (non-Cline)", async () => {
-		const ocaSettings: RuntimeClineProviderSettings = {
-			providerId: null,
-			modelId: null,
-			baseUrl: null,
-			apiKeyConfigured: false,
-			oauthProvider: "oca",
-			oauthAccessTokenConfigured: true,
-			oauthRefreshTokenConfigured: true,
-			oauthAccountId: "oca-acc-1",
-			oauthExpiresAt: null,
-		};
+	// ── Cline provider, signed in: enabled ──
 
+	it("enables the button and hides sign-in message when Cline agent is selected and authenticated", async () => {
 		await act(async () => {
-			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={ocaSettings} />);
+			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={authenticatedClineSettings} />);
 		});
 
 		const button = container.querySelector("button");
-		expect(button?.disabled).toBe(true);
-		expect(container.textContent).toContain("Sign in to Cline to share feedback");
+		expect(button?.disabled).toBe(false);
+		expect(container.textContent).toContain("Share Feedback");
+		expect(container.textContent).not.toContain("Sign in to Cline to share feedback");
 	});
 
-	it("disables the button when a non-Cline agent is selected even with Cline OAuth configured", async () => {
+	// ── Regression: data-featurebase-feedback attribute ──
+
+	it("renders the data-featurebase-feedback attribute on the Share Feedback button (regression)", async () => {
 		await act(async () => {
-			root.render(<FeedbackCard selectedAgentId="claude-code" clineProviderSettings={authenticatedSettings} />);
+			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={authenticatedClineSettings} />);
 		});
 
 		const button = container.querySelector("button");
-		expect(button?.disabled).toBe(true);
-		expect(container.textContent).toContain("Sign in to Cline to share feedback");
-	});
-
-	it("disables the button when selectedAgentId is null", async () => {
-		await act(async () => {
-			root.render(<FeedbackCard selectedAgentId={null} clineProviderSettings={authenticatedSettings} />);
-		});
-
-		const button = container.querySelector("button");
-		expect(button?.disabled).toBe(true);
-		expect(container.textContent).toContain("Sign in to Cline to share feedback");
+		expect(button).not.toBeNull();
+		expect(button?.hasAttribute("data-featurebase-feedback")).toBe(true);
 	});
 });
