@@ -42,6 +42,7 @@ export function ProjectNavigationPanel({
 	onSelectProject,
 	onRemoveProject,
 	onAddProject,
+	onOpenSettings,
 	selectedAgentId = null,
 	clineProviderSettings = null,
 }: {
@@ -56,6 +57,7 @@ export function ProjectNavigationPanel({
 	onSelectProject: (projectId: string) => void;
 	onRemoveProject: (projectId: string) => Promise<boolean>;
 	onAddProject: () => void;
+	onOpenSettings?: () => void;
 	selectedAgentId?: RuntimeAgentId | null;
 	clineProviderSettings?: RuntimeClineProviderSettings | null;
 }): React.ReactElement {
@@ -253,7 +255,7 @@ export function ProjectNavigationPanel({
 						) : null}
 					</div>
 					<ShortcutsCard />
-					<FeedbackCard selectedAgentId={selectedAgentId} clineProviderSettings={clineProviderSettings} />
+					<FeedbackCard selectedAgentId={selectedAgentId} clineProviderSettings={clineProviderSettings} onOpenSettings={onOpenSettings} />
 				</>
 			) : (
 				<div className="flex flex-1 min-h-0 flex-col">
@@ -399,7 +401,7 @@ function ShortcutsCard(): React.ReactElement {
 	);
 }
 
-export function FeedbackCard({ selectedAgentId, clineProviderSettings }: { selectedAgentId?: RuntimeAgentId | null; clineProviderSettings?: RuntimeClineProviderSettings | null }): React.ReactElement | null {
+export function FeedbackCard({ selectedAgentId, clineProviderSettings, onOpenSettings }: { selectedAgentId?: RuntimeAgentId | null; clineProviderSettings?: RuntimeClineProviderSettings | null; onOpenSettings?: () => void }): React.ReactElement | null {
 	const isClineAgent = isNativeClineAgentSelected(selectedAgentId);
 	const isAuthenticated = isClineOauthAuthenticated(clineProviderSettings);
 	const isEligible = isClineAgent && isAuthenticated;
@@ -427,7 +429,13 @@ export function FeedbackCard({ selectedAgentId, clineProviderSettings }: { selec
 				Share Feedback
 			</Button>
 			{!isEligible ? (
-				<p className="text-text-tertiary text-xs mt-1 text-center">Sign in to Cline to share feedback</p>
+				<button
+					type="button"
+					className="w-full text-text-tertiary text-xs mt-1 text-center bg-transparent border-none p-0 cursor-pointer hover:text-accent hover:underline"
+					onClick={onOpenSettings}
+				>
+					Sign in to Cline to share feedback
+				</button>
 			) : null}
 		</div>
 	);

@@ -85,18 +85,35 @@ describe("FeedbackCard", () => {
 		expect(container.textContent).not.toContain("Sign in to Cline to share feedback");
 	});
 
-	// ── Cline provider, not signed in: disabled + sign-in message ──
+	// ── Cline provider, not signed in: disabled + clickable sign-in message ──
 
-	it("shows disabled button and sign-in message when Cline agent is selected but not authenticated", async () => {
+	it("shows disabled button and clickable sign-in message when Cline agent is selected but not authenticated", async () => {
+		const onOpenSettings = vi.fn();
+
 		await act(async () => {
-			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={unauthenticatedClineSettings} />);
+			root.render(
+				<FeedbackCard
+					selectedAgentId="cline"
+					clineProviderSettings={unauthenticatedClineSettings}
+					onOpenSettings={onOpenSettings}
+				/>,
+			);
 		});
 
-		const button = container.querySelector("button");
-		expect(button).not.toBeNull();
-		expect(button?.disabled).toBe(true);
-		expect(container.textContent).toContain("Share Feedback");
-		expect(container.textContent).toContain("Sign in to Cline to share feedback");
+		const buttons = container.querySelectorAll("button");
+		// First button is the disabled Share Feedback, second is the clickable sign-in message
+		const feedbackButton = buttons[0];
+		expect(feedbackButton).not.toBeNull();
+		expect(feedbackButton?.disabled).toBe(true);
+		expect(feedbackButton?.textContent).toContain("Share Feedback");
+
+		const signInButton = buttons[1];
+		expect(signInButton).not.toBeNull();
+		expect(signInButton?.textContent).toContain("Sign in to Cline to share feedback");
+
+		// Click the sign-in message should open settings
+		signInButton?.click();
+		expect(onOpenSettings).toHaveBeenCalledOnce();
 	});
 
 	it("shows disabled button and sign-in message when Cline agent is selected and clineProviderSettings is null", async () => {
@@ -104,9 +121,8 @@ describe("FeedbackCard", () => {
 			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={null} />);
 		});
 
-		const button = container.querySelector("button");
-		expect(button).not.toBeNull();
-		expect(button?.disabled).toBe(true);
+		const buttons = container.querySelectorAll("button");
+		expect(buttons[0]?.disabled).toBe(true);
 		expect(container.textContent).toContain("Sign in to Cline to share feedback");
 	});
 
@@ -117,8 +133,10 @@ describe("FeedbackCard", () => {
 			root.render(<FeedbackCard selectedAgentId="cline" clineProviderSettings={authenticatedClineSettings} />);
 		});
 
-		const button = container.querySelector("button");
-		expect(button?.disabled).toBe(false);
+		const buttons = container.querySelectorAll("button");
+		// Only the Share Feedback button, no sign-in button
+		expect(buttons.length).toBe(1);
+		expect(buttons[0]?.disabled).toBe(false);
 		expect(container.textContent).toContain("Share Feedback");
 		expect(container.textContent).not.toContain("Sign in to Cline to share feedback");
 	});
