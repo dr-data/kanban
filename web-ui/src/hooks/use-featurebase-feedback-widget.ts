@@ -25,7 +25,6 @@ interface FeaturebaseWindow extends Window {
 }
 
 let featurebaseSdkLoadPromise: Promise<void> | null = null;
-let currentWorkspaceId: string | null = null;
 
 function ensureFeaturebaseCommand(win: FeaturebaseWindow): FeaturebaseCommand {
 	if (typeof win.Featurebase === "function") {
@@ -80,53 +79,25 @@ function ensureFeaturebaseSdkLoaded(): Promise<void> {
 	return featurebaseSdkLoadPromise;
 }
 
+/**
+ * No-op click handler. The Featurebase SDK opens the widget automatically
+ * via the `data-featurebase-feedback` attribute on the button.
+ *
+ * Identity is pre-attached by useFeaturebaseFeedbackWidget when auth state
+ * changes, so the widget opens already authenticated — no first-click race.
+ */
 export function openFeaturebaseFeedbackWidget(): void {
-	const workspaceId = currentWorkspaceId;
-	if (workspaceId === null) {
-		return;
-	}
-
-	const win = window as FeaturebaseWindow;
-	ensureFeaturebaseCommand(win);
-
-	void ensureFeaturebaseSdkLoaded()
-		.then(async () => {
-			const tokenResponse = await fetchFeaturebaseToken(workspaceId);
-			const featurebase = ensureFeaturebaseCommand(win);
-			featurebase(
-				"identify",
-				{
-					organization: FEATUREBASE_ORGANIZATION,
-					featurebaseJwt: tokenResponse.featurebaseJwt,
-				},
-				(error) => {
-					if (error) {
-						notifyError("Unable to authenticate with Featurebase. Please try again.");
-						return;
-					}
-					// The widget is opened by the Featurebase SDK via data-featurebase-feedback.
-					// We only need to identify here; do NOT manually post an open message
-					// as that would cause a double-open flicker.
-				},
-			);
-		})
-		.catch(() => {
-			// Fail closed: do not open the widget without valid JWT auth.
-			notifyError("Unable to load feedback. Please try again.");
-		});
+	// Intentionally empty: the SDK handles open via data-featurebase-feedback,
+	// and identity is pre-attached by the useEffect in useFeaturebaseFeedbackWidget.
 }
 
 export function useFeaturebaseFeedbackWidget(input: {
 	workspaceId: string | null;
 	clineProviderSettings: RuntimeClineProviderSettings | null;
 }): void {
-	const { workspaceId } = input;
+	const { workspaceId, clineProviderSettings } = input;
 
-	// Keep module-level workspace ID in sync for openFeaturebaseFeedbackWidget.
-	useEffect(() => {
-		currentWorkspaceId = workspaceId;
-	}, [workspaceId]);
-
+	// Initialize the Featurebase feedback widget once on mount.
 	useEffect(() => {
 		const win = window as FeaturebaseWindow;
 		ensureFeaturebaseCommand(win);
@@ -151,4 +122,50 @@ export function useFeaturebaseFeedbackWidget(input: {
 			cancelled = true;
 		};
 	}, []);
+
+	// Pre-identify the user whenever auth state changes so the widget is
+	// already authenticated before the first click — no flash / race.
+	const isAuthenticated =
+		clineProviderSettings?.oauthAccessTokenConfigured === true &&
+		clineProviderSettings?.oauthRefreshTokenConfigured === true;
+
+	useEffect(() => {
+		if (!workspaceId || !isAuthenticated) {
+			return;
+		}
+
+		const win = window as FeaturebaseWindow;
+		let cancelled = false;
+
+		void ensureFeaturebaseSdkLoaded()
+			.then(async () => {
+				if (cancelled) {
+					return;
+				}
+				const tokenResponse = await fetchFeaturebaseToken(workspaceId);
+				if (cancelled) {
+					return;
+				}
+				const featurebase = ensureFeaturebaseCommand(win);
+				featurebase(
+					"identify",
+					{
+						organization: FEATUREBASE_ORGANIZATION,
+						featurebaseJwt: tokenResponse.featurebaseJwt,
+					},
+					(error) => {
+						if (error && !cancelled) {
+							notifyError("Unable to authenticate with Featurebase.");
+						}
+					},
+				);
+			})
+			.catch(() => {
+				// Pre-identify failed silently; will retry on next auth change.
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	}, [workspaceId, isAuthenticated]);
 }
