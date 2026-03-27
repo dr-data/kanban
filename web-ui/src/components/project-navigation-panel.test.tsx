@@ -81,4 +81,14 @@ describe("FeedbackCard", () => {
 		expect(button?.disabled).toBe(false);
 		expect(container.textContent).not.toContain("Sign in to Cline to share feedback");
 	});
+
+	it("renders the data-featurebase-feedback attribute on the Share Feedback button (regression)", async () => {
+		await act(async () => {
+			root.render(<FeedbackCard clineProviderSettings={authenticatedSettings} />);
+		});
+
+		const button = container.querySelector("button");
+		expect(button).not.toBeNull();
+		expect(button?.hasAttribute("data-featurebase-feedback")).toBe(true);
+	});
 });

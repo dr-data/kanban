@@ -411,6 +411,7 @@ export function FeedbackCard({ clineProviderSettings }: { clineProviderSettings?
 				size="sm"
 				variant="ghost"
 				className="!border !border-border-bright bg-transparent text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+				data-featurebase-feedback
 				disabled={!isEligible}
 				onClick={isEligible ? handleOpenFeedback : undefined}
 			>
