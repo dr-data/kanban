@@ -1,5 +1,92 @@
 # Changelog
 
+## [0.1.48]
+
+- Fixed sidebar agent attempting to edit files and write code instead of staying focused on Kanban board management
+
+## [0.1.47]
+
+- Fixed browser open failing on Linux systems where `xdg-open` is not available
+
+## [0.1.46]
+
+- Added reasoning level dropdown to Cline provider settings and the model selector in the chat composer
+- Images can now be attached when creating tasks for Claude Code and Codec CLI agents -- images are saved as temporary files and their paths are passed into the prompt since TUIs don't support inline images
+- Added shortcuts for diff view actions and a "Start and Open" shortcut as an alternative to starting a task (shout out to Shey for the idea!)
+- Fixed issues with the sidebar Cline chat session not reloading after adding MCP servers
+- The project column can now be collapsed all the way to the edge for a minimal view (shout out to Shey for this idea!)
+- Fixed issues with some Next.js project configurations in worktrees
+- Fixed diff viewer showing false changes for end-of-file-only differences
+- Fixed a crash in older browsers when generating UUIDs for board state
+- Fixed a crash on Windows when resizing the terminal after the PTY process has exited
+
+## [0.1.45]
+
+- Fixed kanban access validation to only apply restrictions to enterprise customers, so non-enterprise users are no longer incorrectly blocked
+
+## [0.1.44]
+
+- Fixed remote configuration not being applied correctly
+
+## [0.1.43]
+
+- Kanban access can now be gated via Cline remote config
+- Fixed "C" (create task) keyboard shortcut crashing when no projects exist
+- Fixed macOS directory picker treating cancel as an error instead of a normal cancellation
+- Improved agent selection copy during onboarding
+- File paths in the settings dialog now display with `~` instead of the full home directory
+- Fixed incorrect "kanban" branding in the disconnected screen (now says "Cline")
+- Fixed cancel button showing wrong label in detail view panels
+- Temporarily disabled Featurebase feedback widget
+
+## [0.1.42]
+
+- Fixed auto-update failing on Windows by using the correct `.cmd` extensions for package manager commands (npm, pnpm, yarn)
+
+## [0.1.41]
+
+- Cline agent sessions now automatically recover after a runtime teardown, so work isn't lost if the runtime restarts
+- Per-task plan/act mode now persists when switching between tasks
+- Chat messages sent while the agent is actively working are now queued and delivered when the turn completes, instead of being dropped
+- Fixed repeated MCP OAuth callbacks causing errors when the browser fires the redirect more than once
+- Fixed corrupt patch captures when trashing tasks in worktrees
+- Session IDs are now sanitized for Windows-safe file paths
+- Agent mistake tolerance increased from 3 to 6 consecutive errors, giving the agent more room to recover from transient failures
+- Fixed the navbar agent setup hint showing incorrect state
+- Use the `open` package for cross-platform URL opening instead of custom logic
+- Updated Cline SDK to 0.0.15 with file-based store fallbacks, remote config support, improved chat failure handling with message state rollback, and a new `maxConsecutiveMistakes` option to prevent agents from getting stuck in failure loops
+
+## [0.1.40]
+
+- Sidebar agent now stays focused on board management and redirects coding requests to task creation, so dedicated agents handle implementation work in their own worktrees
+- Fixed feedback widget initialization for Cline-authenticated users
+
+## [0.1.39]
+
+- Fixed the feedback widget not opening reliably when clicking "Share Feedback"
+- Capitalized button labels for consistency ("Add Project", "Share Feedback")
+
+## [0.1.38]
+
+- First-run onboarding for script shortcuts -- new users are guided through creating their first shortcut directly from the top bar
+- Settings file URLs can now be opened
+- Fixed terminal bottom pane content clearing when running script shortcuts
+
+## [0.1.37]
+
+- Slash commands and file mentions in the client chat input field
+- Share Feedback button in the bottom left, powered by Featurebase and enriched with Cline account data like email so we can see who reports are coming from, with a Linear integration for automatic issue creation
+- MCP OAuth callbacks consolidated onto the main runtime server with real-time auth status updates
+- Linear MCP shortcut for one-click install setup
+- Updated startup onboarding carousel with a screen about using camera and the agent to add tasks
+- Conversation history always visible in detailed task view
+- Fixed an issue where adding MCPs wouldn't be available in existing Cline chats -- adding MCPs now resets Cline chats to use them
+- Fixed an issue where the client chat would get into a "task chat session is not running" error state. You can now send a message to continue the conversation when Cline fails a tool call
+- Fixed an issue where binary diffs would not show up in diff views
+- Diff renderer groups removals before additions for easier reading
+- Fixed default model selection when OAuth login leaves it blank
+- Updated Cline SDK with fixes for ask question tool being disabled in yolo mode, cost calculation, and tool description and truncation logic improvements
+
 ## [0.1.36]
 
 - Added Sentry error reporting to help identify and fix crashes faster

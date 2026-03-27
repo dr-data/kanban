@@ -105,7 +105,7 @@ async function waitForServerStart(process: ChildProcess, timeoutMs = 10_000): Pr
 			} else {
 				stderr += text;
 			}
-			if (!stdout.includes("Kanban running at ") || settled) {
+			if (!stdout.includes("Cline Kanban running at ") || settled) {
 				return;
 			}
 			settled = true;
@@ -246,7 +246,7 @@ async function runCliCommandAndCollectOutput(options: {
 }
 
 describe("source task commands", () => {
-	it("exits after creating a task when the runtime server is already running", async () => {
+	it("exits after creating a task when the runtime server is already running", { timeout: 60_000 }, async () => {
 		const { path: homeDir, cleanup: cleanupHome } = createTempDir("kanban-home-task-exit-");
 		const { path: projectPath, cleanup: cleanupProject } = createTempDir("kanban-project-task-exit-");
 
@@ -402,7 +402,7 @@ describe("source task commands", () => {
 		}
 	});
 
-	it("supports trashing and deleting tasks by column", async () => {
+	it("supports trashing and deleting tasks by column", { timeout: 60_000 }, async () => {
 		const { path: homeDir, cleanup: cleanupHome } = createTempDir("kanban-home-task-trash-delete-");
 		const { path: projectPath, cleanup: cleanupProject } = createTempDir("kanban-project-task-trash-delete-");
 

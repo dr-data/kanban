@@ -2,19 +2,23 @@
 // The rest of Kanban should talk to the SDK through local service modules so
 // auth, catalog, and provider-settings behavior stay behind one boundary.
 import {
+	ClineAccountService,
+	ClineAccountUser,
 	getValidClineCredentials,
 	getValidOcaCredentials,
 	getValidOpenAICodexCredentials,
+	InMemoryMcpManager,
 	loginClineOAuth,
 	loginOcaOAuth,
 	loginOpenAICodex,
 	ProviderSettingsManager,
+	ClineOrganization,
 } from "@clinebot/core/node";
-import { LlmsModels as llmsModels } from "@clinebot/llms";
+import { LlmsModels as llmsModels, LlmsProviders } from "@clinebot/llms";
 import { createMcpTools, type CreateMcpToolsOptions, type Tool } from "@clinebot/agents";
-import * as coreNodeModule from "@clinebot/core/node";
 
 export type ManagedClineOauthProviderId = "cline" | "oca" | "openai-codex";
+export type SdkReasoningEffort = NonNullable<LlmsProviders.ReasoningSettings["effort"]>;
 
 export interface ManagedOauthCredentials {
 	access: string;
@@ -36,27 +40,15 @@ export interface SdkProviderCatalogItem {
 	capabilities?: string[];
 }
 
-export type SdkProviderModelRecord = Record<
-	string,
-	{ name?: string; capabilities?: string[] } | unknown
->;
-
-export interface SdkProviderSettings {
-	provider: string;
-	model?: string;
-	baseUrl?: string;
-	apiKey?: string;
-	oca?: {
-		mode?: "internal" | "external";
-	};
-	auth?: {
-		apiKey?: string;
-		accessToken?: string;
-		refreshToken?: string;
-		accountId?: string | null;
-		expiresAt?: number;
-	};
+export interface SdkUserRemoteConfigResponse {
+	organizationId: string;
+	value: string;
+	enabled: boolean;
 }
+
+export type SdkProviderModelRecord = Record<string, LlmsProviders.ModelInfo>;
+
+export type SdkProviderSettings = LlmsProviders.ProviderSettings;
 
 export interface SaveSdkProviderSettingsInput {
 	settings: SdkProviderSettings;
@@ -220,6 +212,10 @@ export async function listSdkProviderModels(
 	return await llmsModels.getModelsForProvider(providerId);
 }
 
+export function supportsSdkModelThinking(modelInfo: LlmsProviders.ModelInfo): boolean {
+	return LlmsProviders.supportsModelThinking(modelInfo);
+}
+
 const providerManager = new ProviderSettingsManager();
 
 export function getSdkProviderSettings(
@@ -276,6 +272,26 @@ export function saveSdkProviderSettings(
 			settings.apiKey = apiKey;
 		}
 	}
+	if (settings.reasoning) {
+		const reasoning = { ...settings.reasoning };
+		if (typeof reasoning.effort === "string") {
+			const effort = reasoning.effort.trim();
+			if (!effort) {
+				delete reasoning.effort;
+			} else {
+				reasoning.effort = effort as SdkReasoningEffort;
+			}
+		}
+		if (
+			reasoning.enabled === undefined &&
+			reasoning.effort === undefined &&
+			reasoning.budgetTokens === undefined
+		) {
+			delete settings.reasoning;
+		} else {
+			settings.reasoning = reasoning;
+		}
+	}
 	if (settings.auth) {
 		const auth = { ...settings.auth };
 		if (auth.accountId !== undefined && auth.accountId !== null) {
@@ -292,9 +308,7 @@ export function saveSdkProviderSettings(
 }
 
 export function createSdkInMemoryMcpManager(options: SdkMcpManagerOptions): SdkMcpManager {
-	type InMemoryMcpManagerConstructor = new (options: SdkMcpManagerOptions) => SdkMcpManager;
-	const managerConstructor = (coreNodeModule as unknown as { InMemoryMcpManager: InMemoryMcpManagerConstructor })
-		.InMemoryMcpManager;
+	const managerConstructor = InMemoryMcpManager;
 	if (!managerConstructor) {
 		throw new Error("InMemoryMcpManager is not available from @clinebot/core/node.");
 	}
@@ -303,4 +317,38 @@ export function createSdkInMemoryMcpManager(options: SdkMcpManagerOptions): SdkM
 
 export async function createSdkMcpTools(options: SdkCreateMcpToolsOptions): Promise<SdkMcpTool[]> {
 	return await createMcpTools(options);
+}
+
+type ApiRequestParams = {
+	apiBaseUrl: string;
+	accessToken: string;
+}
+
+export async function fetchSdkClineAccountProfile(input: ApiRequestParams): Promise<ClineAccountUser> {	
+	const accountService = new ClineAccountService({
+		apiBaseUrl: input.apiBaseUrl,
+		getAuthToken: async () => input.accessToken,
+	});
+	const me = await accountService.fetchMe();
+	return me
+}
+
+export async function fetchSdkOrgData(input: ApiRequestParams & {organizatinId: string}): Promise<ClineOrganization> {
+	const accountService = new ClineAccountService({
+		apiBaseUrl: input.apiBaseUrl,
+		getAuthToken: async () => input.accessToken,
+	});
+	return await accountService.fetchOrganization(input.organizatinId);
+}
+
+export async function fetchSdkClineUserRemoteConfig(input: ApiRequestParams): Promise<SdkUserRemoteConfigResponse> {
+	const accountServiceConstructor = ClineAccountService;
+	if (!accountServiceConstructor) {
+		throw new Error("ClineAccountService is not available from @clinebot/core/node.");
+	}
+	const accountService = new accountServiceConstructor({
+		apiBaseUrl: input.apiBaseUrl,
+		getAuthToken: async () => input.accessToken,
+	});
+	return await accountService.fetchRemoteConfig();
 }

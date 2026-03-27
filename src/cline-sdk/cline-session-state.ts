@@ -4,6 +4,7 @@
 import type { RuntimeTaskImage, RuntimeTaskSessionSummary } from "../core/api-contract.js";
 
 const CLINE_USER_ATTENTION_TOOL_NAMES = new Set(["ask_followup_question", "plan_mode_respond"]);
+const WINDOWS_INVALID_SESSION_ID_CHARS = /[<>:"/\\|?*]/g;
 
 export interface ClineTaskSessionEntry {
 	summary: RuntimeTaskSessionSummary;
@@ -56,6 +57,7 @@ export function createDefaultSummary(taskId: string): RuntimeTaskSessionSummary 
 	return {
 		taskId,
 		state: "idle",
+		mode: null,
 		agentId: "cline",
 		workspacePath: null,
 		pid: null,
@@ -108,7 +110,16 @@ export function createMessageWithMeta(
 }
 
 export function createSessionId(taskId: string): string {
-	return `${taskId}-${now()}-${Math.random().toString(36).slice(2, 10)}`;
+	return `${toSessionIdTaskPrefix(taskId)}-${now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function buildSessionIdPrefix(taskId: string): string {
+	return `${toSessionIdTaskPrefix(taskId)}-`;
+}
+
+function toSessionIdTaskPrefix(taskId: string): string {
+	const normalized = taskId.replace(WINDOWS_INVALID_SESSION_ID_CHARS, "_").trim();
+	return normalized.length > 0 ? normalized : "session";
 }
 
 export function isClineUserAttentionTool(toolName: string | null): boolean {

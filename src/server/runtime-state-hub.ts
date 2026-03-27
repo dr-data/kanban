@@ -3,9 +3,12 @@
 // shared API contract, and fans out workspace-scoped snapshots and deltas.
 import type { IncomingMessage } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-
+import type { ClineTaskMessage, ClineTaskSessionService } from "../cline-sdk/cline-task-session-service.js";
 import type {
+	RuntimeClineMcpServerAuthStatus,
+	RuntimeStateStreamClineSessionContextUpdatedMessage,
 	RuntimeStateStreamErrorMessage,
+	RuntimeStateStreamMcpAuthUpdatedMessage,
 	RuntimeStateStreamMessage,
 	RuntimeStateStreamProjectsMessage,
 	RuntimeStateStreamSnapshotMessage,
@@ -16,7 +19,6 @@ import type {
 	RuntimeStateStreamWorkspaceStateMessage,
 	RuntimeTaskSessionSummary,
 } from "../core/api-contract.js";
-import type { ClineTaskMessage, ClineTaskSessionService } from "../cline-sdk/cline-task-session-service.js";
 import type { TerminalSessionManager } from "../terminal/session-manager.js";
 import { createWorkspaceMetadataMonitor } from "./workspace-metadata-monitor.js";
 import type { ResolvedWorkspaceStreamTarget, WorkspaceRegistry } from "./workspace-registry.js";
@@ -50,6 +52,8 @@ export interface RuntimeStateHub {
 	disposeWorkspace: (workspaceId: string, options?: DisposeRuntimeStateWorkspaceOptions) => void;
 	broadcastRuntimeWorkspaceStateUpdated: (workspaceId: string, workspacePath: string) => Promise<void>;
 	broadcastRuntimeProjectsUpdated: (preferredCurrentProjectId: string | null) => Promise<void>;
+	broadcastClineMcpAuthStatusesUpdated: (statuses: RuntimeClineMcpServerAuthStatus[]) => void;
+	bumpClineSessionContextVersion: () => void;
 	broadcastTaskReadyForReview: (workspaceId: string, taskId: string) => void;
 	close: () => Promise<void>;
 }
@@ -64,6 +68,7 @@ export function createRuntimeStateHub(deps: CreateRuntimeStateHubDependencies): 
 	const runtimeStateClientsByWorkspaceId = new Map<string, Set<WebSocket>>();
 	const runtimeStateClients = new Set<WebSocket>();
 	const runtimeStateWorkspaceIdByClient = new Map<WebSocket, string>();
+	let clineSessionContextVersion = 0;
 	const runtimeStateWebSocketServer = new WebSocketServer({ noServer: true });
 	const workspaceMetadataMonitor = createWorkspaceMetadataMonitor({
 		onMetadataUpdated: (workspaceId, workspaceMetadata) => {
@@ -108,6 +113,33 @@ export function createRuntimeStateHub(deps: CreateRuntimeStateHubDependencies): 
 			}
 		} catch {
 			// Ignore transient project summary failures; next update will resync.
+		}
+	};
+
+	const broadcastClineMcpAuthStatusesUpdated = (statuses: RuntimeClineMcpServerAuthStatus[]) => {
+		if (runtimeStateClients.size === 0) {
+			return;
+		}
+		const payload: RuntimeStateStreamMcpAuthUpdatedMessage = {
+			type: "mcp_auth_updated",
+			statuses,
+		};
+		for (const client of runtimeStateClients) {
+			sendRuntimeStateMessage(client, payload);
+		}
+	};
+
+	const bumpClineSessionContextVersion = () => {
+		clineSessionContextVersion += 1;
+		if (runtimeStateClients.size === 0) {
+			return;
+		}
+		const payload: RuntimeStateStreamClineSessionContextUpdatedMessage = {
+			type: "cline_session_context_updated",
+			version: clineSessionContextVersion,
+		};
+		for (const client of runtimeStateClients) {
+			sendRuntimeStateMessage(client, payload);
 		}
 	};
 
@@ -388,6 +420,7 @@ export function createRuntimeStateHub(deps: CreateRuntimeStateHubDependencies): 
 					projects: projectsPayload.projects,
 					workspaceState,
 					workspaceMetadata,
+					clineSessionContextVersion,
 				} satisfies RuntimeStateStreamSnapshotMessage);
 				if (client.readyState !== WebSocket.OPEN) {
 					if (monitorWorkspaceId) {
@@ -498,6 +531,8 @@ export function createRuntimeStateHub(deps: CreateRuntimeStateHubDependencies): 
 		disposeWorkspace,
 		broadcastRuntimeWorkspaceStateUpdated,
 		broadcastRuntimeProjectsUpdated,
+		broadcastClineMcpAuthStatusesUpdated,
+		bumpClineSessionContextVersion,
 		broadcastTaskReadyForReview,
 		close: async () => {
 			for (const timer of taskSessionBroadcastTimersByWorkspaceId.values()) {

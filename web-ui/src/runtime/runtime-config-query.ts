@@ -5,6 +5,8 @@ import { getRuntimeTrpcClient } from "@/runtime/trpc-client";
 import type {
 	RuntimeAgentId,
 	RuntimeClineMcpAuthStatusResponse,
+	RuntimeClineAccountProfileResponse,
+	RuntimeClineKanbanAccessResponse,
 	RuntimeClineMcpOAuthResponse,
 	RuntimeClineMcpServer,
 	RuntimeClineMcpSettingsResponse,
@@ -12,6 +14,7 @@ import type {
 	RuntimeClineOauthProvider,
 	RuntimeClineProviderCatalogItem,
 	RuntimeClineProviderModel,
+	RuntimeClineReasoningEffort,
 	RuntimeClineProviderSettings,
 	RuntimeConfigResponse,
 	RuntimeDebugResetAllStateResponse,
@@ -46,6 +49,7 @@ export async function saveClineProviderSettings(
 		modelId?: string | null;
 		apiKey?: string | null;
 		baseUrl?: string | null;
+		reasoningEffort?: RuntimeClineReasoningEffort | null;
 	},
 ): Promise<RuntimeClineProviderSettings> {
 	const trpcClient = getRuntimeTrpcClient(workspaceId);
@@ -56,6 +60,16 @@ export async function fetchClineProviderCatalog(workspaceId: string | null): Pro
 	const trpcClient = getRuntimeTrpcClient(workspaceId);
 	const response = await trpcClient.runtime.getClineProviderCatalog.query();
 	return response.providers;
+}
+
+export async function fetchClineAccountProfile(workspaceId: string | null): Promise<RuntimeClineAccountProfileResponse> {
+	const trpcClient = getRuntimeTrpcClient(workspaceId);
+	return await trpcClient.runtime.getClineAccountProfile.query();
+}
+
+export async function fetchClineKanbanAccess(workspaceId: string | null): Promise<RuntimeClineKanbanAccessResponse> {
+	const trpcClient = getRuntimeTrpcClient(workspaceId);
+	return await trpcClient.runtime.getClineKanbanAccess.query();
 }
 
 export async function fetchClineProviderModels(
@@ -111,4 +125,9 @@ export async function runClineMcpServerOAuth(
 export async function resetRuntimeDebugState(workspaceId: string | null): Promise<RuntimeDebugResetAllStateResponse> {
 	const trpcClient = getRuntimeTrpcClient(workspaceId);
 	return await trpcClient.runtime.resetAllState.mutate();
+}
+
+export async function openFileOnHost(workspaceId: string | null, filePath: string): Promise<void> {
+	const trpcClient = getRuntimeTrpcClient(workspaceId);
+	await trpcClient.runtime.openFile.mutate({ filePath });
 }

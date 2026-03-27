@@ -22,6 +22,7 @@ vi.mock("@/terminal/terminal-controller-registry", () => ({
 
 interface HookSnapshot {
 	handleRunShortcut: ReturnType<typeof useShortcutActions>["handleRunShortcut"];
+	handleCreateShortcut: ReturnType<typeof useShortcutActions>["handleCreateShortcut"];
 }
 
 function requireSnapshot(snapshot: HookSnapshot | null): HookSnapshot {
@@ -35,15 +36,21 @@ function HookHarness({
 	onSnapshot,
 	prepareTerminalForShortcut,
 	sendTaskSessionInput,
+	currentProjectId = "project-1",
+	selectedShortcutLabel = "Ship",
+	shortcuts = [{ label: "Ship", command: "npm run ship" }],
 }: {
 	onSnapshot: (snapshot: HookSnapshot) => void;
 	prepareTerminalForShortcut: Parameters<typeof useShortcutActions>[0]["prepareTerminalForShortcut"];
 	sendTaskSessionInput: Parameters<typeof useShortcutActions>[0]["sendTaskSessionInput"];
+	currentProjectId?: string | null;
+	selectedShortcutLabel?: string | null | undefined;
+	shortcuts?: Parameters<typeof useShortcutActions>[0]["shortcuts"];
 }): null {
 	const shortcutActions = useShortcutActions({
-		currentProjectId: "project-1",
-		selectedShortcutLabel: "Ship",
-		shortcuts: [{ label: "Ship", command: "npm run ship" }],
+		currentProjectId,
+		selectedShortcutLabel,
+		shortcuts,
 		refreshRuntimeProjectConfig: () => {},
 		prepareTerminalForShortcut,
 		prepareWaitForTerminalConnectionReady: () => async () => {},
@@ -53,8 +60,9 @@ function HookHarness({
 	useEffect(() => {
 		onSnapshot({
 			handleRunShortcut: shortcutActions.handleRunShortcut,
+			handleCreateShortcut: shortcutActions.handleCreateShortcut,
 		});
-	}, [onSnapshot, shortcutActions.handleRunShortcut]);
+	}, [onSnapshot, shortcutActions.handleCreateShortcut, shortcutActions.handleRunShortcut]);
 
 	return null;
 }
@@ -92,6 +100,7 @@ describe("useShortcutActions", () => {
 
 	it("interrupts reused terminals before sending the shortcut command", async () => {
 		const prepareTerminalForShortcut = vi.fn(async () => ({
+			hadExistingOpenTerminal: true,
 			ok: true,
 			targetTaskId: "__home_terminal__",
 		}));
@@ -124,8 +133,9 @@ describe("useShortcutActions", () => {
 		expect(showAppToastMock).not.toHaveBeenCalled();
 	});
 
-	it("interrupts before running even for freshly opened terminals", async () => {
+	it("waits for a prompt without interrupting when it just opened the terminal", async () => {
 		const prepareTerminalForShortcut = vi.fn(async () => ({
+			hadExistingOpenTerminal: false,
 			ok: true,
 			targetTaskId: "__home_terminal__",
 		}));
@@ -149,11 +159,52 @@ describe("useShortcutActions", () => {
 		});
 
 		expect(waitForTerminalLikelyPromptMock).toHaveBeenCalledWith("__home_terminal__", 3000);
-		expect(sendTaskSessionInput).toHaveBeenNthCalledWith(1, "__home_terminal__", "\u0003", {
-			appendNewline: false,
-		});
-		expect(sendTaskSessionInput).toHaveBeenNthCalledWith(2, "__home_terminal__", "npm run ship", {
+		expect(sendTaskSessionInput).toHaveBeenCalledTimes(1);
+		expect(sendTaskSessionInput).toHaveBeenNthCalledWith(1, "__home_terminal__", "npm run ship", {
 			appendNewline: true,
 		});
+	});
+
+	it("saves a created shortcut and selects it", async () => {
+		saveRuntimeConfigMock.mockResolvedValue({
+			selectedShortcutLabel: "Run",
+			shortcuts: [{ label: "Run", command: "npm run dev", icon: "play" }],
+		});
+		const prepareTerminalForShortcut = vi.fn(async () => ({
+			hadExistingOpenTerminal: true,
+			ok: true,
+			targetTaskId: "__home_terminal__",
+		}));
+		const sendTaskSessionInput = vi.fn(async () => ({ ok: true }));
+		let latestSnapshot: HookSnapshot | null = null;
+
+		await act(async () => {
+			root.render(
+				<HookHarness
+					prepareTerminalForShortcut={prepareTerminalForShortcut}
+					sendTaskSessionInput={sendTaskSessionInput}
+					currentProjectId="project-1"
+					selectedShortcutLabel={null}
+					shortcuts={[]}
+					onSnapshot={(snapshot) => {
+						latestSnapshot = snapshot;
+					}}
+				/>,
+			);
+		});
+
+		await act(async () => {
+			await requireSnapshot(latestSnapshot).handleCreateShortcut({
+				label: "Run",
+				command: "npm run dev",
+				icon: "play",
+			});
+		});
+
+		expect(saveRuntimeConfigMock).toHaveBeenCalledWith("project-1", {
+			shortcuts: [{ label: "Run", command: "npm run dev", icon: "play" }],
+			selectedShortcutLabel: "Run",
+		});
+		expect(showAppToastMock).not.toHaveBeenCalled();
 	});
 });

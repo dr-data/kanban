@@ -196,10 +196,223 @@ describe("InMemoryClineSessionRuntime", () => {
 			expect.objectContaining({
 				userImages: ["data:image/png;base64,abc123"],
 				config: expect.objectContaining({
-					maxConsecutiveMistakes: 3,
+					maxConsecutiveMistakes: 6,
 				}),
 			}),
 		);
+	});
+
+	it("forwards queued delivery when sending follow-up input", async () => {
+		const fakeHost = {
+			start: vi.fn(async (input: { config?: { sessionId?: string } }) => ({
+				sessionId: input.config?.sessionId ?? "session-1",
+				result: {},
+			})),
+			send: vi.fn(async () => undefined),
+			stop: vi.fn(async () => {}),
+			abort: vi.fn(async () => {}),
+			dispose: vi.fn(async () => {}),
+			get: vi.fn(async () => undefined),
+			list: vi.fn(async () => []),
+			readMessages: vi.fn(async () => []),
+			subscribe: vi.fn(() => () => {}),
+		};
+
+		const runtime = createInMemoryClineSessionRuntime({
+			createSessionHost: async () => fakeHost,
+			createMcpRuntimeService: createNoopMcpRuntimeService,
+		});
+
+		await runtime.startTaskSession({
+			taskId: "task-1",
+			cwd: "/tmp/worktree",
+			prompt: "Investigate startup",
+			providerId: "anthropic",
+			modelId: "claude-sonnet-4-6",
+			systemPrompt: "You are a helpful coding assistant.",
+		});
+
+		await runtime.sendTaskSessionInput("task-1", "Queue this", undefined, undefined, "queue");
+
+		expect(fakeHost.send).toHaveBeenCalledWith({
+			sessionId: expect.stringMatching(/^task-1-/),
+			prompt: "Queue this",
+			userImages: undefined,
+			delivery: "queue",
+		});
+	});
+
+	it("restarts using the latest mode selected on follow-up input", async () => {
+		const fakeHost = {
+			start: vi.fn(async (input: { config?: { sessionId?: string } }) => ({
+				sessionId: input.config?.sessionId ?? "session-1",
+				result: {},
+			})),
+			send: vi.fn(async () => undefined),
+			stop: vi.fn(async () => {}),
+			abort: vi.fn(async () => {}),
+			dispose: vi.fn(async () => {}),
+			get: vi.fn(async () => undefined),
+			list: vi.fn(async () => []),
+			readMessages: vi.fn(async () => []),
+			subscribe: vi.fn(() => () => {}),
+		};
+
+		const runtime = createInMemoryClineSessionRuntime({
+			createSessionHost: async () => fakeHost,
+			createMcpRuntimeService: createNoopMcpRuntimeService,
+		});
+
+		await runtime.startTaskSession({
+			taskId: "task-1",
+			cwd: "/tmp/worktree",
+			prompt: "Investigate startup",
+			providerId: "anthropic",
+			modelId: "claude-sonnet-4-6",
+			mode: "act",
+			systemPrompt: "You are a helpful coding assistant.",
+		});
+		await runtime.sendTaskSessionInput("task-1", "Switch to planning", "plan");
+		await runtime.restartTaskSession({
+			taskId: "task-1",
+			prompt: "Continue after restart",
+		});
+
+		expect(fakeHost.start).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				config: expect.objectContaining({
+					mode: "plan",
+				}),
+			}),
+		);
+	});
+
+	it("uses filesystem-safe session ids when task ids include windows-invalid characters", async () => {
+		let requestedSessionId: string | null = null;
+		const fakeHost = {
+			start: vi.fn(async (input: { config?: { sessionId?: string } }) => {
+				requestedSessionId = input.config?.sessionId ?? null;
+				return {
+					sessionId: input.config?.sessionId ?? "session-1",
+					result: {},
+				};
+			}),
+			send: vi.fn(async () => undefined),
+			stop: vi.fn(async () => {}),
+			abort: vi.fn(async () => {}),
+			dispose: vi.fn(async () => {}),
+			get: vi.fn(async () => undefined),
+			list: vi.fn(async () => []),
+			readMessages: vi.fn(async () => []),
+			subscribe: vi.fn(() => () => {}),
+		};
+
+		const runtime = createInMemoryClineSessionRuntime({
+			createSessionHost: async () => fakeHost,
+			createMcpRuntimeService: createNoopMcpRuntimeService,
+		});
+
+		await runtime.startTaskSession({
+			taskId: "__home_agent__:workspace-1:cline:abc123",
+			cwd: "/tmp/worktree",
+			prompt: "Investigate startup",
+			providerId: "anthropic",
+			modelId: "claude-sonnet-4-6",
+			systemPrompt: "You are a helpful coding assistant.",
+		});
+
+		expect(requestedSessionId).toBeTruthy();
+		expect(requestedSessionId ?? "").not.toMatch(/[<>:"/\\|?*]/);
+		expect(requestedSessionId ?? "").toMatch(/^__home_agent___workspace-1_cline_abc123-/);
+	});
+
+	it("clears the pending task binding when start fails", async () => {
+		const fakeHost = {
+			start: vi.fn(async () => {
+				throw new Error("Maximum consecutive mistakes reached.");
+			}),
+			send: vi.fn(async () => ({})),
+			stop: vi.fn(async () => {}),
+			abort: vi.fn(async () => {}),
+			dispose: vi.fn(async () => {}),
+			get: vi.fn(async () => undefined),
+			list: vi.fn(async () => []),
+			readMessages: vi.fn(async () => []),
+			subscribe: vi.fn(() => () => {}),
+		};
+
+		const runtime = createInMemoryClineSessionRuntime({
+			createSessionHost: async () => fakeHost,
+			createMcpRuntimeService: createNoopMcpRuntimeService,
+		});
+
+		await expect(
+			runtime.startTaskSession({
+				taskId: "task-1",
+				cwd: "/tmp/worktree",
+				prompt: "Investigate startup",
+				providerId: "anthropic",
+				modelId: "claude-sonnet-4-6",
+				systemPrompt: "You are a helpful coding assistant.",
+			}),
+		).rejects.toThrow("Maximum consecutive mistakes reached.");
+
+		expect(runtime.getTaskSessionId("task-1")).toBeNull();
+	});
+
+	it("clears the live task binding after the SDK emits ended", async () => {
+		let subscribedListener: ((event: unknown) => void) | null = null;
+
+		const fakeHost = {
+			start: vi.fn(async (input: { config?: { sessionId?: string } }) => ({
+				sessionId: input.config?.sessionId ?? "session-1",
+				result: {},
+			})),
+			send: vi.fn(async () => ({})),
+			stop: vi.fn(async () => {}),
+			abort: vi.fn(async () => {}),
+			dispose: vi.fn(async () => {}),
+			get: vi.fn(async () => undefined),
+			list: vi.fn(async () => []),
+			readMessages: vi.fn(async () => []),
+			subscribe: vi.fn((listener: (event: unknown) => void) => {
+				subscribedListener = listener;
+				return () => {};
+			}),
+		};
+
+		const runtime = createInMemoryClineSessionRuntime({
+			createSessionHost: async () => fakeHost,
+			createMcpRuntimeService: createNoopMcpRuntimeService,
+		});
+
+		await runtime.startTaskSession({
+			taskId: "task-1",
+			cwd: "/tmp/worktree",
+			prompt: "Investigate startup",
+			providerId: "anthropic",
+			modelId: "claude-sonnet-4-6",
+			systemPrompt: "You are a helpful coding assistant.",
+		});
+
+		expect(runtime.getTaskSessionId("task-1")).toBeTruthy();
+
+		if (!subscribedListener) {
+			throw new Error("Expected runtime to subscribe to host events.");
+		}
+
+		const liveSessionId = runtime.getTaskSessionId("task-1");
+		(subscribedListener as (event: unknown) => void)({
+			type: "ended",
+			payload: {
+				sessionId: liveSessionId,
+				reason: "error",
+				ts: Date.now(),
+			},
+		});
+
+		expect(runtime.getTaskSessionId("task-1")).toBeNull();
 	});
 
 	it("reads persisted task history by scanning task-prefixed SDK session ids", async () => {

@@ -7,6 +7,7 @@ import type { RuntimeConfigResponse, RuntimeGitRepositoryInfo, RuntimeTaskSessio
 
 const startTaskSessionMutateMock = vi.hoisted(() => vi.fn());
 const stopTaskSessionMutateMock = vi.hoisted(() => vi.fn());
+const reloadTaskChatSessionMutateMock = vi.hoisted(() => vi.fn());
 const notifyErrorMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/runtime/trpc-client", () => ({
@@ -17,6 +18,9 @@ vi.mock("@/runtime/trpc-client", () => ({
 			},
 			stopTaskSession: {
 				mutate: (input: object) => stopTaskSessionMutateMock({ workspaceId, ...input }),
+			},
+			reloadTaskChatSession: {
+				mutate: (input: object) => reloadTaskChatSessionMutateMock({ workspaceId, ...input }),
 			},
 		},
 	}),
@@ -159,14 +163,18 @@ function requireTaskId(taskId: string | null): string {
 
 function HookHarness({
 	config,
+	clineSessionContextVersion = 0,
 	currentProjectId,
 	onSnapshot,
 	workspaceGit = DEFAULT_WORKSPACE_GIT,
+	seedSessionSummary = false,
 }: {
 	config: RuntimeConfigResponse | null;
+	clineSessionContextVersion?: number;
 	currentProjectId: string | null;
 	onSnapshot: (snapshot: HookSnapshot) => void;
 	workspaceGit?: RuntimeGitRepositoryInfo | null;
+	seedSessionSummary?: boolean;
 }): null {
 	const [sessionSummaries, setSessionSummaries] = useState<Record<string, RuntimeTaskSessionSummary>>({});
 	const upsertSessionSummary = useCallback((summary: RuntimeTaskSessionSummary) => {
@@ -179,10 +187,18 @@ function HookHarness({
 		currentProjectId,
 		runtimeProjectConfig: config,
 		workspaceGit,
+		clineSessionContextVersion,
 		sessionSummaries,
 		setSessionSummaries,
 		upsertSessionSummary,
 	});
+
+	useEffect(() => {
+		if (!seedSessionSummary || !result.taskId) {
+			return;
+		}
+		upsertSessionSummary(createSummary(result.taskId, "cline"));
+	}, [result.taskId, seedSessionSummary, upsertSessionSummary]);
 
 	useEffect(() => {
 		onSnapshot({
@@ -203,9 +219,14 @@ describe("useHomeAgentSession", () => {
 	beforeEach(() => {
 		startTaskSessionMutateMock.mockReset();
 		stopTaskSessionMutateMock.mockReset();
+		reloadTaskChatSessionMutateMock.mockReset();
 		startTaskSessionMutateMock.mockImplementation(async ({ taskId }: { taskId: string }) => ({
 			ok: true,
 			summary: createSummary(taskId, "codex"),
+		}));
+		reloadTaskChatSessionMutateMock.mockImplementation(async ({ taskId }: { taskId: string }) => ({
+			ok: true,
+			summary: createSummary(taskId, "cline"),
 		}));
 		notifyErrorMock.mockReset();
 		previousActEnvironment = (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -248,7 +269,7 @@ describe("useHomeAgentSession", () => {
 		const initialSnapshot = requireSnapshot(latestSnapshot);
 		const initialTaskId = initialSnapshot.taskId;
 		expect(initialSnapshot.panelMode).toBe("terminal");
-		expect(initialTaskId).toMatch(/^__home_agent__:workspace-1:codex:/);
+		expect(initialTaskId).toMatch(/^__home_agent__:workspace-1:codex$/);
 		expect(startTaskSessionMutateMock).toHaveBeenCalledTimes(1);
 		expect(startTaskSessionMutateMock).toHaveBeenLastCalledWith(
 			expect.objectContaining({
@@ -277,7 +298,7 @@ describe("useHomeAgentSession", () => {
 
 		const rotatedSnapshot = requireSnapshot(latestSnapshot);
 		expect(rotatedSnapshot.panelMode).toBe("terminal");
-		expect(rotatedSnapshot.taskId).toMatch(/^__home_agent__:workspace-1:claude:/);
+		expect(rotatedSnapshot.taskId).toMatch(/^__home_agent__:workspace-1:claude$/);
 		expect(rotatedSnapshot.taskId).not.toBe(initialTaskId);
 		expect(startTaskSessionMutateMock).toHaveBeenCalledTimes(2);
 		expect(stopTaskSessionMutateMock).toHaveBeenCalledWith({
@@ -324,7 +345,7 @@ describe("useHomeAgentSession", () => {
 		expect(stopTaskSessionMutateMock).not.toHaveBeenCalled();
 	});
 
-	it("keys cline home chat sessions by provider without auto-starting a terminal session", async () => {
+	it("keeps the same cline home chat session id when the provider changes", async () => {
 		let latestSnapshot: HookSnapshot | null = null;
 
 		await act(async () => {
@@ -346,7 +367,7 @@ describe("useHomeAgentSession", () => {
 		const anthropicSnapshot = requireSnapshot(latestSnapshot);
 		const anthropicTaskId = anthropicSnapshot.taskId;
 		expect(anthropicSnapshot.panelMode).toBe("chat");
-		expect(anthropicTaskId).toMatch(/^__home_agent__:workspace-1:cline:/);
+		expect(anthropicTaskId).toMatch(/^__home_agent__:workspace-1:cline$/);
 		expect(startTaskSessionMutateMock).not.toHaveBeenCalled();
 
 		await act(async () => {
@@ -378,12 +399,63 @@ describe("useHomeAgentSession", () => {
 
 		const updatedSnapshot = requireSnapshot(latestSnapshot);
 		expect(updatedSnapshot.panelMode).toBe("chat");
-		expect(updatedSnapshot.taskId).toMatch(/^__home_agent__:workspace-1:cline:/);
-		expect(updatedSnapshot.taskId).not.toBe(anthropicTaskId);
-		expect(stopTaskSessionMutateMock).toHaveBeenCalledWith({
-			workspaceId: "workspace-1",
-			taskId: anthropicTaskId,
+		expect(updatedSnapshot.taskId).toMatch(/^__home_agent__:workspace-1:cline$/);
+		expect(updatedSnapshot.taskId).toBe(anthropicTaskId);
+		expect(stopTaskSessionMutateMock).not.toHaveBeenCalled();
+		expect(startTaskSessionMutateMock).not.toHaveBeenCalled();
+	});
+
+	it("reloads the home cline chat session when the Cline session context version changes", async () => {
+		let latestSnapshot: HookSnapshot | null = null;
+
+		await act(async () => {
+			root.render(
+				<HookHarness
+					config={createRuntimeConfig({
+						selectedAgentId: "cline",
+						effectiveCommand: "cline",
+					})}
+					clineSessionContextVersion={0}
+					currentProjectId="workspace-1"
+					seedSessionSummary
+					onSnapshot={(snapshot) => {
+						latestSnapshot = snapshot;
+					}}
+				/>,
+			);
+			await createFlushPromises();
 		});
+
+		const firstTaskId = requireTaskId(requireSnapshot(latestSnapshot).taskId);
+		expect(firstTaskId).toMatch(/^__home_agent__:workspace-1:cline$/);
+		expect(startTaskSessionMutateMock).not.toHaveBeenCalled();
+
+		await act(async () => {
+			root.render(
+				<HookHarness
+					config={createRuntimeConfig({
+						selectedAgentId: "cline",
+						effectiveCommand: "cline",
+					})}
+					clineSessionContextVersion={1}
+					currentProjectId="workspace-1"
+					seedSessionSummary
+					onSnapshot={(snapshot) => {
+						latestSnapshot = snapshot;
+					}}
+				/>,
+			);
+			await createFlushPromises();
+		});
+
+		const secondTaskId = requireTaskId(requireSnapshot(latestSnapshot).taskId);
+		expect(secondTaskId).toMatch(/^__home_agent__:workspace-1:cline$/);
+		expect(secondTaskId).toBe(firstTaskId);
+		expect(reloadTaskChatSessionMutateMock).toHaveBeenCalledWith({
+			workspaceId: "workspace-1",
+			taskId: firstTaskId,
+		});
+		expect(stopTaskSessionMutateMock).not.toHaveBeenCalled();
 		expect(startTaskSessionMutateMock).not.toHaveBeenCalled();
 	});
 
@@ -408,11 +480,11 @@ describe("useHomeAgentSession", () => {
 
 		const snapshot = requireSnapshot(latestSnapshot);
 		expect(snapshot.panelMode).toBe("chat");
-		expect(snapshot.taskId).toMatch(/^__home_agent__:workspace-1:cline:/);
+		expect(snapshot.taskId).toMatch(/^__home_agent__:workspace-1:cline$/);
 		expect(startTaskSessionMutateMock).not.toHaveBeenCalled();
 	});
 
-	it("creates a fresh home chat session id after remounting the app", async () => {
+	it("reuses the same home chat session id after remounting the app", async () => {
 		let latestSnapshot: HookSnapshot | null = null;
 
 		await act(async () => {
@@ -456,8 +528,9 @@ describe("useHomeAgentSession", () => {
 		});
 
 		const secondTaskId = requireTaskId(requireSnapshot(latestSnapshot).taskId);
-		expect(secondTaskId).toMatch(/^__home_agent__:workspace-1:cline:/);
-		expect(secondTaskId).not.toBe(firstTaskId);
+		expect(secondTaskId).toMatch(/^__home_agent__:workspace-1:cline$/);
+		expect(secondTaskId).toBe(firstTaskId);
+		expect(stopTaskSessionMutateMock).not.toHaveBeenCalled();
 	});
 
 	it("stops stale terminal starts when the selected agent changes mid-launch", async () => {
@@ -490,7 +563,7 @@ describe("useHomeAgentSession", () => {
 		});
 
 		const firstTaskId = requireTaskId(requireSnapshot(latestSnapshot).taskId);
-		expect(firstTaskId).toMatch(/^__home_agent__:workspace-1:codex:/);
+		expect(firstTaskId).toMatch(/^__home_agent__:workspace-1:codex$/);
 
 		await act(async () => {
 			root.render(
@@ -509,7 +582,7 @@ describe("useHomeAgentSession", () => {
 		});
 
 		const secondTaskId = requireTaskId(requireSnapshot(latestSnapshot).taskId);
-		expect(secondTaskId).toMatch(/^__home_agent__:workspace-1:claude:/);
+		expect(secondTaskId).toMatch(/^__home_agent__:workspace-1:claude$/);
 		expect(secondTaskId).not.toBe(firstTaskId);
 		expect(stopTaskSessionMutateMock).toHaveBeenCalledWith({
 			workspaceId: "workspace-1",
@@ -556,7 +629,7 @@ describe("useHomeAgentSession", () => {
 		});
 
 		const firstTaskId = requireTaskId(requireSnapshot(latestSnapshot).taskId);
-		expect(firstTaskId).toMatch(/^__home_agent__:workspace-1:codex:/);
+		expect(firstTaskId).toMatch(/^__home_agent__:workspace-1:codex$/);
 
 		await act(async () => {
 			root.render(
@@ -572,7 +645,7 @@ describe("useHomeAgentSession", () => {
 		});
 
 		const secondSnapshot = requireSnapshot(latestSnapshot);
-		expect(secondSnapshot.taskId).toMatch(/^__home_agent__:workspace-2:codex:/);
+		expect(secondSnapshot.taskId).toMatch(/^__home_agent__:workspace-2:codex$/);
 		expect(secondSnapshot.taskId).not.toBe(firstTaskId);
 		expect([...secondSnapshot.sessionKeys].sort()).toEqual([firstTaskId, secondSnapshot.taskId].sort());
 		expect(startTaskSessionMutateMock).toHaveBeenLastCalledWith(

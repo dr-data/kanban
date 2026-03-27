@@ -26,6 +26,7 @@ interface UseHomeSidebarAgentPanelInput {
 	currentProjectId: string | null;
 	hasNoProjects: boolean;
 	runtimeProjectConfig: RuntimeConfigResponse | null;
+	clineSessionContextVersion: number;
 	taskSessions: Record<string, RuntimeTaskSessionSummary>;
 	workspaceGit: RuntimeGitRepositoryInfo | null;
 	latestTaskChatMessage: RuntimeStateStreamTaskChatMessage | null;
@@ -46,6 +47,7 @@ export function useHomeSidebarAgentPanel({
 	currentProjectId,
 	hasNoProjects,
 	runtimeProjectConfig,
+	clineSessionContextVersion,
 	taskSessions,
 	workspaceGit,
 	latestTaskChatMessage,
@@ -53,10 +55,17 @@ export function useHomeSidebarAgentPanel({
 }: UseHomeSidebarAgentPanelInput): ReactElement | null {
 	const [sessionSummaries, setSessionSummaries] = useState<Record<string, RuntimeTaskSessionSummary>>({});
 	const upsertSessionSummary = useCallback((summary: RuntimeTaskSessionSummary) => {
-		setSessionSummaries((currentSessions) => ({
-			...currentSessions,
-			[summary.taskId]: summary,
-		}));
+		setSessionSummaries((currentSessions) => {
+			const previousSummary = currentSessions[summary.taskId] ?? null;
+			const newestSummary = selectNewestTaskSessionSummary(previousSummary, summary);
+			if (newestSummary !== summary) {
+				return currentSessions;
+			}
+			return {
+				...currentSessions,
+				[summary.taskId]: newestSummary,
+			};
+		});
 	}, []);
 	const effectiveSessionSummaries = useMemo(() => {
 		const mergedSessionSummaries = { ...taskSessions };
@@ -72,6 +81,7 @@ export function useHomeSidebarAgentPanel({
 		currentProjectId,
 		runtimeProjectConfig,
 		workspaceGit,
+		clineSessionContextVersion,
 		sessionSummaries: effectiveSessionSummaries,
 		setSessionSummaries,
 		upsertSessionSummary,

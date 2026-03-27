@@ -4,29 +4,11 @@
 import * as RadixCheckbox from "@radix-ui/react-checkbox";
 import * as RadixPopover from "@radix-ui/react-popover";
 import * as RadixSwitch from "@radix-ui/react-switch";
-import {
-	Check,
-	ChevronDown,
-	Circle,
-	CircleDot,
-	ExternalLink,
-	Plus,
-	Settings,
-	X,
-} from "lucide-react";
-import {
-	getRuntimeAgentCatalogEntry,
-	getRuntimeLaunchSupportedAgentCatalog,
-} from "@runtime-agent-catalog";
+import { getRuntimeAgentCatalogEntry, getRuntimeLaunchSupportedAgentCatalog } from "@runtime-agent-catalog";
 import { areRuntimeProjectShortcutsEqual } from "@runtime-shortcuts";
+import { Check, ChevronDown, Circle, CircleDot, ExternalLink, Plus, Settings, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-
-import { useRuntimeSettingsClineController } from "@/hooks/use-runtime-settings-cline-controller";
-import { useRuntimeSettingsClineMcpController } from "@/hooks/use-runtime-settings-cline-mcp-controller";
 import { ClineSetupSection } from "@/components/shared/cline-setup-section";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/components/ui/cn";
-import { Dialog, DialogBody, DialogFooter, DialogHeader } from "@/components/ui/dialog";
 import {
 	getRuntimeShortcutIconComponent,
 	getRuntimeShortcutPickerOption,
@@ -34,19 +16,26 @@ import {
 	type RuntimeShortcutIconOption,
 	type RuntimeShortcutPickerIconId,
 } from "@/components/shared/runtime-shortcut-icons";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/components/ui/cn";
+import { Dialog, DialogBody, DialogFooter, DialogHeader } from "@/components/ui/dialog";
 import { TASK_GIT_BASE_REF_PROMPT_VARIABLE, type TaskGitAction } from "@/git-actions/build-task-git-action-prompt";
+import { useRuntimeSettingsClineController } from "@/hooks/use-runtime-settings-cline-controller";
+import { useRuntimeSettingsClineMcpController } from "@/hooks/use-runtime-settings-cline-mcp-controller";
 import type {
 	RuntimeAgentId,
+	RuntimeClineMcpServerAuthStatus,
 	RuntimeConfigResponse,
 	RuntimeProjectShortcut,
 } from "@/runtime/types";
 import { useRuntimeConfig } from "@/runtime/use-runtime-config";
+import { openFileOnHost } from "@/runtime/runtime-config-query";
+import { formatPathForDisplay } from "@/utils/path-display";
 import {
 	type BrowserNotificationPermission,
 	getBrowserNotificationPermission,
 	requestBrowserNotificationPermission,
 } from "@/utils/notification-permission";
-import { toFileUrl } from "@/utils/file-url";
 import { useUnmount, useWindowEvent } from "@/utils/react-use";
 
 interface RuntimeSettingsAgentRowModel {
@@ -154,7 +143,10 @@ function AgentRow({
 				{isSelected ? (
 					<CircleDot size={16} className="text-accent mt-0.5 shrink-0" />
 				) : (
-					<Circle size={16} className={cn("mt-0.5 shrink-0", !isInstalled ? "text-text-tertiary" : "text-text-secondary")} />
+					<Circle
+						size={16}
+						className={cn("mt-0.5 shrink-0", !isInstalled ? "text-text-tertiary" : "text-text-secondary")}
+					/>
 				)}
 				<div className="min-w-0">
 					<div className="flex items-center gap-2">
@@ -170,9 +162,7 @@ function AgentRow({
 						) : null}
 					</div>
 					{agent.command ? (
-						<p className="text-text-secondary font-mono text-xs mt-0.5 m-0">
-							{agent.command}
-						</p>
+						<p className="text-text-secondary font-mono text-xs mt-0.5 m-0">{agent.command}</p>
 					) : null}
 				</div>
 			</div>
@@ -187,7 +177,9 @@ function AgentRow({
 					Install
 				</a>
 			) : !isNativeCline && agent.installed === false ? (
-				<Button size="sm" disabled>Install</Button>
+				<Button size="sm" disabled>
+					Install
+				</Button>
 			) : null}
 		</div>
 	);
@@ -290,6 +282,7 @@ export function RuntimeSettingsDialog({
 	open,
 	workspaceId,
 	initialConfig = null,
+	liveMcpAuthStatuses = null,
 	onOpenChange,
 	onSaved,
 	initialSection,
@@ -297,6 +290,7 @@ export function RuntimeSettingsDialog({
 	open: boolean;
 	workspaceId: string | null;
 	initialConfig?: RuntimeConfigResponse | null;
+	liveMcpAuthStatuses?: RuntimeClineMcpServerAuthStatus[] | null;
 	onOpenChange: (open: boolean) => void;
 	onSaved?: () => void;
 	initialSection?: RuntimeSettingsSection | null;
@@ -351,9 +345,7 @@ export function RuntimeSettingsDialog({
 				binary: agent.binary,
 				installed: agent.id === "cline" ? true : null,
 			}));
-		const orderIndexByAgentId = new Map(
-			SETTINGS_AGENT_ORDER.map((agentId, index) => [agentId, index] as const),
-		);
+		const orderIndexByAgentId = new Map(SETTINGS_AGENT_ORDER.map((agentId, index) => [agentId, index] as const));
 		const orderedAgents = [...agents].sort((left, right) => {
 			const leftOrderIndex = orderIndexByAgentId.get(left.id) ?? Number.MAX_SAFE_INTEGER;
 			const rightOrderIndex = orderIndexByAgentId.get(right.id) ?? Number.MAX_SAFE_INTEGER;
@@ -384,6 +376,7 @@ export function RuntimeSettingsDialog({
 		open,
 		workspaceId,
 		selectedAgentId,
+		liveAuthStatuses: liveMcpAuthStatuses,
 	});
 	const hasUnsavedChanges = useMemo(() => {
 		if (!config) {
@@ -590,6 +583,17 @@ export function RuntimeSettingsDialog({
 		})();
 	};
 
+	const handleOpenFilePath = useCallback(
+		(filePath: string) => {
+			setSaveError(null);
+			void openFileOnHost(workspaceId, filePath).catch((error) => {
+				const message = error instanceof Error ? error.message : String(error);
+				setSaveError(`Could not open file on host: ${message}`);
+			});
+		},
+		[workspaceId],
+	);
+
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogHeader title="Settings" icon={<Settings size={16} />} />
@@ -600,14 +604,12 @@ export function RuntimeSettingsDialog({
 					style={{ cursor: config?.globalConfigPath ? "pointer" : undefined }}
 					onClick={() => {
 						if (config?.globalConfigPath) {
-							window.open(toFileUrl(config.globalConfigPath));
+							handleOpenFilePath(config.globalConfigPath);
 						}
 					}}
 				>
-					{config?.globalConfigPath ?? "~/.cline/kanban/config.json"}
-					{config?.globalConfigPath ? (
-						<ExternalLink size={12} className="inline ml-1.5 align-middle" />
-					) : null}
+					{config?.globalConfigPath ? formatPathForDisplay(config.globalConfigPath) : "~/.cline/kanban/config.json"}
+					{config?.globalConfigPath ? <ExternalLink size={12} className="inline ml-1.5 align-middle" /> : null}
 				</p>
 
 				<h6 className="font-semibold text-text-primary mt-3 mb-0">Agent runtime</h6>
@@ -621,11 +623,12 @@ export function RuntimeSettingsDialog({
 					/>
 				))}
 				{config === null ? (
-					<p className="text-text-secondary py-2">
-						Checking which CLIs are installed for this project...
-					</p>
+					<p className="text-text-secondary py-2">Checking which CLIs are installed for this project...</p>
 				) : null}
-				<label htmlFor={bypassPermissionsCheckboxId} className="flex items-center gap-2 text-[13px] text-text-primary mt-2 cursor-pointer">
+				<label
+					htmlFor={bypassPermissionsCheckboxId}
+					className="flex items-center gap-2 text-[13px] text-text-primary mt-2 cursor-pointer"
+				>
 					<RadixCheckbox.Root
 						id={bypassPermissionsCheckboxId}
 						aria-label="Enable bypass permissions flag"
@@ -649,6 +652,7 @@ export function RuntimeSettingsDialog({
 						controller={clineSettings}
 						mcpController={clineMcpSettings}
 						controlsDisabled={controlsDisabled}
+						workspaceId={workspaceId}
 						onError={setSaveError}
 					/>
 				) : null}
@@ -668,7 +672,9 @@ export function RuntimeSettingsDialog({
 						style={{ minWidth: 220 }}
 					>
 						{GIT_PROMPT_VARIANT_OPTIONS.map((option) => (
-							<option key={option.value} value={option.value}>{option.label}</option>
+							<option key={option.value} value={option.value}>
+								{option.label}
+							</option>
 						))}
 					</select>
 					<Button
@@ -736,14 +742,12 @@ export function RuntimeSettingsDialog({
 					style={{ cursor: config?.projectConfigPath ? "pointer" : undefined }}
 					onClick={() => {
 						if (config?.projectConfigPath) {
-							window.open(toFileUrl(config.projectConfigPath));
+							handleOpenFilePath(config.projectConfigPath);
 						}
 					}}
 				>
-					{config?.projectConfigPath ?? "<project>/.cline/kanban/config.json"}
-					{config?.projectConfigPath ? (
-						<ExternalLink size={12} className="inline ml-1.5 align-middle" />
-					) : null}
+					{config?.projectConfigPath ? formatPathForDisplay(config.projectConfigPath) : "<project>/.cline/kanban/config.json"}
+					{config?.projectConfigPath ? <ExternalLink size={12} className="inline ml-1.5 align-middle" /> : null}
 				</p>
 
 				<div className="flex items-center justify-between mt-3 mb-2">
@@ -787,9 +791,7 @@ export function RuntimeSettingsDialog({
 							value={shortcut.icon}
 							onSelect={(icon) =>
 								setShortcuts((current) =>
-									current.map((item, itemIndex) =>
-										itemIndex === shortcutIndex ? { ...item, icon } : item,
-									),
+									current.map((item, itemIndex) => (itemIndex === shortcutIndex ? { ...item, icon } : item)),
 								)
 							}
 						/>
@@ -828,7 +830,9 @@ export function RuntimeSettingsDialog({
 						/>
 					</div>
 				))}
-				{shortcuts.length === 0 ? <p className="text-text-secondary text-[13px]">No shortcuts configured.</p> : null}
+				{shortcuts.length === 0 ? (
+					<p className="text-text-secondary text-[13px]">No shortcuts configured.</p>
+				) : null}
 
 				{saveError ? (
 					<div className="flex gap-2 rounded-md border border-status-red/30 bg-status-red/5 p-3 text-[13px] mt-3">
@@ -837,10 +841,7 @@ export function RuntimeSettingsDialog({
 				) : null}
 			</DialogBody>
 			<DialogFooter>
-				<Button
-					onClick={() => onOpenChange(false)}
-					disabled={controlsDisabled}
-				>
+				<Button onClick={() => onOpenChange(false)} disabled={controlsDisabled}>
 					Cancel
 				</Button>
 				<Button

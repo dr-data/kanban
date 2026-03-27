@@ -58,6 +58,18 @@ export const runtimeWorkspaceFileSearchResponseSchema = z.object({
 });
 export type RuntimeWorkspaceFileSearchResponse = z.infer<typeof runtimeWorkspaceFileSearchResponseSchema>;
 
+export const runtimeSlashCommandSchema = z.object({
+	name: z.string(),
+	instructions: z.string(),
+	description: z.string().optional(),
+});
+export type RuntimeSlashCommand = z.infer<typeof runtimeSlashCommandSchema>;
+
+export const runtimeSlashCommandsResponseSchema = z.object({
+	commands: z.array(runtimeSlashCommandSchema),
+});
+export type RuntimeSlashCommandsResponse = z.infer<typeof runtimeSlashCommandsResponseSchema>;
+
 export const runtimeAgentIdSchema = z.enum(["claude", "codex", "gemini", "opencode", "droid", "cline"]);
 export type RuntimeAgentId = z.infer<typeof runtimeAgentIdSchema>;
 
@@ -201,6 +213,7 @@ export type RuntimeTaskTurnCheckpoint = z.infer<typeof runtimeTaskTurnCheckpoint
 export const runtimeTaskSessionSummarySchema = z.object({
 	taskId: z.string(),
 	state: runtimeTaskSessionStateSchema,
+	mode: runtimeTaskSessionModeSchema.nullable().optional(),
 	agentId: runtimeAgentIdSchema.nullable(),
 	workspacePath: z.string().nullable(),
 	pid: z.number().nullable(),
@@ -283,12 +296,22 @@ export const runtimeWorkspaceMetadataSchema = z.object({
 });
 export type RuntimeWorkspaceMetadata = z.infer<typeof runtimeWorkspaceMetadataSchema>;
 
+export const runtimeClineMcpServerAuthStatusSchema = z.object({
+	serverName: z.string(),
+	oauthSupported: z.boolean(),
+	oauthConfigured: z.boolean(),
+	lastError: z.string().nullable(),
+	lastAuthenticatedAt: z.number().nullable(),
+});
+export type RuntimeClineMcpServerAuthStatus = z.infer<typeof runtimeClineMcpServerAuthStatusSchema>;
+
 export const runtimeStateStreamSnapshotMessageSchema = z.object({
 	type: z.literal("snapshot"),
 	currentProjectId: z.string().nullable(),
 	projects: z.array(runtimeProjectSummarySchema),
 	workspaceState: runtimeWorkspaceStateResponseSchema.nullable(),
 	workspaceMetadata: runtimeWorkspaceMetadataSchema.nullable(),
+	clineSessionContextVersion: z.number().int().nonnegative(),
 });
 export type RuntimeStateStreamSnapshotMessage = z.infer<typeof runtimeStateStreamSnapshotMessageSchema>;
 
@@ -340,6 +363,20 @@ export const runtimeStateStreamTaskChatMessageSchema = z.object({
 });
 export type RuntimeStateStreamTaskChatMessage = z.infer<typeof runtimeStateStreamTaskChatMessageSchema>;
 
+export const runtimeStateStreamMcpAuthUpdatedMessageSchema = z.object({
+	type: z.literal("mcp_auth_updated"),
+	statuses: z.array(runtimeClineMcpServerAuthStatusSchema),
+});
+export type RuntimeStateStreamMcpAuthUpdatedMessage = z.infer<typeof runtimeStateStreamMcpAuthUpdatedMessageSchema>;
+
+export const runtimeStateStreamClineSessionContextUpdatedMessageSchema = z.object({
+	type: z.literal("cline_session_context_updated"),
+	version: z.number().int().nonnegative(),
+});
+export type RuntimeStateStreamClineSessionContextUpdatedMessage = z.infer<
+	typeof runtimeStateStreamClineSessionContextUpdatedMessageSchema
+>;
+
 export const runtimeStateStreamErrorMessageSchema = z.object({
 	type: z.literal("error"),
 	message: z.string(),
@@ -354,6 +391,8 @@ export const runtimeStateStreamMessageSchema = z.discriminatedUnion("type", [
 	runtimeStateStreamWorkspaceMetadataMessageSchema,
 	runtimeStateStreamTaskReadyForReviewMessageSchema,
 	runtimeStateStreamTaskChatMessageSchema,
+	runtimeStateStreamMcpAuthUpdatedMessageSchema,
+	runtimeStateStreamClineSessionContextUpdatedMessageSchema,
 	runtimeStateStreamErrorMessageSchema,
 ]);
 export type RuntimeStateStreamMessage = z.infer<typeof runtimeStateStreamMessageSchema>;
@@ -460,10 +499,14 @@ export type RuntimeProjectShortcut = z.infer<typeof runtimeProjectShortcutSchema
 export const runtimeClineOauthProviderSchema = z.enum(["cline", "oca", "openai-codex"]);
 export type RuntimeClineOauthProvider = z.infer<typeof runtimeClineOauthProviderSchema>;
 
+export const runtimeClineReasoningEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
+export type RuntimeClineReasoningEffort = z.infer<typeof runtimeClineReasoningEffortSchema>;
+
 export const runtimeClineProviderSettingsSchema = z.object({
 	providerId: z.string().nullable(),
 	modelId: z.string().nullable(),
 	baseUrl: z.string().nullable(),
+	reasoningEffort: runtimeClineReasoningEffortSchema.nullable().optional(),
 	apiKeyConfigured: z.boolean(),
 	oauthProvider: runtimeClineOauthProviderSchema.nullable(),
 	oauthAccessTokenConfigured: z.boolean(),
@@ -472,6 +515,25 @@ export const runtimeClineProviderSettingsSchema = z.object({
 	oauthExpiresAt: z.number().int().positive().nullable(),
 });
 export type RuntimeClineProviderSettings = z.infer<typeof runtimeClineProviderSettingsSchema>;
+
+export const runtimeClineAccountProfileSchema = z.object({
+	accountId: z.string().nullable(),
+	email: z.string().nullable(),
+	displayName: z.string().nullable(),
+});
+export type RuntimeClineAccountProfile = z.infer<typeof runtimeClineAccountProfileSchema>;
+
+export const runtimeClineAccountProfileResponseSchema = z.object({
+	profile: runtimeClineAccountProfileSchema.nullable(),
+	error: z.string().optional(),
+});
+export type RuntimeClineAccountProfileResponse = z.infer<typeof runtimeClineAccountProfileResponseSchema>;
+
+export const runtimeClineKanbanAccessResponseSchema = z.object({
+	enabled: z.boolean(),
+	error: z.string().optional(),
+});
+export type RuntimeClineKanbanAccessResponse = z.infer<typeof runtimeClineKanbanAccessResponseSchema>;
 
 export const runtimeClineProviderCatalogItemSchema = z.object({
 	id: z.string(),
@@ -497,6 +559,7 @@ export const runtimeClineProviderModelSchema = z.object({
 	name: z.string(),
 	supportsVision: z.boolean().optional(),
 	supportsAttachments: z.boolean().optional(),
+	supportsReasoningEffort: z.boolean().optional(),
 });
 export type RuntimeClineProviderModel = z.infer<typeof runtimeClineProviderModelSchema>;
 
@@ -525,49 +588,37 @@ export const runtimeClineProviderSettingsSaveRequestSchema = z.object({
 	modelId: z.string().nullable().optional(),
 	apiKey: z.string().nullable().optional(),
 	baseUrl: z.string().nullable().optional(),
+	reasoningEffort: runtimeClineReasoningEffortSchema.nullable().optional(),
 });
 export type RuntimeClineProviderSettingsSaveRequest = z.infer<typeof runtimeClineProviderSettingsSaveRequestSchema>;
 
 export const runtimeClineProviderSettingsSaveResponseSchema = runtimeClineProviderSettingsSchema;
 export type RuntimeClineProviderSettingsSaveResponse = z.infer<typeof runtimeClineProviderSettingsSaveResponseSchema>;
 
-export const runtimeClineMcpServerStdioTransportSchema = z.object({
-	type: z.literal("stdio"),
-	command: z.string(),
-	args: z.array(z.string()).optional(),
-	cwd: z.string().optional(),
-	env: z.record(z.string(), z.string()).optional(),
-});
-export type RuntimeClineMcpServerStdioTransport = z.infer<typeof runtimeClineMcpServerStdioTransportSchema>;
-
-export const runtimeClineMcpServerSseTransportSchema = z.object({
-	type: z.literal("sse"),
-	url: z.string().url(),
-	headers: z.record(z.string(), z.string()).optional(),
-});
-export type RuntimeClineMcpServerSseTransport = z.infer<typeof runtimeClineMcpServerSseTransportSchema>;
-
-export const runtimeClineMcpServerStreamableHttpTransportSchema = z.object({
-	type: z.literal("streamableHttp"),
-	url: z.string().url(),
-	headers: z.record(z.string(), z.string()).optional(),
-});
-export type RuntimeClineMcpServerStreamableHttpTransport = z.infer<
-	typeof runtimeClineMcpServerStreamableHttpTransportSchema
->;
-
-export const runtimeClineMcpServerTransportSchema = z.discriminatedUnion("type", [
-	runtimeClineMcpServerStdioTransportSchema,
-	runtimeClineMcpServerSseTransportSchema,
-	runtimeClineMcpServerStreamableHttpTransportSchema,
-]);
-export type RuntimeClineMcpServerTransport = z.infer<typeof runtimeClineMcpServerTransportSchema>;
-
-export const runtimeClineMcpServerSchema = z.object({
+const runtimeClineMcpServerBaseSchema = z.object({
 	name: z.string(),
 	disabled: z.boolean(),
-	transport: runtimeClineMcpServerTransportSchema,
 });
+
+export const runtimeClineMcpServerSchema = z.discriminatedUnion("type", [
+	runtimeClineMcpServerBaseSchema.extend({
+		type: z.literal("stdio"),
+		command: z.string(),
+		args: z.array(z.string()).optional(),
+		cwd: z.string().optional(),
+		env: z.record(z.string(), z.string()).optional(),
+	}),
+	runtimeClineMcpServerBaseSchema.extend({
+		type: z.literal("sse"),
+		url: z.string().url(),
+		headers: z.record(z.string(), z.string()).optional(),
+	}),
+	runtimeClineMcpServerBaseSchema.extend({
+		type: z.literal("streamableHttp"),
+		url: z.string().url(),
+		headers: z.record(z.string(), z.string()).optional(),
+	}),
+]);
 export type RuntimeClineMcpServer = z.infer<typeof runtimeClineMcpServerSchema>;
 
 export const runtimeClineMcpSettingsResponseSchema = z.object({
@@ -583,15 +634,6 @@ export type RuntimeClineMcpSettingsSaveRequest = z.infer<typeof runtimeClineMcpS
 
 export const runtimeClineMcpSettingsSaveResponseSchema = runtimeClineMcpSettingsResponseSchema;
 export type RuntimeClineMcpSettingsSaveResponse = z.infer<typeof runtimeClineMcpSettingsSaveResponseSchema>;
-
-export const runtimeClineMcpServerAuthStatusSchema = z.object({
-	serverName: z.string(),
-	oauthSupported: z.boolean(),
-	oauthConfigured: z.boolean(),
-	lastError: z.string().nullable(),
-	lastAuthenticatedAt: z.number().nullable(),
-});
-export type RuntimeClineMcpServerAuthStatus = z.infer<typeof runtimeClineMcpServerAuthStatusSchema>;
 
 export const runtimeClineMcpAuthStatusResponseSchema = z.object({
 	statuses: z.array(runtimeClineMcpServerAuthStatusSchema),
@@ -623,6 +665,16 @@ export const runtimeCommandRunResponseSchema = z.object({
 	durationMs: z.number(),
 });
 export type RuntimeCommandRunResponse = z.infer<typeof runtimeCommandRunResponseSchema>;
+
+export const runtimeOpenFileRequestSchema = z.object({
+	filePath: z.string(),
+});
+export type RuntimeOpenFileRequest = z.infer<typeof runtimeOpenFileRequestSchema>;
+
+export const runtimeOpenFileResponseSchema = z.object({
+	ok: z.boolean(),
+});
+export type RuntimeOpenFileResponse = z.infer<typeof runtimeOpenFileResponseSchema>;
 
 export const runtimeDebugResetAllStateResponseSchema = z.object({
 	ok: z.boolean(),
@@ -766,6 +818,18 @@ export const runtimeTaskChatSendResponseSchema = z.object({
 	error: z.string().optional(),
 });
 export type RuntimeTaskChatSendResponse = z.infer<typeof runtimeTaskChatSendResponseSchema>;
+
+export const runtimeTaskChatReloadRequestSchema = z.object({
+	taskId: z.string(),
+});
+export type RuntimeTaskChatReloadRequest = z.infer<typeof runtimeTaskChatReloadRequestSchema>;
+
+export const runtimeTaskChatReloadResponseSchema = z.object({
+	ok: z.boolean(),
+	summary: runtimeTaskSessionSummarySchema.nullable(),
+	error: z.string().optional(),
+});
+export type RuntimeTaskChatReloadResponse = z.infer<typeof runtimeTaskChatReloadResponseSchema>;
 
 export const runtimeTaskChatAbortRequestSchema = z.object({
 	taskId: z.string(),

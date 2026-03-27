@@ -7,6 +7,7 @@ import type {
 	RuntimeTaskSessionMode,
 	RuntimeTaskSessionSummary,
 	RuntimeTaskTurnCheckpoint,
+	RuntimeClineReasoningEffort,
 } from "../core/api-contract.js";
 import { isHomeAgentSessionId } from "../core/home-agent-session.js";
 import { resolveHomeAgentAppendSystemPrompt } from "../prompts/append-system-prompt.js";
@@ -50,6 +51,7 @@ export interface StartClineTaskSessionRequest {
 	mode?: RuntimeTaskSessionMode;
 	apiKey?: string | null;
 	baseUrl?: string | null;
+	reasoningEffort?: RuntimeClineReasoningEffort | null;
 }
 
 export interface ClineTaskSessionService {
@@ -65,6 +67,7 @@ export interface ClineTaskSessionService {
 		mode?: RuntimeTaskSessionMode,
 		images?: RuntimeTaskImage[],
 	): Promise<RuntimeTaskSessionSummary | null>;
+	reloadTaskSession(taskId: string): Promise<RuntimeTaskSessionSummary | null>;
 	rebindPersistedTaskSession(taskId: string): Promise<RuntimeTaskSessionSummary | null>;
 	getSummary(taskId: string): RuntimeTaskSessionSummary | null;
 	listSummaries(): RuntimeTaskSessionSummary[];
@@ -153,15 +156,20 @@ export class InMemoryClineTaskSessionService implements ClineTaskSessionService 
 		error: unknown,
 	): void {
 		const errorMessage = toErrorMessage(error);
-		const systemMessage = createMessage(taskId, "system", `Cline SDK ${context} failed: ${errorMessage}.`);
+		const systemMessage = createMessage(
+			taskId,
+			"system",
+			`Cline SDK ${context} failed: ${errorMessage}. You can send another message to continue the conversation.`,
+		);
 		entry.messages.push(systemMessage);
 		this.emitMessage(taskId, systemMessage);
 		clearActiveTurnState(entry);
-		const failedSummary = updateSummary(entry, {
-			state: "failed",
+		const errorSummary = updateSummary(entry, {
+			state: "awaiting_review",
 			reviewReason: "error",
 			lastOutputAt: now(),
 			lastHookAt: now(),
+			warningMessage: errorMessage,
 			latestHookActivity: {
 				activityText: `${context === "start" ? "Start" : "Send"} failed: ${errorMessage}`,
 				toolName: null,
@@ -172,7 +180,43 @@ export class InMemoryClineTaskSessionService implements ClineTaskSessionService 
 				source: "cline-sdk",
 			},
 		});
-		this.emitSummary(failedSummary);
+		this.emitSummary(errorSummary);
+	}
+
+	private async dispatchResolvedTaskInput(input: {
+		taskId: string;
+		prompt: string;
+		mode?: RuntimeTaskSessionMode;
+		images?: RuntimeTaskImage[];
+		delivery?: "queue" | "steer";
+	}): Promise<{
+		result: unknown;
+		warnings?: string[];
+	}> {
+		if (this.sessionRuntime.getTaskSessionId(input.taskId)) {
+			return {
+				result: await this.sessionRuntime.sendTaskSessionInput(
+					input.taskId,
+					input.prompt,
+					input.mode,
+					input.images,
+					input.delivery,
+				),
+			};
+		}
+
+		const persistedSnapshot = await this.sessionRuntime.readPersistedTaskSession(input.taskId);
+		const restartedSession = await this.sessionRuntime.restartTaskSession({
+			taskId: input.taskId,
+			prompt: input.prompt,
+			mode: input.mode,
+			images: input.images,
+			initialMessages: persistedSnapshot?.messages,
+		});
+		return {
+			result: restartedSession.result,
+			warnings: restartedSession.warnings,
+		};
 	}
 
 	async startTaskSession(request: StartClineTaskSessionRequest): Promise<RuntimeTaskSessionSummary> {
@@ -183,23 +227,37 @@ export class InMemoryClineTaskSessionService implements ClineTaskSessionService 
 
 		const providerId = request.providerId?.trim() || "anthropic";
 		const modelId = request.modelId?.trim() || "claude-sonnet-4-6";
+		const resolvedMode: RuntimeTaskSessionMode = request.mode ?? "act";
+		const persistedResumeSnapshot = request.resumeFromTrash
+			? await this.sessionRuntime.readPersistedTaskSession(request.taskId).catch(() => null)
+			: null;
 
-		const summary: RuntimeTaskSessionSummary = {
-			...createDefaultSummary(request.taskId),
-			state: request.resumeFromTrash ? "awaiting_review" : "running",
-			workspacePath: request.cwd,
-			startedAt: now(),
-			lastOutputAt: now(),
-			reviewReason: request.resumeFromTrash ? "attention" : null,
-		};
-		const entry: ClineTaskSessionEntry = {
-			summary,
-			messages: [],
-			activeAssistantMessageId: null,
-			activeReasoningMessageId: null,
-			toolMessageIdByToolCallId: new Map<string, string>(),
-			toolInputByToolCallId: new Map<string, unknown>(),
-		};
+		const entry =
+			request.resumeFromTrash && persistedResumeSnapshot
+				? createTaskEntryFromPersistedSession(request.taskId, persistedResumeSnapshot.messages, {
+						state: "awaiting_review",
+						mode: resolvedMode,
+						workspacePath: request.cwd,
+						startedAt: now(),
+						lastOutputAt: now(),
+						reviewReason: "attention",
+					})
+				: ({
+						summary: {
+							...createDefaultSummary(request.taskId),
+							state: request.resumeFromTrash ? "awaiting_review" : "running",
+							mode: resolvedMode,
+							workspacePath: request.cwd,
+							startedAt: now(),
+							lastOutputAt: now(),
+							reviewReason: request.resumeFromTrash ? "attention" : null,
+						},
+						messages: [],
+						activeAssistantMessageId: null,
+						activeReasoningMessageId: null,
+						toolMessageIdByToolCallId: new Map<string, string>(),
+						toolInputByToolCallId: new Map<string, unknown>(),
+					} satisfies ClineTaskSessionEntry);
 		this.messageRepository.setTaskEntry(request.taskId, entry);
 		this.pendingTurnCancelTaskIds.delete(request.taskId);
 
@@ -227,7 +285,7 @@ export class InMemoryClineTaskSessionService implements ClineTaskSessionService 
 			});
 			this.emitSummary(runningSummary);
 		}
-		this.emitSummary(summary);
+		this.emitSummary(entry.summary);
 
 		void (async () => {
 			const assistantCountBeforeStart = entry.messages.filter((message) => message.role === "assistant").length;
@@ -248,12 +306,14 @@ export class InMemoryClineTaskSessionService implements ClineTaskSessionService 
 					taskId: request.taskId,
 					cwd: request.cwd,
 					prompt: runtimePrompt,
+					initialMessages: request.resumeFromTrash ? persistedResumeSnapshot?.messages : undefined,
 					images: request.images,
 					providerId,
 					modelId,
-					mode: request.mode,
+					mode: resolvedMode,
 					apiKey: request.apiKey,
 					baseUrl: request.baseUrl,
+					reasoningEffort: request.reasoningEffort,
 					systemPrompt,
 					userInstructionWatcher: runtimeSetup.watcher,
 					requestToolApproval: runtimeSetup.requestToolApproval,
@@ -283,7 +343,7 @@ export class InMemoryClineTaskSessionService implements ClineTaskSessionService 
 			}
 		})();
 
-		return cloneSummary(summary);
+		return cloneSummary(entry.summary);
 	}
 
 	async stopTaskSession(taskId: string): Promise<RuntimeTaskSessionSummary | null> {
@@ -376,13 +436,15 @@ export class InMemoryClineTaskSessionService implements ClineTaskSessionService 
 		if (
 			entry.summary.state !== "running" &&
 			entry.summary.state !== "awaiting_review" &&
-			entry.summary.state !== "idle"
+			entry.summary.state !== "idle" &&
+			entry.summary.state !== "failed"
 		) {
 			return null;
 		}
 		this.pendingTurnCancelTaskIds.delete(taskId);
 		const normalized = text.trim();
 		const hasImages = Boolean(images && images.length > 0);
+		const effectiveMode: RuntimeTaskSessionMode = mode ?? entry.summary.mode ?? "act";
 		if (normalized.length === 0 && !hasImages) {
 			return null;
 		}
@@ -391,9 +453,12 @@ export class InMemoryClineTaskSessionService implements ClineTaskSessionService 
 			entry.messages.push(message);
 			this.emitMessage(taskId, message);
 			clearActiveTurnState(entry);
+			const queueDelivery = entry.summary.state === "running";
 			const waitingSummary = updateSummary(entry, {
 				state: "running",
+				mode: effectiveMode,
 				reviewReason: null,
+				warningMessage: null,
 				lastOutputAt: now(),
 				lastHookAt: now(),
 				latestHookActivity: {
@@ -409,10 +474,24 @@ export class InMemoryClineTaskSessionService implements ClineTaskSessionService 
 			this.emitSummary(waitingSummary);
 			const assistantCountBeforeSend = entry.messages.filter((message) => message.role === "assistant").length;
 			void this.ensureRuntimeSetup(entry.summary.workspacePath ?? "")
-				.then((runtimeSetup) =>
-					this.sessionRuntime.sendTaskSessionInput(taskId, runtimeSetup.resolvePrompt(normalized), mode, images),
-				)
-				.then((result: unknown) => {
+				.then(async (runtimeSetup) => {
+					return await this.dispatchResolvedTaskInput({
+						taskId,
+						prompt: runtimeSetup.resolvePrompt(normalized),
+						mode: effectiveMode,
+						images,
+						delivery: queueDelivery ? "queue" : undefined,
+					});
+				})
+				.then(({ result, warnings }) => {
+					const warningMessage = formatStartWarnings(warnings);
+					if (warningMessage) {
+						this.emitSummary(
+							updateSummary(entry, {
+								warningMessage,
+							}),
+						);
+					}
 					const agentText = readAgentResultText(result);
 					if (agentText) {
 						const assistantCountAfterSend = entry.messages.filter(
@@ -433,6 +512,7 @@ export class InMemoryClineTaskSessionService implements ClineTaskSessionService 
 		}
 		const summary = updateSummary(entry, {
 			state: "running",
+			mode: effectiveMode,
 			reviewReason: null,
 			lastOutputAt: now(),
 		});
@@ -440,27 +520,74 @@ export class InMemoryClineTaskSessionService implements ClineTaskSessionService 
 		return summary;
 	}
 
+	async reloadTaskSession(taskId: string): Promise<RuntimeTaskSessionSummary | null> {
+		let entry = this.messageRepository.getTaskEntry(taskId);
+		if (!entry) {
+			const reboundSummary = await this.rebindPersistedTaskSession(taskId);
+			if (!reboundSummary) {
+				return null;
+			}
+			entry = this.messageRepository.getTaskEntry(taskId);
+			if (!entry) {
+				return reboundSummary;
+			}
+		}
+
+		this.pendingTurnCancelTaskIds.delete(taskId);
+		await this.sessionRuntime.stopTaskSession(taskId).catch(() => null);
+		clearActiveTurnState(entry);
+
+		const effectiveMode: RuntimeTaskSessionMode = entry.summary.mode ?? "act";
+		try {
+			const { warnings } = await this.dispatchResolvedTaskInput({
+				taskId,
+				prompt: "",
+				mode: effectiveMode,
+			});
+			const warningMessage = formatStartWarnings(warnings);
+			const summary = updateSummary(entry, {
+				state: "idle",
+				mode: effectiveMode,
+				reviewReason: null,
+				warningMessage: warningMessage ?? null,
+				lastOutputAt: now(),
+			});
+			this.emitSummary(summary);
+			return cloneSummary(summary);
+		} catch (error) {
+			this.emitTaskFailure(taskId, entry, "start", error);
+			return cloneSummary(entry.summary);
+		}
+	}
+
 	async rebindPersistedTaskSession(taskId: string): Promise<RuntimeTaskSessionSummary | null> {
 		const existingEntry = this.messageRepository.getTaskEntry(taskId);
-		if (existingEntry) {
+		if (existingEntry && existingEntry.summary.state !== "failed") {
 			return cloneSummary(existingEntry.summary);
 		}
 		const snapshot = await this.sessionRuntime.resumeTaskSession(taskId);
 		if (!snapshot) {
-			return null;
+			return existingEntry ? cloneSummary(existingEntry.summary) : null;
 		}
 		const startedAt = Date.parse(snapshot.record.startedAt);
 		const updatedAt = Date.parse(snapshot.record.updatedAt || snapshot.record.startedAt);
 		const persistedCwd = typeof snapshot.record.cwd === "string" ? snapshot.record.cwd.trim() : "";
 		const persistedWorkspaceRoot =
 			typeof snapshot.record.workspaceRoot === "string" ? snapshot.record.workspaceRoot.trim() : "";
+		const reboundState = existingEntry?.summary.state === "failed" ? "failed" : "awaiting_review";
+		const reboundReviewReason = existingEntry?.summary.state === "failed" ? "error" : "attention";
 		const entry = createTaskEntryFromPersistedSession(taskId, snapshot.messages, {
 			agentId: "cline",
-			state: "awaiting_review",
-			reviewReason: "attention",
+			state: reboundState,
+			mode: existingEntry?.summary.mode ?? null,
+			reviewReason: reboundReviewReason,
 			workspacePath: persistedCwd || persistedWorkspaceRoot || null,
 			startedAt: Number.isFinite(startedAt) ? startedAt : null,
 			lastOutputAt: Number.isFinite(updatedAt) ? updatedAt : null,
+			warningMessage: existingEntry?.summary.warningMessage ?? null,
+			latestHookActivity: existingEntry?.summary.latestHookActivity ?? null,
+			latestTurnCheckpoint: existingEntry?.summary.latestTurnCheckpoint ?? null,
+			previousTurnCheckpoint: existingEntry?.summary.previousTurnCheckpoint ?? null,
 		});
 		this.messageRepository.setTaskEntry(taskId, entry);
 		return cloneSummary(entry.summary);
