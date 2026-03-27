@@ -34,13 +34,9 @@ const tokensOnlySettings: RuntimeClineProviderSettings = {
 
 async function importFeaturebaseModule() {
 	const fetchFeaturebaseTokenMock = vi.fn();
-	const notifyErrorMock = vi.fn();
 	vi.resetModules();
 	vi.doMock("@/runtime/runtime-config-query", () => ({
 		fetchFeaturebaseToken: fetchFeaturebaseTokenMock,
-	}));
-	vi.doMock("@/components/app-toaster", () => ({
-		notifyError: notifyErrorMock,
 	}));
 	// Re-export the real isClineOauthAuthenticated so the hook resolves it.
 	const nativeAgent = await import("@/runtime/native-agent");
@@ -52,7 +48,6 @@ async function importFeaturebaseModule() {
 	return {
 		module,
 		fetchFeaturebaseTokenMock,
-		notifyErrorMock,
 	};
 }
 
@@ -242,8 +237,8 @@ describe("useFeaturebaseFeedbackWidget", () => {
 		expect(fetchFeaturebaseTokenMock).toHaveBeenCalledWith("workspace-1");
 	});
 
-	it("transitions to error on identify callback error", async () => {
-		const { module, fetchFeaturebaseTokenMock, notifyErrorMock } = await importFeaturebaseModule();
+	it("transitions to error on identify callback error without showing a toast (silent degradation)", async () => {
+		const { module, fetchFeaturebaseTokenMock } = await importFeaturebaseModule();
 		fetchFeaturebaseTokenMock.mockResolvedValue({ featurebaseJwt: "jwt-abc" });
 		const featurebaseMock = vi.fn();
 		mockSdkLoad(featurebaseMock);
@@ -272,7 +267,7 @@ describe("useFeaturebaseFeedbackWidget", () => {
 		});
 
 		expect(hookResult!.authState).toBe("error");
-		expect(notifyErrorMock).toHaveBeenCalledWith("Unable to authenticate with Featurebase.");
+		// Silent degradation: no toast shown for background pre-identify failure
 	});
 
 	it("retry re-runs pre-identify after error", async () => {

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { notifyError } from "@/components/app-toaster";
 import { isClineOauthAuthenticated } from "@/runtime/native-agent";
 import { fetchFeaturebaseToken } from "@/runtime/runtime-config-query";
 import type { RuntimeClineProviderSettings } from "@/runtime/types";
@@ -172,7 +171,6 @@ export function useFeaturebaseFeedbackWidget(input: {
 							}
 							if (error) {
 								setAuthState("error");
-								notifyError("Unable to authenticate with Featurebase.");
 								return;
 							}
 							setAuthState("ready");
