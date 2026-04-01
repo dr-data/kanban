@@ -23,8 +23,8 @@ const variantStyles: Record<ButtonVariant, string> = {
 };
 
 const sizeStyles: Record<ButtonSize, string> = {
-	sm: "h-7 px-2 text-xs gap-1.5",
-	md: "h-8 px-3 text-[13px] gap-2",
+	sm: "h-7 px-2 text-xs gap-1.5 max-[767.98px]:h-11 max-[767.98px]:px-3 max-[767.98px]:min-w-[44px]",
+	md: "h-8 px-3 text-[13px] gap-2 max-[767.98px]:h-11 max-[767.98px]:px-4 max-[767.98px]:min-w-[44px]",
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(

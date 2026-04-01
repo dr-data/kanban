@@ -1,7 +1,7 @@
 import { Draggable } from "@hello-pangea/dnd";
 import { formatClineToolCallLabel } from "@runtime-cline-tool-call-display";
 import { buildTaskWorktreeDisplayPath } from "@runtime-task-worktree-path";
-import { AlertCircle, GitBranch, Play, RotateCcw, Trash2 } from "lucide-react";
+import { AlertCircle, GitBranch, Link2, Play, RotateCcw, Trash2 } from "lucide-react";
 import type { MouseEvent } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip } from "@/components/ui/tooltip";
+import { useLongPress } from "@/hooks/use-long-press";
 import type { RuntimeTaskSessionSummary } from "@/runtime/types";
 import { useTaskWorkspaceSnapshotValue } from "@/stores/workspace-metadata-store";
 import type { BoardCard as BoardCardModel, BoardColumnId } from "@/types";
@@ -209,6 +210,10 @@ export function BoardCard({
 	isDependencyTarget = false,
 	isDependencyLinking = false,
 	workspacePath,
+	onTouchLinkStart,
+	onTouchLinkTarget,
+	isTouchLinkingMode = false,
+	isMobile = false,
 }: {
 	card: BoardCardModel;
 	index: number;
@@ -231,6 +236,11 @@ export function BoardCard({
 	isDependencyTarget?: boolean;
 	isDependencyLinking?: boolean;
 	workspacePath?: string | null;
+	onTouchLinkStart?: (taskId: string) => void;
+	onTouchLinkTarget?: (taskId: string) => void;
+	isTouchLinkingMode?: boolean;
+	/** Whether the viewport is below the mobile breakpoint. */
+	isMobile?: boolean;
 }): React.ReactElement {
 	const [isHovered, setIsHovered] = useState(false);
 	const [titleContainerRef, titleRect] = useMeasure<HTMLDivElement>();
@@ -247,6 +257,9 @@ export function BoardCard({
 	const [sessionPreviewFont, setSessionPreviewFont] = useState(DEFAULT_TEXT_MEASURE_FONT);
 	const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
 	const [isSessionPreviewExpanded, setIsSessionPreviewExpanded] = useState(false);
+	const longPressHandlers = useLongPress({
+		onLongPress: () => onTouchLinkStart?.(card.id),
+	});
 	const reviewWorkspaceSnapshot = useTaskWorkspaceSnapshotValue(card.id);
 	const isTrashCard = columnId === "trash";
 	const isCardInteractive = !isTrashCard;
@@ -459,6 +472,10 @@ export function BoardCard({
 							if (isDependencyLinking) {
 								event.preventDefault();
 								event.stopPropagation();
+								/* In touch linking mode, tapping a card selects it as the link target */
+								if (isTouchLinkingMode) {
+									onTouchLinkTarget?.(card.id);
+								}
 								return;
 							}
 							if (event.metaKey || event.ctrlKey) {
@@ -468,10 +485,12 @@ export function BoardCard({
 								onClick();
 							}
 						}}
+						{...longPressHandlers}
 						style={{
 							...provided.draggableProps.style,
 							marginBottom: 6,
 							cursor: "grab",
+							touchAction: "pan-y",
 						}}
 						onMouseEnter={() => {
 							setIsHovered(true);
@@ -487,12 +506,13 @@ export function BoardCard({
 					>
 						<div
 							className={cn(
-								"rounded-md border border-border-bright bg-surface-2 p-2.5",
+								"rounded-md border border-border-bright bg-surface-2 p-2.5 max-[767.98px]:p-3.5",
 								isCardInteractive && "cursor-pointer hover:bg-surface-3 hover:border-border-bright",
 								isDragging && "shadow-lg",
 								isHovered && isCardInteractive && "bg-surface-3 border-border-bright",
 								isDependencySource && "kb-board-card-dependency-source",
 								isDependencyTarget && "kb-board-card-dependency-target",
+								isDependencySource && isTouchLinkingMode && "kb-board-card-dependency-source-touch",
 							)}
 						>
 							<div className="flex items-center gap-2" style={{ minHeight: 24 }}>
@@ -508,6 +528,21 @@ export function BoardCard({
 										{displayPromptSplit.title}
 									</p>
 								</div>
+								{isMobile && onTouchLinkStart && columnId !== "trash" ? (
+									<Button
+										icon={<Link2 size={14} />}
+										variant="ghost"
+										size="sm"
+										aria-label="Link task"
+										onMouseDown={stopEvent}
+										onClick={(event) => {
+											stopEvent(event);
+											onTouchLinkStart(card.id);
+										}}
+									>
+										{isMobile ? <span className="text-xs">Link</span> : null}
+									</Button>
+								) : null}
 								{columnId === "backlog" ? (
 									<Button
 										icon={<Play size={14} />}
@@ -519,7 +554,9 @@ export function BoardCard({
 											stopEvent(event);
 											onStart?.(card.id);
 										}}
-									/>
+									>
+										{isMobile ? <span className="text-xs">Start</span> : null}
+									</Button>
 								) : columnId === "review" ? (
 									<Button
 										icon={isMoveToTrashLoading ? <Spinner size={13} /> : <Trash2 size={13} />}
@@ -532,7 +569,9 @@ export function BoardCard({
 											stopEvent(event);
 											onMoveToTrash?.(card.id);
 										}}
-									/>
+									>
+										{isMobile ? <span className="text-xs">Trash</span> : null}
+									</Button>
 								) : columnId === "trash" ? (
 									<Tooltip
 										side="bottom"

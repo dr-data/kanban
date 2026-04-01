@@ -1,15 +1,24 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
 export interface DependencyLinkDraft {
 	sourceTaskId: string;
 	targetTaskId: string | null;
 	pointerClientX: number;
 	pointerClientY: number;
+	/** Whether the linking was initiated via desktop (Cmd/Ctrl+click) or touch (long-press). */
+	mode: "desktop" | "touch";
 }
 
 const CARD_GAP_CAPTURE_PX = 16;
+const TOUCH_LINK_TOAST_ID = "touch-link-mode";
+const TOUCH_LINK_AUTO_CANCEL_MS = 15_000;
 
+/**
+ * Finds the nearest card within a column by vertical proximity, allowing
+ * clicks in the gap between cards to still resolve to a valid target.
+ */
 function getNearestCardTaskIdInColumn(columnElement: HTMLElement, clientY: number): string | null {
 	const cards = Array.from(columnElement.querySelectorAll<HTMLElement>("[data-task-id]"));
 	if (cards.length === 0) {
@@ -51,6 +60,10 @@ function getNearestCardTaskIdInColumn(columnElement: HTMLElement, clientY: numbe
 	return null;
 }
 
+/**
+ * Resolves the task ID at a specific screen coordinate by checking elements
+ * at that point, falling back to nearest-card-in-column heuristic.
+ */
 function getTaskIdFromPoint(clientX: number, clientY: number): string | null {
 	if (typeof document === "undefined") {
 		return null;
@@ -76,6 +89,12 @@ function getTaskIdFromPoint(clientX: number, clientY: number): string | null {
 	return null;
 }
 
+/**
+ * Manages the dependency linking interaction for both desktop (Cmd/Ctrl+click)
+ * and touch (long-press → tap target) modes. On desktop, users hold a modifier
+ * key and click source then target. On touch, users long-press a card to enter
+ * linking mode, then tap another card to complete the link.
+ */
 export function useDependencyLinking({
 	canLinkTasks,
 	onCreateDependency,
@@ -86,10 +105,14 @@ export function useDependencyLinking({
 	draft: DependencyLinkDraft | null;
 	onDependencyPointerDown: (taskId: string, event: ReactMouseEvent<HTMLElement>) => void;
 	onDependencyPointerEnter: (taskId: string) => void;
+	onTouchLinkStart: (taskId: string) => void;
+	onTouchLinkTarget: (taskId: string) => void;
+	cancelTouchLink: () => void;
 } {
 	const [draft, setDraft] = useState<DependencyLinkDraft | null>(null);
 	const draftRef = useRef<DependencyLinkDraft | null>(null);
 	const modifierPressedRef = useRef(false);
+	const touchCancelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	const getValidTargetTaskId = useCallback(
 		(sourceTaskId: string, targetTaskId: string | null): string | null => {
@@ -118,6 +141,16 @@ export function useDependencyLinking({
 		},
 		[getValidTargetTaskId, onCreateDependency],
 	);
+
+	/** Clears any active touch linking state and removes visual indicators. */
+	const clearTouchLinkState = useCallback(() => {
+		if (touchCancelTimerRef.current !== null) {
+			clearTimeout(touchCancelTimerRef.current);
+			touchCancelTimerRef.current = null;
+		}
+		document.body.classList.remove("kb-dependency-link-mode-touch");
+		toast.dismiss(TOUCH_LINK_TOAST_ID);
+	}, []);
 
 	useEffect(() => {
 		draftRef.current = draft;
@@ -152,6 +185,38 @@ export function useDependencyLinking({
 			return;
 		}
 
+		const currentDraft = draftRef.current;
+
+		/* Touch mode: cancel linking when tapping outside the board area.
+		   Uses pointerdown (not touchstart) for cross-platform support — works
+		   on both real touch devices and desktop narrow windows. Ignores taps
+		   inside the board, column tabs, and buttons to allow swiping between
+		   columns and tapping the Link button without cancelling. */
+		if (currentDraft?.mode === "touch") {
+			const handleOutsideCancel = (event: Event) => {
+				const target = event.target;
+				if (!(target instanceof Element)) return;
+				if (
+					target.closest("[data-task-id]") ||
+					target.closest(".kb-board") ||
+					target.closest(".kb-mobile-column-tabs") ||
+					target.closest("button")
+				) {
+					return;
+				}
+				clearTouchLinkState();
+				draftRef.current = null;
+				setDraft(null);
+			};
+
+			document.addEventListener("pointerdown", handleOutsideCancel, { capture: true });
+			return () => {
+				document.removeEventListener("pointerdown", handleOutsideCancel, { capture: true });
+				clearTouchLinkState();
+			};
+		}
+
+		/* Desktop mode: track mouse movement and modifier keys */
 		document.body.classList.add("kb-dependency-link-mode");
 
 		const handleMouseMove = (event: MouseEvent) => {
@@ -229,8 +294,9 @@ export function useDependencyLinking({
 			window.removeEventListener("mouseup", handleMouseUp);
 			window.removeEventListener("keyup", handleModifierRelease);
 		};
-	}, [completeDependencyLink, getValidTargetTaskId, isLinking]);
+	}, [clearTouchLinkState, completeDependencyLink, getValidTargetTaskId, isLinking]);
 
+	/** Desktop: initiates linking via Cmd/Ctrl + mouse down on a card. */
 	const handleDependencyPointerDown = useCallback((taskId: string, event: ReactMouseEvent<HTMLElement>) => {
 		modifierPressedRef.current = event.metaKey || event.ctrlKey;
 		setDraft((current) => {
@@ -238,11 +304,12 @@ export function useDependencyLinking({
 				draftRef.current = null;
 				return null;
 			}
-			const nextDraft = {
+			const nextDraft: DependencyLinkDraft = {
 				sourceTaskId: taskId,
 				targetTaskId: null,
 				pointerClientX: event.clientX,
 				pointerClientY: event.clientY,
+				mode: "desktop",
 			};
 			draftRef.current = nextDraft;
 			return nextDraft;
@@ -266,9 +333,70 @@ export function useDependencyLinking({
 		[getValidTargetTaskId],
 	);
 
+	/**
+	 * Touch: initiates linking mode via long-press on a card. Shows a toast
+	 * with instructions and sets a 15-second auto-cancel timeout.
+	 */
+	const handleTouchLinkStart = useCallback((taskId: string) => {
+		document.body.classList.add("kb-dependency-link-mode-touch");
+		toast("Tap another card to link, or tap elsewhere to cancel", {
+			id: TOUCH_LINK_TOAST_ID,
+			duration: TOUCH_LINK_AUTO_CANCEL_MS,
+		});
+
+		const nextDraft: DependencyLinkDraft = {
+			sourceTaskId: taskId,
+			targetTaskId: null,
+			pointerClientX: 0,
+			pointerClientY: 0,
+			mode: "touch",
+		};
+		draftRef.current = nextDraft;
+		setDraft(nextDraft);
+
+		/* Auto-cancel after timeout */
+		touchCancelTimerRef.current = setTimeout(() => {
+			touchCancelTimerRef.current = null;
+			document.body.classList.remove("kb-dependency-link-mode-touch");
+			draftRef.current = null;
+			setDraft(null);
+		}, TOUCH_LINK_AUTO_CANCEL_MS);
+	}, []);
+
+	/**
+	 * Touch: completes the link by validating and creating the dependency
+	 * between the source (from long-press) and the tapped target card.
+	 */
+	const handleTouchLinkTarget = useCallback(
+		(taskId: string) => {
+			const current = draftRef.current;
+			if (!current || current.mode !== "touch") return;
+
+			const validTarget = getValidTargetTaskId(current.sourceTaskId, taskId);
+			if (validTarget) {
+				completeDependencyLink(validTarget);
+			} else {
+				draftRef.current = null;
+				setDraft(null);
+			}
+			clearTouchLinkState();
+		},
+		[clearTouchLinkState, completeDependencyLink, getValidTargetTaskId],
+	);
+
+	/** Touch: cancels the active touch linking mode without creating a link. */
+	const handleCancelTouchLink = useCallback(() => {
+		clearTouchLinkState();
+		draftRef.current = null;
+		setDraft(null);
+	}, [clearTouchLinkState]);
+
 	return {
 		draft,
 		onDependencyPointerDown: handleDependencyPointerDown,
 		onDependencyPointerEnter: handleDependencyPointerEnter,
+		onTouchLinkStart: handleTouchLinkStart,
+		onTouchLinkTarget: handleTouchLinkTarget,
+		cancelTouchLink: handleCancelTouchLink,
 	};
 }

@@ -37,6 +37,10 @@ export function BoardColumn({
 	dependencyTargetTaskId,
 	isDependencyLinking,
 	workspacePath,
+	onTouchLinkStart,
+	onTouchLinkTarget,
+	isTouchLinkingMode,
+	isMobile,
 }: {
 	column: BoardColumnModel;
 	taskSessions: Record<string, RuntimeTaskSessionSummary>;
@@ -65,6 +69,11 @@ export function BoardColumn({
 	dependencyTargetTaskId?: string | null;
 	isDependencyLinking?: boolean;
 	workspacePath?: string | null;
+	onTouchLinkStart?: (taskId: string) => void;
+	onTouchLinkTarget?: (taskId: string) => void;
+	isTouchLinkingMode?: boolean;
+	/** Whether the viewport is below the mobile breakpoint. */
+	isMobile?: boolean;
 }): React.ReactElement {
 	const canCreate = column.id === "backlog" && onCreateTask;
 	const canStartAllTasks = column.id === "backlog" && onStartAllTasks;
@@ -77,7 +86,7 @@ export function BoardColumn({
 	const createTaskButtonText = (
 		<span className="inline-flex items-center gap-1.5">
 			<span>Create task</span>
-			<span aria-hidden className="text-text-secondary">
+			<span aria-hidden className="text-text-secondary kb-shortcut-hint">
 				(c)
 			</span>
 		</span>
@@ -86,10 +95,7 @@ export function BoardColumn({
 	return (
 		<section
 			data-column-id={column.id}
-			className="flex flex-col min-w-0 min-h-0 bg-surface-1 rounded-lg overflow-hidden"
-			style={{
-				flex: "1 1 0",
-			}}
+			className="flex flex-col min-w-0 min-h-0 bg-surface-1 rounded-lg overflow-hidden md:flex-1 max-[767.98px]:min-w-full max-[767.98px]:flex-none max-[767.98px]:snap-start"
 		>
 			<div className="flex flex-col min-h-0" style={{ flex: "1 1 0" }}>
 				<div
@@ -143,6 +149,11 @@ export function BoardColumn({
 									{createTaskButtonText}
 								</Button>
 							) : null}
+							{isMobile && canCreate && column.cards.length === 0 ? (
+								<p className="text-text-tertiary text-xs text-center mt-4 px-4">
+									Tap + to create tasks. Use the link button to connect them.
+								</p>
+							) : null}
 
 							{(() => {
 								const items: ReactNode[] = [];
@@ -183,6 +194,10 @@ export function BoardColumn({
 											isDependencyTarget={dependencyTargetTaskId === card.id}
 											isDependencyLinking={isDependencyLinking}
 											workspacePath={workspacePath}
+											onTouchLinkStart={onTouchLinkStart}
+											onTouchLinkTarget={onTouchLinkTarget}
+											isTouchLinkingMode={isTouchLinkingMode}
+											isMobile={isMobile}
 											onClick={() => {
 												if (column.id === "backlog") {
 													onEditTask?.(card);
