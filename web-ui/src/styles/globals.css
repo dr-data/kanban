@@ -785,14 +785,7 @@ body.kb-dependency-link-mode {
 		padding-bottom: 40px;
 	}
 
-	/* Each column fills the full viewport width on mobile */
-	.kb-board > [data-column-id] {
-		min-width: 100% !important;
-		width: 100% !important;
-		flex: none !important;
-		scroll-snap-align: start;
-		border-radius: 0;
-	}
+	/* Old scroll-snap rules removed — mobile now uses MobileSplitBoard */
 
 	body {
 		overscroll-behavior-y: contain;

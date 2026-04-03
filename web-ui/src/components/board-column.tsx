@@ -41,6 +41,7 @@ export function BoardColumn({
 	onTouchLinkTarget,
 	isTouchLinkingMode,
 	isMobile,
+	dependencies,
 }: {
 	column: BoardColumnModel;
 	taskSessions: Record<string, RuntimeTaskSessionSummary>;
@@ -74,6 +75,8 @@ export function BoardColumn({
 	isTouchLinkingMode?: boolean;
 	/** Whether the viewport is below the mobile breakpoint. */
 	isMobile?: boolean;
+	/** Dependencies for showing link badges on cards (mobile only). */
+	dependencies?: import("@/types").BoardDependency[];
 }): React.ReactElement {
 	const canCreate = column.id === "backlog" && onCreateTask;
 	const canStartAllTasks = column.id === "backlog" && onStartAllTasks;
@@ -95,7 +98,7 @@ export function BoardColumn({
 	return (
 		<section
 			data-column-id={column.id}
-			className="flex flex-col min-w-0 min-h-0 bg-surface-1 rounded-lg overflow-hidden md:flex-1 max-[767.98px]:min-w-full max-[767.98px]:flex-none max-[767.98px]:snap-start"
+			className="flex flex-col min-w-0 min-h-0 bg-surface-1 rounded-lg overflow-hidden flex-1"
 		>
 			<div className="flex flex-col min-h-0" style={{ flex: "1 1 0" }}>
 				<div
@@ -198,6 +201,12 @@ export function BoardColumn({
 											onTouchLinkTarget={onTouchLinkTarget}
 											isTouchLinkingMode={isTouchLinkingMode}
 											isMobile={isMobile}
+											dependencyCount={
+												dependencies
+													? dependencies.filter((d) => d.fromTaskId === card.id || d.toTaskId === card.id)
+															.length
+													: 0
+											}
 											onClick={() => {
 												if (column.id === "backlog") {
 													onEditTask?.(card);

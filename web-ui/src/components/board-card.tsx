@@ -214,6 +214,7 @@ export function BoardCard({
 	onTouchLinkTarget,
 	isTouchLinkingMode = false,
 	isMobile = false,
+	dependencyCount = 0,
 }: {
 	card: BoardCardModel;
 	index: number;
@@ -241,6 +242,8 @@ export function BoardCard({
 	isTouchLinkingMode?: boolean;
 	/** Whether the viewport is below the mobile breakpoint. */
 	isMobile?: boolean;
+	/** Number of dependencies this card has (for badge display on mobile). */
+	dependencyCount?: number;
 }): React.ReactElement {
 	const [isHovered, setIsHovered] = useState(false);
 	const [titleContainerRef, titleRect] = useMeasure<HTMLDivElement>();
@@ -528,6 +531,15 @@ export function BoardCard({
 										{displayPromptSplit.title}
 									</p>
 								</div>
+								{isMobile && dependencyCount > 0 ? (
+									<span
+										className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-sm bg-accent/15 text-accent text-[10px] font-medium shrink-0"
+										title={`${dependencyCount} ${dependencyCount === 1 ? "link" : "links"}`}
+									>
+										<Link2 size={10} />
+										{dependencyCount}
+									</span>
+								) : null}
 								{isMobile && onTouchLinkStart && columnId !== "trash" ? (
 									<Button
 										icon={<Link2 size={14} />}
