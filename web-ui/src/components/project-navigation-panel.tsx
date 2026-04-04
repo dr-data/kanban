@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Kbd } from "@/components/ui/kbd";
 import { Spinner } from "@/components/ui/spinner";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import type { RuntimeProjectSummary } from "@/runtime/types";
 import { LocalStorageKey, readLocalStorageItem, writeLocalStorageItem } from "@/storage/local-storage-store";
 import { formatPathForDisplay } from "@/utils/path-display";
@@ -92,8 +93,9 @@ export function ProjectNavigationPanel({
 	onSelectProject: (projectId: string) => void;
 	onRemoveProject: (projectId: string) => Promise<boolean>;
 	onAddProject: () => void;
-}): React.ReactElement {
+}): React.ReactElement | null {
 	const sortedProjects = [...projects].sort((a, b) => a.path.localeCompare(b.path));
+	const isMobile = useIsMobile();
 
 	const [pendingProjectRemoval, setPendingProjectRemoval] = useState<RuntimeProjectSummary | null>(null);
 	const isProjectRemovalPending = pendingProjectRemoval !== null && removingProjectId === pendingProjectRemoval.id;
@@ -188,6 +190,10 @@ export function ProjectNavigationPanel({
 	);
 
 	if (isCollapsed) {
+		/* On mobile, a collapsed sidebar takes zero space; the TopBar hamburger reopens it. */
+		if (isMobile) {
+			return null;
+		}
 		return (
 			<aside
 				className="flex flex-col items-center min-h-0 overflow-hidden bg-surface-1 relative shrink-0 py-2 gap-1.5"
@@ -237,23 +243,12 @@ export function ProjectNavigationPanel({
 		);
 	}
 
-	return (
-		<aside
-			className="flex flex-col min-h-0 overflow-hidden bg-surface-1 relative shrink-0"
-			style={{
-				width: sidebarWidth,
-				minWidth: SIDEBAR_MIN_EXPANDED_WIDTH,
-				maxWidth: SIDEBAR_MAX_EXPANDED_WIDTH,
-				borderRight: "1px solid var(--color-divider)",
-			}}
-		>
-			<div
-				role="separator"
-				aria-orientation="vertical"
-				aria-label="Resize sidebar"
-				onMouseDown={startDrag}
-				className="absolute top-0 right-0 bottom-0 w-1.5 cursor-ew-resize z-10 hover:bg-accent/20"
-			/>
+	/**
+	 * Shared inner content for the expanded sidebar, rendered in either the
+	 * desktop flex-child `<aside>` or the mobile fixed-overlay `<aside>`.
+	 */
+	const expandedSidebarContent = (
+		<>
 			<div style={{ padding: "12px 12px 8px" }}>
 				<div>
 					<div className="font-semibold text-base flex items-baseline gap-1.5">
@@ -419,6 +414,48 @@ export function ProjectNavigationPanel({
 					</AlertDialogAction>
 				</AlertDialogFooter>
 			</AlertDialog>
+		</>
+	);
+
+	/* On mobile, render the expanded sidebar as a fixed overlay with a backdrop. */
+	if (isMobile) {
+		return (
+			<>
+				<div
+					className="fixed inset-0 z-40 bg-black/50"
+					onClick={() => setSidebarCollapsed(true)}
+					aria-hidden="true"
+				/>
+				<aside
+					className="fixed inset-y-0 left-0 z-50 flex flex-col min-h-0 overflow-hidden bg-surface-1"
+					style={{
+						width: "min(85vw, 320px)",
+					}}
+				>
+					{expandedSidebarContent}
+				</aside>
+			</>
+		);
+	}
+
+	return (
+		<aside
+			className="flex flex-col min-h-0 overflow-hidden bg-surface-1 relative shrink-0"
+			style={{
+				width: sidebarWidth,
+				minWidth: SIDEBAR_MIN_EXPANDED_WIDTH,
+				maxWidth: SIDEBAR_MAX_EXPANDED_WIDTH,
+				borderRight: "1px solid var(--color-divider)",
+			}}
+		>
+			<div
+				role="separator"
+				aria-orientation="vertical"
+				aria-label="Resize sidebar"
+				onMouseDown={startDrag}
+				className="absolute top-0 right-0 bottom-0 w-1.5 cursor-ew-resize z-10 hover:bg-accent/20"
+			/>
+			{expandedSidebarContent}
 		</aside>
 	);
 }

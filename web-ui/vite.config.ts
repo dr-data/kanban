@@ -93,6 +93,7 @@ export default defineConfig({
 		host: "127.0.0.1",
 		port: 4173,
 		strictPort: true,
+		allowedHosts: ["bore.pub"],
 		proxy: {
 			"/api": {
 				target: "http://127.0.0.1:3484",

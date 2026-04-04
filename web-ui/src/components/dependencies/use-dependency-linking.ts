@@ -8,8 +8,20 @@ export interface DependencyLinkDraft {
 	pointerClientY: number;
 }
 
+export interface MobileLinkMode {
+	/** Whether mobile link mode is currently active (tap-based dependency linking). */
+	isActive: boolean;
+	/** Activate mobile link mode so card taps create dependency links. */
+	enter: () => void;
+	/** Deactivate mobile link mode and cancel any in-progress draft. */
+	exit: () => void;
+	/** Toggle mobile link mode on or off. */
+	toggle: () => void;
+}
+
 const CARD_GAP_CAPTURE_PX = 16;
 
+/** Find the nearest card within a column that is close to the given vertical position. */
 function getNearestCardTaskIdInColumn(columnElement: HTMLElement, clientY: number): string | null {
 	const cards = Array.from(columnElement.querySelectorAll<HTMLElement>("[data-task-id]"));
 	if (cards.length === 0) {
@@ -51,6 +63,7 @@ function getNearestCardTaskIdInColumn(columnElement: HTMLElement, clientY: numbe
 	return null;
 }
 
+/** Resolve the task ID at a given screen coordinate by checking the DOM for card and column elements. */
 function getTaskIdFromPoint(clientX: number, clientY: number): string | null {
 	if (typeof document === "undefined") {
 		return null;
@@ -76,6 +89,11 @@ function getTaskIdFromPoint(clientX: number, clientY: number): string | null {
 	return null;
 }
 
+/**
+ * Hook that manages the dependency linking interaction for both desktop (modifier-key + drag)
+ * and mobile (tap-based link mode). Desktop flow: hold Cmd/Ctrl, click source card, drag to
+ * target, release. Mobile flow: activate link mode, tap source card, tap target card.
+ */
 export function useDependencyLinking({
 	canLinkTasks,
 	onCreateDependency,
@@ -86,10 +104,19 @@ export function useDependencyLinking({
 	draft: DependencyLinkDraft | null;
 	onDependencyPointerDown: (taskId: string, event: ReactMouseEvent<HTMLElement>) => void;
 	onDependencyPointerEnter: (taskId: string) => void;
+	mobileLinkMode: MobileLinkMode;
+	/**
+	 * Handle a tap on a card while mobile link mode is active.
+	 * First tap sets the source card; second tap on a different card completes the link.
+	 * Returns true if the tap was consumed by the linking flow.
+	 */
+	onMobileLinkTap: (taskId: string) => boolean;
 } {
 	const [draft, setDraft] = useState<DependencyLinkDraft | null>(null);
 	const draftRef = useRef<DependencyLinkDraft | null>(null);
 	const modifierPressedRef = useRef(false);
+	const [mobileLinkModeActive, setMobileLinkModeActive] = useState(false);
+	const mobileLinkModeActiveRef = useRef(false);
 
 	const getValidTargetTaskId = useCallback(
 		(sourceTaskId: string, targetTaskId: string | null): string | null => {
@@ -266,9 +293,87 @@ export function useDependencyLinking({
 		[getValidTargetTaskId],
 	);
 
+	/* --- Mobile link mode --- */
+
+	useEffect(() => {
+		mobileLinkModeActiveRef.current = mobileLinkModeActive;
+	}, [mobileLinkModeActive]);
+
+	/** Activate mobile link mode so taps on cards create dependency links. */
+	const enterMobileLinkMode = useCallback(() => {
+		setMobileLinkModeActive(true);
+		mobileLinkModeActiveRef.current = true;
+	}, []);
+
+	/** Deactivate mobile link mode and cancel any in-progress draft. */
+	const exitMobileLinkMode = useCallback(() => {
+		setMobileLinkModeActive(false);
+		mobileLinkModeActiveRef.current = false;
+		draftRef.current = null;
+		setDraft(null);
+	}, []);
+
+	/** Toggle mobile link mode on or off. */
+	const toggleMobileLinkMode = useCallback(() => {
+		if (mobileLinkModeActiveRef.current) {
+			exitMobileLinkMode();
+		} else {
+			enterMobileLinkMode();
+		}
+	}, [enterMobileLinkMode, exitMobileLinkMode]);
+
+	/**
+	 * Handle a tap on a card in mobile link mode.
+	 * If no source is set, this tap sets the source. If a source is already set
+	 * and the tapped card is a valid target, the dependency is created.
+	 * Returns true if the tap was consumed by the linking flow.
+	 */
+	const handleMobileLinkTap = useCallback(
+		(taskId: string): boolean => {
+			if (!mobileLinkModeActiveRef.current) {
+				return false;
+			}
+			const current = draftRef.current;
+			if (!current) {
+				const nextDraft: DependencyLinkDraft = {
+					sourceTaskId: taskId,
+					targetTaskId: null,
+					pointerClientX: 0,
+					pointerClientY: 0,
+				};
+				draftRef.current = nextDraft;
+				setDraft(nextDraft);
+				return true;
+			}
+			if (current.sourceTaskId === taskId) {
+				draftRef.current = null;
+				setDraft(null);
+				return true;
+			}
+			const validTarget = getValidTargetTaskId(current.sourceTaskId, taskId);
+			if (validTarget) {
+				onCreateDependency?.(current.sourceTaskId, validTarget);
+				draftRef.current = null;
+				setDraft(null);
+				return true;
+			}
+			return true;
+		},
+		[getValidTargetTaskId, onCreateDependency],
+	);
+
+	const mobileLinkMode: MobileLinkMode = {
+		isActive: mobileLinkModeActive,
+		enter: enterMobileLinkMode,
+		exit: exitMobileLinkMode,
+		toggle: toggleMobileLinkMode,
+	};
+
 	return {
 		draft,
 		onDependencyPointerDown: handleDependencyPointerDown,
 		onDependencyPointerEnter: handleDependencyPointerEnter,
+		mobileLinkMode,
+		onMobileLinkTap: handleMobileLinkTap,
 	};
 }
