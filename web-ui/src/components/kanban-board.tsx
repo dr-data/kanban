@@ -367,6 +367,8 @@ export function KanbanBoard({
 		programmaticCardMoveInFlight?.toColumnId ??
 		(activeDragTaskId !== null && activeDragSourceColumnId === "backlog" ? "in_progress" : null);
 
+	/* On mobile, render the split-panel layout instead. Dependency visualization
+	   uses badge counts and the TaskLinkPickerDialog rather than the SVG overlay. */
 	if (isMobile) {
 		return (
 			<MobileSplitBoard

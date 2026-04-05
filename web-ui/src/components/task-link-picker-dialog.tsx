@@ -1,6 +1,5 @@
 import { Link2, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
-import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import type { BoardCard, BoardColumnId, BoardData, BoardDependency } from "@/types";
@@ -169,7 +168,6 @@ export function TaskLinkPickerDialog({
 									type="button"
 									onClick={() => {
 										onLink(sourceTaskId, card.id);
-										toast.success(`Linked to "${truncatePrompt(card.prompt, 30)}"`, { duration: 2000 });
 									}}
 									className="w-full text-left px-3 py-3 mb-1 rounded-md bg-surface-2 border border-border text-sm text-text-primary hover:bg-surface-3 active:bg-surface-4 cursor-pointer transition-colors"
 								>

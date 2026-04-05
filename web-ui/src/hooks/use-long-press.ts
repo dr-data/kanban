@@ -1,5 +1,5 @@
 import type { TouchEvent as ReactTouchEvent } from "react";
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 interface UseLongPressOptions {
 	/** Callback fired when a long-press is detected. */
@@ -40,6 +40,11 @@ export function useLongPress({ onLongPress, delay = 500, moveThreshold = 5 }: Us
 
 	const handleTouchStart = useCallback(
 		(e: ReactTouchEvent) => {
+			/* Cancel any pending timer from a previous touch before scheduling a new one. */
+			if (timerRef.current !== null) {
+				clearTimeout(timerRef.current);
+				timerRef.current = null;
+			}
 			firedRef.current = false;
 			const touch = e.touches[0];
 			if (!touch) return;
@@ -82,6 +87,14 @@ export function useLongPress({ onLongPress, delay = 500, moveThreshold = 5 }: Us
 
 	const handleTouchCancel = useCallback(() => {
 		clear();
+	}, [clear]);
+
+	/* Cancel any in-flight timer when the host component unmounts to prevent
+	   calling onLongPress against unmounted state. */
+	useEffect(() => {
+		return () => {
+			clear();
+		};
 	}, [clear]);
 
 	return {

@@ -413,7 +413,7 @@ export function TopBar({
 							size="sm"
 							icon={<Menu size={16} />}
 							onClick={onToggleSidebar}
-							aria-label="Open sidebar"
+							aria-label="Toggle sidebar"
 							className="shrink-0"
 						/>
 					) : null}

@@ -215,6 +215,7 @@ export function BoardCard({
 	isTouchLinkingMode = false,
 	isMobile = false,
 	dependencyCount = 0,
+	isDragDisabled = false,
 }: {
 	card: BoardCardModel;
 	index: number;
@@ -244,6 +245,8 @@ export function BoardCard({
 	isMobile?: boolean;
 	/** Number of dependencies this card has (for badge display on mobile). */
 	dependencyCount?: number;
+	/** When true, prevents drag-and-drop for this card (used in mobile layout). */
+	isDragDisabled?: boolean;
 }): React.ReactElement {
 	const [isHovered, setIsHovered] = useState(false);
 	const [titleContainerRef, titleRect] = useMeasure<HTMLDivElement>();
@@ -439,7 +442,7 @@ export function BoardCard({
 		!isTrashCard && card.autoReviewEnabled ? getTaskAutoReviewCancelButtonLabel(card.autoReviewMode) : null;
 
 	return (
-		<Draggable draggableId={card.id} index={index} isDragDisabled={false}>
+		<Draggable draggableId={card.id} index={index} isDragDisabled={isDragDisabled}>
 			{(provided, snapshot) => {
 				const isDragging = snapshot.isDragging;
 				const draggableContent = (
@@ -493,7 +496,7 @@ export function BoardCard({
 							...provided.draggableProps.style,
 							marginBottom: 6,
 							cursor: "grab",
-							touchAction: "pan-y",
+							touchAction: "pan-y pinch-zoom",
 						}}
 						onMouseEnter={() => {
 							setIsHovered(true);

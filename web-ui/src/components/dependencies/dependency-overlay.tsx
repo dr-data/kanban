@@ -888,7 +888,15 @@ export function DependencyOverlay({
 		if (!touchSelectedDependencyId) return;
 		const handleOutsideTap = (event: Event) => {
 			const target = event.target;
-			if (target instanceof Element && target.closest(".kb-dependency-delete-control-touch")) return;
+			if (!(target instanceof Element)) return;
+			/* Taps on the delete control or the dependency path itself should
+			   not clear selection — the click handler toggles it off. */
+			if (
+				target.closest(".kb-dependency-delete-control-touch") ||
+				target.closest(".kb-dependency-hit-path") ||
+				target.closest(".kb-dependency-path")
+			)
+				return;
 			setTouchSelectedDependencyId(null);
 		};
 		document.addEventListener("pointerdown", handleOutsideTap, { capture: true });

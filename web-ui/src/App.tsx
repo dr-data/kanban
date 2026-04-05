@@ -79,6 +79,14 @@ import type { BoardData } from "@/types";
 export default function App(): ReactElement {
 	const isMobile = useIsMobile();
 	const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+
+	/* Close the mobile drawer whenever the viewport transitions above the mobile
+	   breakpoint so stale drawer state doesn't reappear on next mobile resize. */
+	useEffect(() => {
+		if (!isMobile) {
+			setIsMobileSidebarOpen(false);
+		}
+	}, [isMobile]);
 	const [board, setBoard] = useState<BoardData>(() => createInitialBoardData());
 	const [sessions, setSessions] = useState<Record<string, RuntimeTaskSessionSummary>>({});
 	const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);

@@ -130,6 +130,7 @@ export function MobileSplitBoard({
 							moveToTrashLoadingById={column.id === "review" ? moveToTrashLoadingById : undefined}
 							onTouchLinkStart={setMobileLinkSourceTaskId}
 							isMobile
+							isDragDisabled
 							dependencies={dependencies}
 							workspacePath={workspacePath}
 							onCardClick={(card) => {

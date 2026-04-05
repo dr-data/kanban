@@ -357,11 +357,11 @@ export function useDependencyLinking({
 		/* Auto-cancel after timeout */
 		touchCancelTimerRef.current = setTimeout(() => {
 			touchCancelTimerRef.current = null;
-			document.body.classList.remove("kb-dependency-link-mode-touch");
+			clearTouchLinkState();
 			draftRef.current = null;
 			setDraft(null);
 		}, TOUCH_LINK_AUTO_CANCEL_MS);
-	}, []);
+	}, [clearTouchLinkState]);
 
 	/**
 	 * Touch: completes the link by validating and creating the dependency
