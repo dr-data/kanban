@@ -255,6 +255,11 @@ function MobileMoveToMenu({
 	);
 }
 
+/**
+ * Renders a single Kanban card with session status, action buttons, and dependency linking support.
+ * Wrapped in React.memo to prevent cascading re-renders when stable parent callbacks (e.g. onCardClick)
+ * are passed down from KanbanBoard, preserving smooth drag-and-drop and mobile pane performance.
+ */
 export const BoardCard = memo(function BoardCard({
 	card,
 	index,
