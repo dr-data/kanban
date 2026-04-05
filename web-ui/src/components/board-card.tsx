@@ -1,10 +1,23 @@
 import { Draggable } from "@hello-pangea/dnd";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import * as Popover from "@radix-ui/react-popover";
 import { formatClineToolCallLabel } from "@runtime-cline-tool-call-display";
 import { buildTaskWorktreeDisplayPath } from "@runtime-task-worktree-path";
-import { AlertCircle, Clock, GitBranch, Link2, MoveHorizontal, Play, Repeat, RotateCcw, Trash2 } from "lucide-react";
+import {
+	AlertCircle,
+	Clock,
+	GitBranch,
+	Link2,
+	MoveHorizontal,
+	Play,
+	Repeat,
+	RotateCcw,
+	Settings,
+	Trash2,
+} from "lucide-react";
 import { type MouseEvent, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { TaskRecurringScheduleBar } from "@/components/task-recurring-schedule-bar";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
 import { ColumnIndicator } from "@/components/ui/column-indicator";
@@ -332,6 +345,7 @@ export const BoardCard = memo(function BoardCard({
 	dependencyCount = 0,
 	onEnterMobileLinkMode,
 	onShowMobileDependencies,
+	onUpdateTask,
 }: {
 	card: BoardCardModel;
 	index: number;
@@ -368,6 +382,8 @@ export const BoardCard = memo(function BoardCard({
 	onEnterMobileLinkMode?: () => void;
 	/** Callback to open the mobile dependency sheet for a given task. */
 	onShowMobileDependencies?: (taskId: string) => void;
+	/** Callback to update recurring/schedule fields on a task. */
+	onUpdateTask?: (taskId: string, updates: Record<string, unknown>) => void;
 }): React.ReactElement {
 	const [isHovered, setIsHovered] = useState(false);
 	const [titleContainerRef, titleRect] = useMeasure<HTMLDivElement>();
@@ -722,6 +738,32 @@ export const BoardCard = memo(function BoardCard({
 											}}
 										/>
 									</Tooltip>
+								) : null}
+								{columnId !== "backlog" && onUpdateTask ? (
+									<Popover.Root>
+										<Popover.Trigger asChild>
+											<Button
+												icon={<Settings size={14} />}
+												variant="ghost"
+												size="sm"
+												aria-label="Task settings"
+												onMouseDown={stopEvent}
+												onClick={stopEvent}
+											/>
+										</Popover.Trigger>
+										<Popover.Portal>
+											<Popover.Content
+												side="bottom"
+												align="end"
+												sideOffset={4}
+												className="z-50 w-72 rounded-lg border border-border bg-surface-1 shadow-lg"
+												onMouseDown={stopEvent}
+												onClick={stopEvent}
+											>
+												<TaskRecurringScheduleBar card={card} onUpdate={onUpdateTask} defaultExpanded />
+											</Popover.Content>
+										</Popover.Portal>
+									</Popover.Root>
 								) : null}
 								{isMobile && mobileMoveTargets.length > 0 && onMoveToColumn ? (
 									<MobileMoveToMenu

@@ -54,6 +54,15 @@ function findTrashCard(board: RuntimeBoardData, taskId: string): RuntimeBoardCar
 	return trash?.cards.find((card) => card.id === taskId) ?? null;
 }
 
+/** Finds a card in the review column, returning null if not found. */
+function findReviewCard(board: RuntimeBoardData, taskId: string): RuntimeBoardCard | null {
+	if (getTaskColumnId(board, taskId) !== "review") {
+		return null;
+	}
+	const review = board.columns.find((col) => col.id === "review");
+	return review?.cards.find((card) => card.id === taskId) ?? null;
+}
+
 /**
  * Builds an updateTask input that preserves all existing card fields while
  * overriding the specified recurring fields.
@@ -88,8 +97,13 @@ function computeRemainingRecurringDelay(card: RuntimeBoardCard): number {
 
 /**
  * Server-side monitor that polls all workspaces on a fixed interval and
- * auto-restarts recurring tasks found in the trash column whose recurrence
- * period has elapsed.
+ * auto-restarts recurring tasks whose recurrence period has elapsed.
+ *
+ * Scans both the review and trash columns:
+ * - Review: recurring tasks are moved to trash automatically so the
+ *   lifecycle continues even when auto-review is disabled or the browser
+ *   tab is closed.
+ * - Trash: eligible tasks are claimed and restarted.
  *
  * For each eligible task in trash:
  * 1. Checks `shouldTaskRecur()` and that `scheduledEndAt` has not passed.
@@ -202,6 +216,33 @@ export function createTaskRecurringMonitor(deps: CreateTaskRecurringMonitorDepen
 		await broadcastWorkspaceUpdate(workspace);
 	};
 
+	/**
+	 * Moves a recurring task from the review column to trash so the restart
+	 * logic can pick it up. This handles the case where auto-review is disabled
+	 * or the browser is closed — the server ensures the lifecycle continues.
+	 */
+	const moveReviewTaskToTrash = async (
+		workspace: WorkspaceIndexEntry,
+		taskSnapshot: RuntimeBoardCard,
+	): Promise<boolean> => {
+		const result = await deps.mutateWorkspaceState<boolean>(workspace.repoPath, (state) => {
+			const card = findReviewCard(state.board, taskSnapshot.id);
+			if (!card || !shouldTaskRecur(card)) {
+				return { board: state.board, value: false, save: false };
+			}
+			const movement = moveTaskToColumn(state.board, taskSnapshot.id, "trash");
+			if (!movement.moved) {
+				return { board: state.board, value: false, save: false };
+			}
+			return { board: movement.board, value: true };
+		});
+
+		if (result.value) {
+			await broadcastWorkspaceUpdate(workspace);
+		}
+		return result.value;
+	};
+
 	/** Processes a single recurring task — restarts it if the delay has elapsed. */
 	const processRecurringTask = async (workspace: WorkspaceIndexEntry, task: RuntimeBoardCard): Promise<void> => {
 		/* Skip tasks past their scheduledEndAt. */
@@ -218,14 +259,37 @@ export function createTaskRecurringMonitor(deps: CreateTaskRecurringMonitorDepen
 		await restartRecurringTask(workspace, task);
 	};
 
-	/** Scans all workspaces for trash tasks whose recurrence period has elapsed. */
+	/** Scans all workspaces for recurring tasks in review or trash whose recurrence period has elapsed. */
 	const doTick = async (): Promise<void> => {
 		const workspaces = await deps.listWorkspaceIndexEntries().catch(() => [] as WorkspaceIndexEntry[]);
 
 		for (const workspace of workspaces) {
 			try {
 				const state = await deps.loadWorkspaceState(workspace.repoPath);
-				const trash = state.board.columns.find((col) => col.id === "trash");
+
+				/* Move recurring tasks stuck in review to trash so the restart
+				   logic below can pick them up. This handles the case where
+				   auto-review is disabled or the browser tab is closed. */
+				const review = state.board.columns.find((col) => col.id === "review");
+				if (review) {
+					const reviewRecurring = review.cards.filter(
+						(card) => card.recurringEnabled === true && shouldTaskRecur(card),
+					);
+					for (const task of reviewRecurring) {
+						try {
+							await moveReviewTaskToTrash(workspace, task);
+						} catch (err) {
+							const message = err instanceof Error ? err.message : String(err);
+							deps.warn(
+								`[kanban] Recurring monitor: failed to move review task ${task.id} to trash: ${message}`,
+							);
+						}
+					}
+				}
+
+				/* Re-load state after potential review->trash moves above. */
+				const freshState = review ? await deps.loadWorkspaceState(workspace.repoPath) : state;
+				const trash = freshState.board.columns.find((col) => col.id === "trash");
 				if (!trash) {
 					continue;
 				}

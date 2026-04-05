@@ -56,6 +56,7 @@ export function KanbanBoard({
 	onDragEnd,
 	onRequestProgrammaticCardMoveReady,
 	workspacePath,
+	onUpdateTask,
 }: {
 	data: BoardData;
 	taskSessions: Record<string, RuntimeTaskSessionSummary>;
@@ -81,6 +82,8 @@ export function KanbanBoard({
 	onDragEnd: (result: DropResult) => void;
 	onRequestProgrammaticCardMoveReady?: (requestMove: RequestProgrammaticCardMove | null) => void;
 	workspacePath?: string | null;
+	/** Callback to update recurring/schedule fields on a task. */
+	onUpdateTask?: (taskId: string, updates: Record<string, unknown>) => void;
 }): React.ReactElement {
 	const isMobile = useIsMobile();
 	const dragOccurredRef = useRef(false);
@@ -536,6 +539,7 @@ export function KanbanBoard({
 								dependencies={isMobile ? dependencies : undefined}
 								onEnterMobileLinkMode={isMobile ? handleEnterMobileLinkMode : undefined}
 								onShowMobileDependencies={isMobile ? handleShowMobileDependencies : undefined}
+								onUpdateTask={onUpdateTask}
 							/>
 						);
 					})}

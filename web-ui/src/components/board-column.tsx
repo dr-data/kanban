@@ -60,6 +60,7 @@ export function BoardColumn({
 	dependencies,
 	onEnterMobileLinkMode,
 	onShowMobileDependencies,
+	onUpdateTask,
 }: {
 	column: BoardColumnModel;
 	taskSessions: Record<string, RuntimeTaskSessionSummary>;
@@ -108,6 +109,8 @@ export function BoardColumn({
 	onEnterMobileLinkMode?: () => void;
 	/** Callback to open the mobile dependency sheet for a given task. */
 	onShowMobileDependencies?: (taskId: string) => void;
+	/** Callback to update recurring/schedule fields on a task. */
+	onUpdateTask?: (taskId: string, updates: Record<string, unknown>) => void;
 }): React.ReactElement {
 	const canCreate = column.id === "backlog" && onCreateTask;
 	const canStartAllTasks = column.id === "backlog" && onStartAllTasks;
@@ -294,6 +297,7 @@ export function BoardColumn({
 											dependencyCount={dependencyCountByTaskId.get(card.id) ?? 0}
 											onEnterMobileLinkMode={onEnterMobileLinkMode}
 											onShowMobileDependencies={onShowMobileDependencies}
+											onUpdateTask={onUpdateTask}
 											onClick={() => {
 												if (column.id === "backlog") {
 													onEditTask?.(card);

@@ -66,7 +66,7 @@ import { useRuntimeProjectConfig } from "@/runtime/use-runtime-project-config";
 import { useTerminalConnectionReady } from "@/runtime/use-terminal-connection-ready";
 import { useWorkspacePersistence } from "@/runtime/use-workspace-persistence";
 import { saveWorkspaceState } from "@/runtime/workspace-state-query";
-import { findCardSelection } from "@/state/board-state";
+import { findCardSelection, updateTask } from "@/state/board-state";
 import {
 	getTaskWorkspaceInfo,
 	getTaskWorkspaceSnapshot,
@@ -216,6 +216,28 @@ export default function App(): ReactElement {
 		}
 		return findCardSelection(board, selectedTaskId);
 	}, [board, selectedTaskId]);
+
+	/** Updates recurring/schedule fields on a task from the detail view. */
+	const handleUpdateTaskFields = useCallback(
+		(taskId: string, updates: Record<string, unknown>) => {
+			setBoard((prev) => {
+				const selection = findCardSelection(prev, taskId);
+				if (!selection) return prev;
+				const result = updateTask(prev, taskId, {
+					prompt: selection.card.prompt,
+					startInPlanMode: selection.card.startInPlanMode,
+					autoReviewEnabled: selection.card.autoReviewEnabled,
+					autoReviewMode: selection.card.autoReviewMode,
+					images: selection.card.images,
+					baseRef: selection.card.baseRef,
+					...updates,
+				});
+				return result.updated ? result.board : prev;
+			});
+		},
+		[setBoard],
+	);
+
 	const {
 		workspacePath,
 		workspaceGit,
@@ -931,6 +953,7 @@ export default function App(): ReactElement {
 												selectedCard ? undefined : handleProgrammaticCardMoveReady
 											}
 											onDragEnd={handleDragEnd}
+											onUpdateTask={handleUpdateTaskFields}
 										/>
 									)}
 								</div>
@@ -1022,6 +1045,7 @@ export default function App(): ReactElement {
 								onLoadClineChatMessages={fetchTaskChatMessages}
 								latestClineChatMessage={latestSelectedTaskChatMessage}
 								streamedClineChatMessages={selectedTaskChatMessages}
+								onUpdateTask={handleUpdateTaskFields}
 								onMoveToTrash={handleMoveToTrash}
 								isMoveToTrashLoading={moveToTrashLoadingById[selectedCard.card.id] ?? false}
 								gitHistoryPanel={

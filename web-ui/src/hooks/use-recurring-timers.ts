@@ -50,14 +50,16 @@ export function useRecurringTimers({ board, setBoard, startBacklogTask }: UseRec
 	}, []);
 
 	/**
-	 * Restarts a recurring-eligible task by moving it from trash to backlog
-	 * with an incremented iteration counter, then auto-starting it.
+	 * Restarts a recurring-eligible task by moving it from review/trash to
+	 * backlog with an incremented iteration counter, then auto-starting it.
+	 * Accepts tasks in either review or trash — review tasks are moved to
+	 * trash first so the iteration counter is properly incremented.
 	 */
 	const restartRecurringTask = useCallback(
 		(taskId: string) => {
 			const currentBoard = boardRef.current;
 			const selection = findCardSelection(currentBoard, taskId);
-			if (!selection || selection.column.id !== "trash") {
+			if (!selection || (selection.column.id !== "trash" && selection.column.id !== "review")) {
 				return;
 			}
 			if (!shouldTaskRecur(selection.card) || isTaskPastScheduledEnd(selection.card)) {
@@ -68,7 +70,7 @@ export function useRecurringTimers({ board, setBoard, startBacklogTask }: UseRec
 
 			setBoard((prevBoard) => {
 				const latestSelection = findCardSelection(prevBoard, taskId);
-				if (!latestSelection || latestSelection.column.id !== "trash") {
+				if (!latestSelection || (latestSelection.column.id !== "trash" && latestSelection.column.id !== "review")) {
 					return prevBoard;
 				}
 				if (!shouldTaskRecur(latestSelection.card) || isTaskPastScheduledEnd(latestSelection.card)) {
@@ -114,39 +116,46 @@ export function useRecurringTimers({ board, setBoard, startBacklogTask }: UseRec
 	);
 
 	/**
-	 * Scans the trash column for recurring-eligible tasks and schedules (or
-	 * immediately triggers) their restart based on the configured period.
-	 * Enforces a minimum period of 3 minutes.
+	 * Scans both the review and trash columns for recurring-eligible tasks and
+	 * schedules (or immediately triggers) their restart based on the configured
+	 * period. Tasks in review are treated the same as trash — the server-side
+	 * monitor also handles this, but the client provides faster feedback.
 	 */
 	const evaluateRecurringTimers = useCallback(() => {
 		const currentBoard = boardRef.current;
+		const reviewColumn = currentBoard.columns.find((col) => col.id === "review");
 		const trashColumn = currentBoard.columns.find((col) => col.id === "trash");
-		if (!trashColumn) {
-			return;
+
+		/* Collect all eligible cards from both review and trash. */
+		const eligibleCards: BoardCard[] = [];
+		if (reviewColumn) {
+			for (const card of reviewColumn.cards) {
+				if (card.recurringEnabled && shouldTaskRecur(card) && !isTaskPastScheduledEnd(card)) {
+					eligibleCards.push(card);
+				}
+			}
+		}
+		if (trashColumn) {
+			for (const card of trashColumn.cards) {
+				if (card.recurringEnabled && shouldTaskRecur(card) && !isTaskPastScheduledEnd(card)) {
+					eligibleCards.push(card);
+				}
+			}
 		}
 
-		const trashTaskIds = new Set(trashColumn.cards.map((card) => card.id));
+		const eligibleIds = new Set(eligibleCards.map((card) => card.id));
 
-		/* Clear timers for tasks no longer in trash or no longer recurring-eligible. */
+		/* Clear timers for tasks no longer eligible. */
 		for (const [taskId, timerId] of pendingTimersRef.current) {
-			if (!trashTaskIds.has(taskId)) {
-				window.clearTimeout(timerId);
-				pendingTimersRef.current.delete(taskId);
-				continue;
-			}
-			const selection = findCardSelection(currentBoard, taskId);
-			if (!selection || !shouldTaskRecur(selection.card) || isTaskPastScheduledEnd(selection.card)) {
+			if (!eligibleIds.has(taskId)) {
 				window.clearTimeout(timerId);
 				pendingTimersRef.current.delete(taskId);
 			}
 		}
 
 		/* Schedule new timers for eligible tasks not yet tracked. */
-		for (const card of trashColumn.cards) {
+		for (const card of eligibleCards) {
 			if (pendingTimersRef.current.has(card.id)) {
-				continue;
-			}
-			if (!shouldTaskRecur(card) || isTaskPastScheduledEnd(card)) {
 				continue;
 			}
 
