@@ -253,6 +253,7 @@ export function CardDetailView({
 	onBottomTerminalToggleExpand,
 	isDocumentVisible = true,
 	onClineSettingsSaved,
+	isMobile = false,
 }: {
 	selection: CardSelection;
 	currentProjectId: string | null;
@@ -312,8 +313,11 @@ export function CardDetailView({
 	onBottomTerminalToggleExpand?: () => void;
 	isDocumentVisible?: boolean;
 	onClineSettingsSaved?: () => void;
+	/** Whether the viewport is below the mobile breakpoint. */
+	isMobile?: boolean;
 }): React.ReactElement {
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
+	const [mobileDetailTab, setMobileDetailTab] = useState<"agent" | "changes">("agent");
 	const [diffComments, setDiffComments] = useState<Map<string, DiffLineComment>>(new Map());
 	const [diffMode, setDiffMode] = useState<RuntimeWorkspaceChangesMode>("working_copy");
 	const [isDiffExpanded, setIsDiffExpanded] = useState(false);
@@ -566,7 +570,7 @@ export function CardDetailView({
 				background: "var(--color-surface-0)",
 			}}
 		>
-			{!isDiffExpanded ? (
+			{!isMobile && !isDiffExpanded ? (
 				<ColumnContextPanel
 					selection={selection}
 					workspacePath={workspacePath}
@@ -593,7 +597,7 @@ export function CardDetailView({
 				style={{
 					display: "flex",
 					flexDirection: "column",
-					width: isDiffExpanded ? "100%" : "80%",
+					width: isMobile ? "100%" : isDiffExpanded ? "100%" : "80%",
 					minWidth: 0,
 					minHeight: 0,
 					overflow: "hidden",
@@ -603,11 +607,37 @@ export function CardDetailView({
 					<div style={{ display: "flex", flex: "1 1 0", minHeight: 0, overflow: "hidden" }}>{gitHistoryPanel}</div>
 				) : (
 					<>
+						{isMobile ? (
+							<div className="kb-mobile-detail-tabs">
+								<button
+									type="button"
+									className="kb-mobile-detail-tab"
+									data-active={mobileDetailTab === "agent"}
+									onClick={() => setMobileDetailTab("agent")}
+								>
+									Chat
+								</button>
+								<button
+									type="button"
+									className="kb-mobile-detail-tab"
+									data-active={mobileDetailTab === "changes"}
+									onClick={() => setMobileDetailTab("changes")}
+								>
+									Changes
+								</button>
+							</div>
+						) : null}
 						<div ref={mainRowRef} style={{ display: "flex", flex: "1 1 0", minHeight: 0, overflow: "hidden" }}>
 							<div
 								style={{
-									display: isDiffExpanded ? "none" : "flex",
-									width: agentPanelPercent,
+									display: isMobile
+										? mobileDetailTab === "agent"
+											? "flex"
+											: "none"
+										: isDiffExpanded
+											? "none"
+											: "flex",
+									width: isMobile ? "100%" : agentPanelPercent,
 									minWidth: 0,
 									minHeight: 0,
 								}}
@@ -678,7 +708,7 @@ export function CardDetailView({
 									/>
 								)}
 							</div>
-							{!isDiffExpanded ? (
+							{!isMobile && !isDiffExpanded ? (
 								<div
 									role="separator"
 									aria-orientation="vertical"
@@ -706,8 +736,8 @@ export function CardDetailView({
 							) : null}
 							<div
 								style={{
-									display: "flex",
-									width: isDiffExpanded ? "100%" : diffPanelPercent,
+									display: isMobile ? (mobileDetailTab === "changes" ? "flex" : "none") : "flex",
+									width: isMobile ? "100%" : isDiffExpanded ? "100%" : diffPanelPercent,
 									minWidth: 0,
 									minHeight: 0,
 									flexDirection: "column",

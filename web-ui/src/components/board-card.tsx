@@ -2,7 +2,7 @@ import { Draggable } from "@hello-pangea/dnd";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { formatClineToolCallLabel } from "@runtime-cline-tool-call-display";
 import { buildTaskWorktreeDisplayPath } from "@runtime-task-worktree-path";
-import { AlertCircle, GitBranch, MoveHorizontal, Play, RotateCcw, Trash2 } from "lucide-react";
+import { AlertCircle, GitBranch, Link2, MoveHorizontal, Play, RotateCcw, Trash2 } from "lucide-react";
 import { type MouseEvent, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
@@ -255,6 +255,11 @@ function MobileMoveToMenu({
 	);
 }
 
+/**
+ * Renders a single Kanban card with session status, action buttons, and dependency linking support.
+ * Wrapped in React.memo to prevent cascading re-renders when stable parent callbacks (e.g. onCardClick)
+ * are passed down from KanbanBoard, preserving smooth drag-and-drop and mobile pane performance.
+ */
 export const BoardCard = memo(function BoardCard({
 	card,
 	index,
@@ -280,6 +285,8 @@ export const BoardCard = memo(function BoardCard({
 	onMobileLinkTap,
 	workspacePath,
 	onMoveToColumn,
+	isDragDisabled = false,
+	dependencyCount = 0,
 }: {
 	card: BoardCardModel;
 	index: number;
@@ -308,6 +315,10 @@ export const BoardCard = memo(function BoardCard({
 	workspacePath?: string | null;
 	/** Callback for the mobile "Move to" action on board cards. */
 	onMoveToColumn?: (taskId: string, targetColumnId: BoardColumnId) => void;
+	/** When true, prevents drag-and-drop for this card (used in mobile layout). */
+	isDragDisabled?: boolean;
+	/** Number of dependencies this card has (for badge display on mobile). */
+	dependencyCount?: number;
 }): React.ReactElement {
 	const [isHovered, setIsHovered] = useState(false);
 	const [titleContainerRef, titleRect] = useMeasure<HTMLDivElement>();
@@ -509,7 +520,7 @@ export const BoardCard = memo(function BoardCard({
 		!isTrashCard && card.autoReviewEnabled ? getTaskAutoReviewCancelButtonLabel(card.autoReviewMode) : null;
 
 	return (
-		<Draggable draggableId={card.id} index={index} isDragDisabled={false}>
+		<Draggable draggableId={card.id} index={index} isDragDisabled={isDragDisabled}>
 			{(provided, snapshot) => {
 				const isDragging = snapshot.isDragging;
 				const draggableContent = (
@@ -565,6 +576,7 @@ export const BoardCard = memo(function BoardCard({
 							...provided.draggableProps.style,
 							marginBottom: 6,
 							cursor: "grab",
+							touchAction: "pan-y pinch-zoom",
 						}}
 						onMouseEnter={() => {
 							setIsHovered(true);
@@ -657,6 +669,12 @@ export const BoardCard = memo(function BoardCard({
 										onMoveToColumn={onMoveToColumn}
 										stopEvent={stopEvent}
 									/>
+								) : null}
+								{isMobile && dependencyCount > 0 ? (
+									<span className="inline-flex items-center gap-0.5 text-[11px] text-text-tertiary">
+										<Link2 size={10} />
+										{dependencyCount}
+									</span>
 								) : null}
 							</div>
 							{displayPromptSplit.description ? (

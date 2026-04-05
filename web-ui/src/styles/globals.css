@@ -776,6 +776,141 @@ body.kb-dependency-link-mode {
    The traffic light buttons (macOS) are overlaid, so the navbar needs left
    padding to avoid them, and drag regions so the window can be repositioned. */
 
+/* ── Mobile responsive ── */
+@media (max-width: 767.98px) {
+	.kb-board {
+		overflow-x: auto !important;
+		overflow-y: hidden;
+		scroll-snap-type: x mandatory;
+		-webkit-overflow-scrolling: touch;
+		gap: 0;
+		padding: 0;
+		/* Reserve space at the bottom for the fixed column tab bar */
+		padding-bottom: 40px;
+	}
+
+	/* Old scroll-snap rules removed — mobile now uses MobileSplitBoard */
+
+	body {
+		overscroll-behavior-y: contain;
+	}
+
+	/* Hide scrollbars on mobile for a cleaner touch experience */
+	* {
+		scrollbar-width: none;
+	}
+	*::-webkit-scrollbar {
+		display: none;
+	}
+}
+
+/* ── Touch linking animations ── */
+@keyframes kb-pulse-border {
+	0%, 100% { box-shadow: inset 0 0 0 1px var(--color-accent); }
+	50% { box-shadow: inset 0 0 0 2px var(--color-accent), 0 0 4px 0 var(--color-accent); }
+}
+
+.kb-board-card-dependency-source-touch {
+	animation: kb-pulse-border 1.5s ease-in-out infinite;
+}
+
+body.kb-dependency-link-mode-touch {
+	user-select: none;
+}
+
+/* ── Touch device: hide keyboard shortcut hints ── */
+@media (pointer: coarse) {
+	.kb-shortcut-hint {
+		display: none !important;
+	}
+}
+
+/* ── Touch-friendly dependency curves ── */
+@media (pointer: coarse) {
+	.kb-dependency-hit-path {
+		stroke-width: 28 !important;
+	}
+}
+
+/* ── Mobile sidebar drawer ── */
+@keyframes kb-slide-in-left {
+	from { transform: translateX(-100%); }
+	to { transform: translateX(0); }
+}
+
+@keyframes kb-fade-in {
+	from { opacity: 0; }
+	to { opacity: 1; }
+}
+
+.kb-mobile-drawer-backdrop {
+	animation: kb-fade-in 200ms ease-out;
+}
+
+.kb-mobile-drawer-panel {
+	animation: kb-slide-in-left 250ms ease-out;
+}
+
+/* ── Mobile column tab bar (fixed at bottom) ── */
+.kb-mobile-column-tabs {
+	position: fixed;
+	bottom: 0;
+	left: 0;
+	right: 0;
+	z-index: 30;
+	display: flex;
+	justify-content: space-around;
+	padding: 8px 4px;
+	padding-bottom: max(8px, env(safe-area-inset-bottom));
+	background: var(--color-surface-1);
+	border-top: 1px solid var(--color-border);
+}
+
+.kb-mobile-column-tab {
+	flex: 1;
+	padding: 8px 4px;
+	border-radius: var(--radius-md);
+	font-size: 12px;
+	font-weight: 500;
+	text-align: center;
+	color: var(--color-text-tertiary);
+	background: transparent;
+	border: none;
+	cursor: pointer;
+	transition: color 150ms, background 150ms;
+}
+
+.kb-mobile-column-tab[data-active="true"] {
+	color: var(--color-accent);
+	background: var(--color-accent-muted, rgba(0, 132, 255, 0.1));
+}
+
+/* ── Mobile detail view tabs ── */
+.kb-mobile-detail-tabs {
+	display: flex;
+	border-bottom: 1px solid var(--color-border);
+	background: var(--color-surface-1);
+}
+
+.kb-mobile-detail-tab {
+	flex: 1;
+	padding: 10px 0;
+	font-size: 13px;
+	font-weight: 500;
+	text-align: center;
+	color: var(--color-text-secondary);
+	background: transparent;
+	border: none;
+	border-bottom: 2px solid transparent;
+	cursor: pointer;
+	transition: color 150ms, border-color 150ms;
+}
+
+.kb-mobile-detail-tab[data-active="true"] {
+	color: var(--color-text-primary);
+	border-bottom-color: var(--color-accent);
+}
+
 @media (display-mode: window-controls-overlay) {
 	.kb-top-bar {
 		padding-left: env(titlebar-area-x, 12px) !important;

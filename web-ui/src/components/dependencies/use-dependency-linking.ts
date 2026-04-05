@@ -90,9 +90,9 @@ function getTaskIdFromPoint(clientX: number, clientY: number): string | null {
 }
 
 /**
- * Hook that manages the dependency linking interaction for both desktop (modifier-key + drag)
- * and mobile (tap-based link mode). Desktop flow: hold Cmd/Ctrl, click source card, drag to
- * target, release. Mobile flow: activate link mode, tap source card, tap target card.
+ * Hook that manages the dependency linking interaction for both desktop (modifier-key + click)
+ * and mobile (tap-based link mode). Desktop flow: hold Cmd/Ctrl, click source card, hover target
+ * card, release modifier. Mobile flow: activate link mode, tap source card, tap target card.
  */
 export function useDependencyLinking({
 	canLinkTasks,

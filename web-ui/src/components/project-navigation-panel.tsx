@@ -81,6 +81,8 @@ export function ProjectNavigationPanel({
 	onSelectProject,
 	onRemoveProject,
 	onAddProject,
+	isMobileDrawerOpen = false,
+	onCloseMobileDrawer,
 }: {
 	projects: RuntimeProjectSummary[];
 	isLoadingProjects?: boolean;
@@ -93,6 +95,10 @@ export function ProjectNavigationPanel({
 	onSelectProject: (projectId: string) => void;
 	onRemoveProject: (projectId: string) => Promise<boolean>;
 	onAddProject: () => void;
+	/** Whether the mobile drawer overlay is currently visible. */
+	isMobileDrawerOpen?: boolean;
+	/** Callback to close the mobile drawer. */
+	onCloseMobileDrawer?: () => void;
 }): React.ReactElement | null {
 	const sortedProjects = [...projects].sort((a, b) => a.path.localeCompare(b.path));
 	const isMobile = useIsMobile();
@@ -188,6 +194,66 @@ export function ProjectNavigationPanel({
 		},
 		[isCollapsed, isDragging, sidebarWidth, stopDrag],
 	);
+
+	/* On mobile, render as a slide-over drawer instead of an inline sidebar */
+	if (isMobile) {
+		if (!isMobileDrawerOpen) return <></>;
+		return (
+			<div
+				className="fixed inset-0 z-50 kb-mobile-drawer-backdrop"
+				onClick={onCloseMobileDrawer}
+				role="presentation"
+			>
+				<aside
+					className="fixed inset-y-0 left-0 w-[85vw] max-w-[320px] bg-surface-1 shadow-xl kb-mobile-drawer-panel border-r border-border flex flex-col min-h-0 overflow-hidden"
+					onClick={(e) => e.stopPropagation()}
+				>
+					<div style={{ padding: "12px 12px 8px" }}>
+						<div className="font-semibold text-base flex items-baseline gap-1.5">
+							Cline <span className="text-text-secondary font-normal text-xs">v{__APP_VERSION__}</span>
+						</div>
+					</div>
+					<div className="flex-1 min-h-0 overflow-y-auto px-1 pb-3">
+						{sortedProjects.map((project) => {
+							const isCurrent = currentProjectId === project.id;
+							return (
+								<button
+									key={project.id}
+									type="button"
+									onClick={() => {
+										onSelectProject(project.id);
+										onCloseMobileDrawer?.();
+									}}
+									className={cn(
+										"w-full text-left px-3 py-3 rounded-md text-sm cursor-pointer border-0",
+										isCurrent
+											? "bg-accent/15 text-accent font-medium"
+											: "bg-transparent text-text-secondary hover:text-text-primary hover:bg-surface-3",
+									)}
+								>
+									{project.name}
+								</button>
+							);
+						})}
+					</div>
+					<div className="p-3 border-t border-border">
+						<button
+							type="button"
+							onClick={() => {
+								onAddProject();
+								onCloseMobileDrawer?.();
+							}}
+							disabled={removingProjectId !== null}
+							className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-md text-sm text-text-secondary hover:text-text-primary hover:bg-surface-2 bg-transparent border-0 cursor-pointer"
+						>
+							<Plus size={16} />
+							Add project
+						</button>
+					</div>
+				</aside>
+			</div>
+		);
+	}
 
 	if (isCollapsed) {
 		/* On mobile, a collapsed sidebar takes zero space; the TopBar hamburger reopens it. */

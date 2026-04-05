@@ -52,6 +52,7 @@ vi.mock("@/utils/react-use", () => ({
 			},
 		];
 	},
+	useMedia: () => false,
 }));
 
 vi.mock("@/utils/text-measure", () => ({

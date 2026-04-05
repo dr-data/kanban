@@ -1,6 +1,7 @@
 import { Droppable } from "@hello-pangea/dnd";
 import { Play, Plus, Trash2 } from "lucide-react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import { useMemo } from "react";
 
 import { BoardCard } from "@/components/board-card";
 import { Button } from "@/components/ui/button";
@@ -55,6 +56,8 @@ export function BoardColumn({
 	mobilePosition,
 	mobileColumnCardCounts,
 	onMobileColumnChange,
+	isDragDisabled,
+	dependencies,
 }: {
 	column: BoardColumnModel;
 	taskSessions: Record<string, RuntimeTaskSessionSummary>;
@@ -95,6 +98,10 @@ export function BoardColumn({
 	mobileColumnCardCounts?: Record<BoardColumnId, number>;
 	/** Callback to switch which column this mobile pane displays. */
 	onMobileColumnChange?: (columnId: BoardColumnId) => void;
+	/** When true, disables drag-and-drop for all cards in this column. */
+	isDragDisabled?: boolean;
+	/** Dependencies for computing per-card link badge counts (mobile only). */
+	dependencies?: import("@/types").BoardDependency[];
 }): React.ReactElement {
 	const canCreate = column.id === "backlog" && onCreateTask;
 	const canStartAllTasks = column.id === "backlog" && onStartAllTasks;
@@ -105,6 +112,17 @@ export function BoardColumn({
 		activeDragTaskId,
 		programmaticCardMoveInFlight,
 	});
+
+	/** Precomputed map of taskId → dependency count to avoid O(cards × deps) per-card filtering. */
+	const dependencyCountByTaskId = useMemo<Map<string, number>>(() => {
+		if (!dependencies) return new Map();
+		const map = new Map<string, number>();
+		for (const dep of dependencies) {
+			map.set(dep.fromTaskId, (map.get(dep.fromTaskId) ?? 0) + 1);
+			map.set(dep.toTaskId, (map.get(dep.toTaskId) ?? 0) + 1);
+		}
+		return map;
+	}, [dependencies]);
 	const createTaskButtonText = (
 		<span className="inline-flex items-center gap-1.5">
 			<span>Create task</span>
@@ -266,6 +284,8 @@ export function BoardColumn({
 											onMobileLinkTap={onMobileLinkTap}
 											workspacePath={workspacePath}
 											onMoveToColumn={onMoveToColumn}
+											isDragDisabled={isDragDisabled}
+											dependencyCount={dependencyCountByTaskId.get(card.id) ?? 0}
 											onClick={() => {
 												if (column.id === "backlog") {
 													onEditTask?.(card);

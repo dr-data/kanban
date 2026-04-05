@@ -19,3 +19,20 @@ Object.defineProperty(globalThis, "IntersectionObserver", {
 	configurable: true,
 	value: MockIntersectionObserver,
 });
+
+/* jsdom does not implement window.matchMedia; provide a minimal stub so hooks
+   that depend on it (e.g. useMedia from react-use via useIsMobile) don't throw. */
+Object.defineProperty(window, "matchMedia", {
+	writable: true,
+	configurable: true,
+	value: (query: string): MediaQueryList => ({
+		matches: false,
+		media: query,
+		onchange: null,
+		addListener: () => {},
+		removeListener: () => {},
+		addEventListener: () => {},
+		removeEventListener: () => {},
+		dispatchEvent: () => false,
+	}),
+});

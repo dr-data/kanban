@@ -9,6 +9,7 @@ import {
 	CircleArrowDown,
 	Command,
 	GitBranch,
+	Menu,
 	Play,
 	Plus,
 	Settings,
@@ -308,6 +309,8 @@ export function TopBar({
 	canOpenWorkspace,
 	isOpeningWorkspace,
 	hideProjectDependentActions = false,
+	isMobile = false,
+	onToggleSidebar,
 }: {
 	onBack?: () => void;
 	workspacePath?: string;
@@ -342,6 +345,10 @@ export function TopBar({
 	canOpenWorkspace: boolean;
 	isOpeningWorkspace: boolean;
 	hideProjectDependentActions?: boolean;
+	/** Whether the viewport is below the mobile breakpoint. */
+	isMobile?: boolean;
+	/** Callback to toggle the mobile sidebar drawer. */
+	onToggleSidebar?: () => void;
 }): React.ReactElement {
 	const displayWorkspacePath = workspacePath ? formatPathForDisplay(workspacePath) : null;
 	const workspaceSegments = displayWorkspacePath ? getWorkspacePathSegments(displayWorkspacePath) : [];
@@ -392,7 +399,7 @@ export function TopBar({
 	return (
 		<>
 			<nav
-				className="kb-top-bar flex flex-nowrap items-center h-10 min-h-[40px] min-w-0 bg-surface-1"
+				className="kb-top-bar flex flex-nowrap items-center h-10 min-h-[40px] max-[767.98px]:min-h-[44px] min-w-0 bg-surface-1"
 				style={{
 					paddingLeft: onBack ? 6 : 12,
 					paddingRight: 8,
@@ -400,6 +407,16 @@ export function TopBar({
 				}}
 			>
 				<div className="flex flex-nowrap items-center h-10 flex-1 min-w-0 overflow-hidden gap-1.5">
+					{isMobile && onToggleSidebar ? (
+						<Button
+							variant="ghost"
+							size="sm"
+							icon={<Menu size={16} />}
+							onClick={onToggleSidebar}
+							aria-label="Toggle sidebar"
+							className="shrink-0"
+						/>
+					) : null}
 					{onBack ? (
 						<div className="flex items-center shrink-0 overflow-visible">
 							<Button
@@ -412,7 +429,11 @@ export function TopBar({
 							/>
 						</div>
 					) : null}
-					{isWorkspacePathLoading ? (
+					{isMobile && displayWorkspacePath ? (
+						<span className="text-xs font-medium text-text-primary truncate min-w-0">
+							{workspaceSegments[workspaceSegments.length - 1] ?? ""}
+						</span>
+					) : isWorkspacePathLoading ? (
 						<span
 							className="kb-skeleton inline-block"
 							style={{ height: 14, width: 320, borderRadius: 3 }}
@@ -438,7 +459,7 @@ export function TopBar({
 							</span>
 						</div>
 					) : null}
-					{displayWorkspacePath && !isWorkspacePathLoading ? (
+					{!isMobile && displayWorkspacePath && !isWorkspacePathLoading ? (
 						<div className="ml-2 shrink-0">
 							<OpenWorkspaceButton
 								options={openTargetOptions}
@@ -450,12 +471,12 @@ export function TopBar({
 							/>
 						</div>
 					) : null}
-					{!hideProjectDependentActions && workspaceHint ? (
+					{!isMobile && !hideProjectDependentActions && workspaceHint ? (
 						<span className="kb-navbar-tag inline-flex items-center rounded border border-border bg-surface-2 px-1.5 py-0.5 text-xs text-text-secondary">
 							{workspaceHint}
 						</span>
 					) : null}
-					{!hideProjectDependentActions && runtimeHint ? (
+					{!isMobile && !hideProjectDependentActions && runtimeHint ? (
 						onOpenSettings ? (
 							<button
 								type="button"
@@ -470,7 +491,7 @@ export function TopBar({
 							</span>
 						)
 					) : null}
-					{!hideProjectDependentActions ? (
+					{!isMobile && !hideProjectDependentActions ? (
 						<TopBarGitStatusSection
 							showHomeGitSummary={showHomeGitSummary === true}
 							selectedTaskId={selectedTaskId ?? null}
@@ -485,7 +506,7 @@ export function TopBar({
 					) : null}
 				</div>
 				<div className="flex flex-nowrap items-center h-10 pr-0.5 shrink-0">
-					{!hideProjectDependentActions && onRunShortcut ? (
+					{!isMobile && !hideProjectDependentActions && onRunShortcut ? (
 						selectedShortcut ? (
 							<div className="flex">
 								<Button

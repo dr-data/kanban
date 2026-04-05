@@ -497,6 +497,7 @@ export function KanbanBoard({
 								onMobileLinkTap={dependencyLinking.onMobileLinkTap}
 								onMoveToColumn={handleMoveToColumn}
 								onCardClick={handleCardClick}
+								dependencies={isMobile ? dependencies : undefined}
 							/>
 						);
 					})}

@@ -53,7 +53,7 @@ function ButtonShortcut({
 	modifier?: "mod" | "alt";
 }): ReactElement {
 	return (
-		<span className="inline-flex items-center gap-0.5 ml-1.5" aria-hidden>
+		<span className="inline-flex items-center gap-0.5 ml-1.5 kb-shortcut-hint" aria-hidden>
 			{modifier === "alt" ? (
 				isMacPlatform ? (
 					<Option size={12} />
@@ -606,7 +606,10 @@ export function TaskCreateDialog({
 											onSelect={() => handleRunSingleStartAction(secondaryStartAction)}
 										>
 											{secondaryStartLabel}
-											<span className="inline-flex items-center gap-0.5 text-text-tertiary" aria-hidden>
+											<span
+												className="inline-flex items-center gap-0.5 text-text-tertiary kb-shortcut-hint"
+												aria-hidden
+											>
 												{secondaryStartShortcutModifier === "alt" ? (
 													isMacPlatform ? (
 														<Option size={10} />

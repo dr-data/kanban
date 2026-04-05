@@ -434,6 +434,9 @@ export function DependencyOverlay({
 }): React.ReactElement | null {
 	const [layout, setLayout] = useState<DependencyLayout>(() => createEmptyLayout());
 	const [hoveredDependencyId, setHoveredDependencyId] = useState<string | null>(null);
+	/** On coarse-pointer (touch) devices, tracks which dependency's delete control is persistently shown. */
+	const [touchSelectedDependencyId, setTouchSelectedDependencyId] = useState<string | null>(null);
+	const isCoarsePointerRef = useRef(typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches);
 	const markerId = useId().replaceAll(":", "");
 	const hoverClearTimeoutRef = useRef<number | null>(null);
 	const previousRenderedDependencyByIdRef = useRef<
@@ -870,6 +873,38 @@ export function DependencyOverlay({
 		[hoveredDependencyId, renderedDependencies],
 	);
 
+	/** Resolved rendered dependency for the touch-selected state (coarse pointer two-step delete). */
+	const touchSelectedDependency = useMemo(
+		() =>
+			touchSelectedDependencyId
+				? (renderedDependencies.find((rendered) => rendered.dependency.id === touchSelectedDependencyId) ?? null)
+				: null,
+		[touchSelectedDependencyId, renderedDependencies],
+	);
+
+	/* Clear touch selection when tapping outside the delete control.
+	   Uses pointerdown for cross-platform support (touch + desktop). */
+	useEffect(() => {
+		if (!touchSelectedDependencyId) return;
+		const handleOutsideTap = (event: Event) => {
+			const target = event.target;
+			if (!(target instanceof Element)) return;
+			/* Taps on the delete control or the dependency path itself should
+			   not clear selection — the click handler toggles it off. */
+			if (
+				target.closest(".kb-dependency-delete-control-touch") ||
+				target.closest(".kb-dependency-hit-path") ||
+				target.closest(".kb-dependency-path")
+			)
+				return;
+			setTouchSelectedDependencyId(null);
+		};
+		document.addEventListener("pointerdown", handleOutsideTap, { capture: true });
+		return () => {
+			document.removeEventListener("pointerdown", handleOutsideTap, { capture: true });
+		};
+	}, [touchSelectedDependencyId]);
+
 	if (layout.width <= 0 || layout.height <= 0) {
 		return null;
 	}
@@ -959,6 +994,13 @@ export function DependencyOverlay({
 									onClick={(event) => {
 										event.preventDefault();
 										event.stopPropagation();
+										/* On coarse-pointer (touch) devices, first tap selects; second tap or delete button confirms */
+										if (isCoarsePointerRef.current) {
+											setTouchSelectedDependencyId((current) =>
+												current === rendered.dependency.id ? null : rendered.dependency.id,
+											);
+											return;
+										}
 										onDeleteDependency(rendered.dependency.id);
 										clearPendingHoverClear();
 										setHoveredDependencyId(null);
@@ -1006,6 +1048,39 @@ export function DependencyOverlay({
 				>
 					<X size={10} color="var(--color-text-primary)" />
 				</div>
+			) : null}
+			{/* Touch-friendly persistent delete control (coarse pointer two-step) */}
+			{onDeleteDependency && touchSelectedDependency && !touchSelectedDependency.isTransient ? (
+				<button
+					type="button"
+					key={`${touchSelectedDependency.dependency.id}-touch-delete`}
+					className="kb-dependency-delete-control-touch"
+					style={{
+						position: "absolute",
+						left: touchSelectedDependency.midpointX - 18,
+						top: touchSelectedDependency.midpointY - 18,
+						width: 36,
+						height: 36,
+						borderRadius: "50%",
+						background: "var(--color-status-red)",
+						border: "2px solid var(--color-surface-0)",
+						display: "flex",
+						alignItems: "center",
+						justifyContent: "center",
+						cursor: "pointer",
+						zIndex: 20,
+						pointerEvents: "auto",
+					}}
+					onClick={(event) => {
+						event.preventDefault();
+						event.stopPropagation();
+						onDeleteDependency(touchSelectedDependency.dependency.id);
+						setTouchSelectedDependencyId(null);
+					}}
+					aria-label="Delete dependency"
+				>
+					<X size={14} color="white" />
+				</button>
 			) : null}
 		</>
 	);

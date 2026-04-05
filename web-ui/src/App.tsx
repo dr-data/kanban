@@ -41,6 +41,7 @@ import { useDebugTools } from "@/hooks/use-debug-tools";
 import { useDocumentVisibility } from "@/hooks/use-document-visibility";
 import { useGitActions } from "@/hooks/use-git-actions";
 import { useHomeSidebarAgentPanel } from "@/hooks/use-home-sidebar-agent-panel";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useKanbanAccessGate } from "@/hooks/use-kanban-access-gate";
 import { useOpenWorkspace } from "@/hooks/use-open-workspace";
 import { parseRemovedProjectPathFromStreamError, useProjectNavigation } from "@/hooks/use-project-navigation";
@@ -76,6 +77,16 @@ import { TERMINAL_THEME_COLORS } from "@/terminal/theme-colors";
 import type { BoardData } from "@/types";
 
 export default function App(): ReactElement {
+	const isMobile = useIsMobile();
+	const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+
+	/* Close the mobile drawer whenever the viewport transitions above the mobile
+	   breakpoint so stale drawer state doesn't reappear on next mobile resize. */
+	useEffect(() => {
+		if (!isMobile) {
+			setIsMobileSidebarOpen(false);
+		}
+	}, [isMobile]);
 	const [board, setBoard] = useState<BoardData>(() => createInitialBoardData());
 	const [sessions, setSessions] = useState<Record<string, RuntimeTaskSessionSummary>>({});
 	const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -757,10 +768,14 @@ export default function App(): ReactElement {
 					onAddProject={() => {
 						void handleAddProject();
 					}}
+					isMobileDrawerOpen={isMobileSidebarOpen}
+					onCloseMobileDrawer={() => setIsMobileSidebarOpen(false)}
 				/>
 			) : null}
 			<div className="flex flex-col flex-1 min-w-0 overflow-hidden">
 				<TopBar
+					isMobile={isMobile}
+					onToggleSidebar={() => setIsMobileSidebarOpen((v) => !v)}
 					onBack={selectedCard ? handleBack : undefined}
 					workspacePath={navbarWorkspacePath}
 					isWorkspacePathLoading={shouldShowProjectLoadingState}
@@ -860,6 +875,7 @@ export default function App(): ReactElement {
 										/>
 									) : (
 										<KanbanBoard
+											isMobile={isMobile}
 											data={board}
 											taskSessions={sessions}
 											workspacePath={workspacePath}
@@ -934,6 +950,7 @@ export default function App(): ReactElement {
 					{selectedCard && detailSession ? (
 						<div className="absolute inset-0 flex min-h-0 min-w-0">
 							<CardDetailView
+								isMobile={isMobile}
 								selection={selectedCard}
 								currentProjectId={currentProjectId}
 								workspacePath={workspacePath}
