@@ -28,6 +28,7 @@ import { terminateProcessForTimeout } from "./server/process-termination";
 import type { RuntimeStateHub } from "./server/runtime-state-hub";
 import { captureNodeException, flushNodeTelemetry } from "./telemetry/sentry-node.js";
 import type { TerminalSessionManager } from "./terminal/session-manager";
+import type { RuntimeAppRouter } from "./trpc/app-router";
 
 interface CliOptions {
 	noOpen: boolean;
@@ -358,6 +359,10 @@ async function startServer(): Promise<{
 		{ resolveInteractiveShellCommand },
 		{ shutdownRuntimeServer },
 		{ collectProjectWorktreeTaskIdsForRemoval, createWorkspaceRegistry },
+		{ listWorkspaceIndexEntries, loadWorkspaceState, mutateWorkspaceState },
+		{ createTRPCProxyClient, httpBatchLink },
+		{ createTaskScheduleMonitor },
+		{ createTaskRecurringMonitor },
 	] = await Promise.all([
 		import("./projects/project-path.js"),
 		import("./server/directory-picker.js"),
@@ -366,6 +371,10 @@ async function startServer(): Promise<{
 		import("./server/shell.js"),
 		import("./server/shutdown-coordinator.js"),
 		import("./server/workspace-registry.js"),
+		import("./state/workspace-state.js"),
+		import("@trpc/client"),
+		import("./server/task-schedule-monitor.js"),
+		import("./server/task-recurring-monitor.js"),
 	]);
 	let runtimeStateHub: RuntimeStateHub | undefined;
 	const workspaceRegistry = await createWorkspaceRegistry({
@@ -416,17 +425,49 @@ async function startServer(): Promise<{
 		pickDirectoryPathFromSystemDialog,
 	});
 
+	/** Creates a tRPC proxy client that targets the local runtime server for a given workspace. */
+	const createLocalTrpcClient = (workspaceId: string) =>
+		createTRPCProxyClient<RuntimeAppRouter>({
+			links: [
+				httpBatchLink({
+					url: buildKanbanRuntimeUrl("/api/trpc"),
+					headers: () => ({ "x-kanban-workspace-id": workspaceId }),
+				}),
+			],
+		});
+
+	const monitorWarn = (message: string) => console.warn(`[kanban] ${message}`);
+
+	const monitorDeps = {
+		listWorkspaceIndexEntries,
+		loadWorkspaceState,
+		mutateWorkspaceState,
+		createTrpcClient: createLocalTrpcClient,
+		broadcastRuntimeWorkspaceStateUpdated: runtimeHub.broadcastRuntimeWorkspaceStateUpdated,
+		broadcastRuntimeProjectsUpdated: runtimeHub.broadcastRuntimeProjectsUpdated,
+		warn: monitorWarn,
+	};
+
+	const scheduleMonitor = createTaskScheduleMonitor(monitorDeps);
+	const recurringMonitor = createTaskRecurringMonitor(monitorDeps);
+
 	const close = async () => {
+		scheduleMonitor.close();
+		recurringMonitor.close();
 		await runtimeServer.close();
 	};
 
 	const shutdown = async (options?: { skipSessionCleanup?: boolean }) => {
+		scheduleMonitor.close();
+		recurringMonitor.close();
 		await shutdownRuntimeServer({
 			workspaceRegistry,
 			warn: (message) => {
 				console.warn(`[kanban] ${message}`);
 			},
-			closeRuntimeServer: close,
+			closeRuntimeServer: async () => {
+				await runtimeServer.close();
+			},
 			skipSessionCleanup: options?.skipSessionCleanup ?? false,
 		});
 	};

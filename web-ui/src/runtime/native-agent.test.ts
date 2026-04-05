@@ -59,6 +59,7 @@ function createRuntimeConfigResponse(
 		openPrPromptTemplate: "",
 		commitPromptTemplateDefault: "",
 		openPrPromptTemplateDefault: "",
+		recurringMaxTurnsPerExecution: 200,
 	};
 	return {
 		...nextConfig,

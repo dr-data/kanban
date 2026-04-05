@@ -318,6 +318,7 @@ async function deleteTaskWorkspace(
 	}
 }
 
+/** Create a new task in the backlog column with optional recurring and scheduling configuration. */
 async function createTask(input: {
 	cwd: string;
 	prompt: string;
@@ -326,6 +327,11 @@ async function createTask(input: {
 	startInPlanMode?: boolean;
 	autoReviewEnabled?: boolean;
 	autoReviewMode?: "commit" | "pr" | "move_to_trash";
+	recurringEnabled?: boolean;
+	recurringMaxIterations?: number;
+	recurringPeriodMs?: number;
+	scheduledStartAt?: number;
+	scheduledEndAt?: number;
 }): Promise<JsonRecord> {
 	const workspaceRepoPath = await resolveWorkspaceRepoPath(input.projectPath, input.cwd);
 	const workspaceId = await ensureRuntimeWorkspace(workspaceRepoPath);
@@ -344,6 +350,11 @@ async function createTask(input: {
 				autoReviewEnabled: input.autoReviewEnabled,
 				autoReviewMode: input.autoReviewMode,
 				baseRef: resolvedBaseRef,
+				recurringEnabled: input.recurringEnabled,
+				recurringMaxIterations: input.recurringMaxIterations,
+				recurringPeriodMs: input.recurringPeriodMs,
+				scheduledStartAt: input.scheduledStartAt ?? null,
+				scheduledEndAt: input.scheduledEndAt ?? null,
 			},
 			() => globalThis.crypto.randomUUID(),
 		);
@@ -364,10 +375,16 @@ async function createTask(input: {
 			startInPlanMode: created.startInPlanMode,
 			autoReviewEnabled: created.autoReviewEnabled === true,
 			autoReviewMode: created.autoReviewMode ?? "commit",
+			recurringEnabled: created.recurringEnabled ?? false,
+			recurringMaxIterations: created.recurringMaxIterations ?? 0,
+			recurringPeriodMs: created.recurringPeriodMs ?? 0,
+			scheduledStartAt: created.scheduledStartAt ?? null,
+			scheduledEndAt: created.scheduledEndAt ?? null,
 		},
 	};
 }
 
+/** Update an existing task, including prompt, base ref, plan mode, auto-review, and recurring configuration. */
 async function updateTaskCommand(input: {
 	cwd: string;
 	taskId: string;
@@ -377,13 +394,23 @@ async function updateTaskCommand(input: {
 	startInPlanMode?: boolean;
 	autoReviewEnabled?: boolean;
 	autoReviewMode?: "commit" | "pr" | "move_to_trash";
+	recurringEnabled?: boolean;
+	recurringMaxIterations?: number;
+	recurringPeriodMs?: number;
+	scheduledStartAt?: number;
+	scheduledEndAt?: number;
 }): Promise<JsonRecord> {
 	if (
 		input.prompt === undefined &&
 		input.baseRef === undefined &&
 		input.startInPlanMode === undefined &&
 		input.autoReviewEnabled === undefined &&
-		input.autoReviewMode === undefined
+		input.autoReviewMode === undefined &&
+		input.recurringEnabled === undefined &&
+		input.recurringMaxIterations === undefined &&
+		input.recurringPeriodMs === undefined &&
+		input.scheduledStartAt === undefined &&
+		input.scheduledEndAt === undefined
 	) {
 		throw new Error("task update requires at least one field to change.");
 	}
@@ -403,6 +430,11 @@ async function updateTaskCommand(input: {
 			startInPlanMode: input.startInPlanMode ?? taskRecord.task.startInPlanMode,
 			autoReviewEnabled: input.autoReviewEnabled ?? taskRecord.task.autoReviewEnabled === true,
 			autoReviewMode: input.autoReviewMode ?? taskRecord.task.autoReviewMode ?? "commit",
+			recurringEnabled: input.recurringEnabled ?? taskRecord.task.recurringEnabled,
+			recurringMaxIterations: input.recurringMaxIterations ?? taskRecord.task.recurringMaxIterations,
+			recurringPeriodMs: input.recurringPeriodMs ?? taskRecord.task.recurringPeriodMs,
+			scheduledStartAt: input.scheduledStartAt ?? taskRecord.task.scheduledStartAt,
+			scheduledEndAt: input.scheduledEndAt ?? taskRecord.task.scheduledEndAt,
 		});
 		if (!updatedTask.updated || !updatedTask.task) {
 			throw new Error(`Task "${input.taskId}" could not be updated.`);
@@ -936,6 +968,11 @@ export function registerTaskCommand(program: Command): void {
 		.option("--start-in-plan-mode [value]", "Set plan mode (true|false). Flag-only implies true.")
 		.option("--auto-review-enabled [value]", "Enable auto-review behavior (true|false). Flag-only implies true.")
 		.option("--auto-review-mode <mode>", "Auto-review mode: commit | pr | move_to_trash.", parseAutoReviewMode)
+		.option("--recurring-enabled [value]", "Enable recurring execution (true|false). Flag-only implies true.")
+		.option("--recurring-max-iterations <n>", "Max recurring iterations (0 = unlimited).", parseInt)
+		.option("--recurring-period-ms <ms>", "Delay between recurring iterations in ms.", parseInt)
+		.option("--scheduled-start-at <epoch>", "Scheduled start time as epoch ms.", parseInt)
+		.option("--scheduled-end-at <epoch>", "Scheduled end time as epoch ms.", parseInt)
 		.action(
 			async (options: {
 				prompt: string;
@@ -944,6 +981,11 @@ export function registerTaskCommand(program: Command): void {
 				startInPlanMode?: unknown;
 				autoReviewEnabled?: unknown;
 				autoReviewMode?: "commit" | "pr" | "move_to_trash";
+				recurringEnabled?: unknown;
+				recurringMaxIterations?: number;
+				recurringPeriodMs?: number;
+				scheduledStartAt?: number;
+				scheduledEndAt?: number;
 			}) => {
 				await runTaskCommand(
 					async () =>
@@ -955,6 +997,11 @@ export function registerTaskCommand(program: Command): void {
 							startInPlanMode: parseOptionalBooleanOption(options.startInPlanMode, "--start-in-plan-mode"),
 							autoReviewEnabled: parseOptionalBooleanOption(options.autoReviewEnabled, "--auto-review-enabled"),
 							autoReviewMode: options.autoReviewMode,
+							recurringEnabled: parseOptionalBooleanOption(options.recurringEnabled, "--recurring-enabled"),
+							recurringMaxIterations: options.recurringMaxIterations,
+							recurringPeriodMs: options.recurringPeriodMs,
+							scheduledStartAt: options.scheduledStartAt,
+							scheduledEndAt: options.scheduledEndAt,
 						}),
 				);
 			},
@@ -970,6 +1017,11 @@ export function registerTaskCommand(program: Command): void {
 		.option("--start-in-plan-mode [value]", "Set plan mode (true|false). Flag-only implies true.")
 		.option("--auto-review-enabled [value]", "Enable auto-review behavior (true|false). Flag-only implies true.")
 		.option("--auto-review-mode <mode>", "Auto-review mode: commit | pr | move_to_trash.", parseAutoReviewMode)
+		.option("--recurring-enabled [value]", "Enable recurring execution (true|false). Flag-only implies true.")
+		.option("--recurring-max-iterations <n>", "Max recurring iterations (0 = unlimited).", parseInt)
+		.option("--recurring-period-ms <ms>", "Delay between recurring iterations in ms.", parseInt)
+		.option("--scheduled-start-at <epoch>", "Scheduled start time as epoch ms.", parseInt)
+		.option("--scheduled-end-at <epoch>", "Scheduled end time as epoch ms.", parseInt)
 		.action(
 			async (options: {
 				taskId: string;
@@ -979,6 +1031,11 @@ export function registerTaskCommand(program: Command): void {
 				startInPlanMode?: unknown;
 				autoReviewEnabled?: unknown;
 				autoReviewMode?: "commit" | "pr" | "move_to_trash";
+				recurringEnabled?: unknown;
+				recurringMaxIterations?: number;
+				recurringPeriodMs?: number;
+				scheduledStartAt?: number;
+				scheduledEndAt?: number;
 			}) => {
 				await runTaskCommand(
 					async () =>
@@ -991,6 +1048,11 @@ export function registerTaskCommand(program: Command): void {
 							startInPlanMode: parseOptionalBooleanOption(options.startInPlanMode, "--start-in-plan-mode"),
 							autoReviewEnabled: parseOptionalBooleanOption(options.autoReviewEnabled, "--auto-review-enabled"),
 							autoReviewMode: options.autoReviewMode,
+							recurringEnabled: parseOptionalBooleanOption(options.recurringEnabled, "--recurring-enabled"),
+							recurringMaxIterations: options.recurringMaxIterations,
+							recurringPeriodMs: options.recurringPeriodMs,
+							scheduledStartAt: options.scheduledStartAt,
+							scheduledEndAt: options.scheduledEndAt,
 						}),
 				);
 			},

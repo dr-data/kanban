@@ -5,6 +5,7 @@ import { notifyError, showAppToast } from "@/components/app-toaster";
 import type { TaskGitAction } from "@/git-actions/build-task-git-action-prompt";
 import { useLinkedBacklogTaskActions } from "@/hooks/use-linked-backlog-task-actions";
 import { useProgrammaticCardMoves } from "@/hooks/use-programmatic-card-moves";
+import { useRecurringTimers } from "@/hooks/use-recurring-timers";
 import { useReviewAutoActions } from "@/hooks/use-review-auto-actions";
 import type { UseTaskSessionsResult } from "@/hooks/use-task-sessions";
 import type { RuntimeTaskSessionSummary, RuntimeTaskWorkspaceInfoResponse } from "@/runtime/types";
@@ -529,6 +530,12 @@ export function useBoardInteractions({
 		runAutoReviewGitAction,
 		requestMoveTaskToTrash: requestMoveTaskToTrashWithAnimation,
 		resetKey: currentProjectId,
+	});
+
+	useRecurringTimers({
+		board,
+		setBoard,
+		startBacklogTask: startBacklogTaskImmediately,
 	});
 
 	const resumeTaskFromTrash = useCallback(

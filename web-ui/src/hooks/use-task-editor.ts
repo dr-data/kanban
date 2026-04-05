@@ -48,6 +48,16 @@ export interface UseTaskEditorResult {
 	isNewTaskStartInPlanModeDisabled: boolean;
 	newTaskBranchRef: string;
 	setNewTaskBranchRef: Dispatch<SetStateAction<string>>;
+	newTaskRecurringEnabled: boolean;
+	setNewTaskRecurringEnabled: Dispatch<SetStateAction<boolean>>;
+	newTaskRecurringMaxIterations: number;
+	setNewTaskRecurringMaxIterations: Dispatch<SetStateAction<number>>;
+	newTaskRecurringPeriodMs: number;
+	setNewTaskRecurringPeriodMs: Dispatch<SetStateAction<number>>;
+	newTaskScheduledStartAt: number | null;
+	setNewTaskScheduledStartAt: Dispatch<SetStateAction<number | null>>;
+	newTaskScheduledEndAt: number | null;
+	setNewTaskScheduledEndAt: Dispatch<SetStateAction<number | null>>;
 	editingTaskId: string | null;
 	editTaskPrompt: string;
 	setEditTaskPrompt: Dispatch<SetStateAction<string>>;
@@ -62,6 +72,16 @@ export interface UseTaskEditorResult {
 	isEditTaskStartInPlanModeDisabled: boolean;
 	editTaskBranchRef: string;
 	setEditTaskBranchRef: Dispatch<SetStateAction<string>>;
+	editTaskRecurringEnabled: boolean;
+	setEditTaskRecurringEnabled: Dispatch<SetStateAction<boolean>>;
+	editTaskRecurringMaxIterations: number;
+	setEditTaskRecurringMaxIterations: Dispatch<SetStateAction<number>>;
+	editTaskRecurringPeriodMs: number;
+	setEditTaskRecurringPeriodMs: Dispatch<SetStateAction<number>>;
+	editTaskScheduledStartAt: number | null;
+	setEditTaskScheduledStartAt: Dispatch<SetStateAction<number | null>>;
+	editTaskScheduledEndAt: number | null;
+	setEditTaskScheduledEndAt: Dispatch<SetStateAction<number | null>>;
 	handleOpenCreateTask: () => void;
 	handleCancelCreateTask: () => void;
 	handleOpenEditTask: (task: BoardCard, options?: OpenEditTaskOptions) => void;
@@ -110,6 +130,20 @@ export function useTaskEditor({
 	const [editTaskAutoReviewMode, setEditTaskAutoReviewMode] = useState<TaskAutoReviewMode>("commit");
 	const isEditTaskStartInPlanModeDisabled = editTaskAutoReviewEnabled && editTaskAutoReviewMode === "move_to_trash";
 	const [editTaskBranchRef, setEditTaskBranchRef] = useState("");
+
+	/* Recurring state for new tasks */
+	const [newTaskRecurringEnabled, setNewTaskRecurringEnabled] = useState(false);
+	const [newTaskRecurringMaxIterations, setNewTaskRecurringMaxIterations] = useState(1);
+	const [newTaskRecurringPeriodMs, setNewTaskRecurringPeriodMs] = useState(180_000);
+	const [newTaskScheduledStartAt, setNewTaskScheduledStartAt] = useState<number | null>(null);
+	const [newTaskScheduledEndAt, setNewTaskScheduledEndAt] = useState<number | null>(null);
+
+	/* Recurring state for editing tasks */
+	const [editTaskRecurringEnabled, setEditTaskRecurringEnabled] = useState(false);
+	const [editTaskRecurringMaxIterations, setEditTaskRecurringMaxIterations] = useState(1);
+	const [editTaskRecurringPeriodMs, setEditTaskRecurringPeriodMs] = useState(180_000);
+	const [editTaskScheduledStartAt, setEditTaskScheduledStartAt] = useState<number | null>(null);
+	const [editTaskScheduledEndAt, setEditTaskScheduledEndAt] = useState<number | null>(null);
 
 	const lastCreatedTaskBranchRef = useMemo(() => {
 		if (!currentProjectId) {
@@ -183,6 +217,11 @@ export function useTaskEditor({
 			setEditTaskAutoReviewMode("commit");
 			setEditTaskImages([]);
 			setEditTaskBranchRef("");
+			setEditTaskRecurringEnabled(false);
+			setEditTaskRecurringMaxIterations(1);
+			setEditTaskRecurringPeriodMs(180_000);
+			setEditTaskScheduledStartAt(null);
+			setEditTaskScheduledEndAt(null);
 		}
 	}, [board, editingTaskId]);
 
@@ -217,6 +256,11 @@ export function useTaskEditor({
 			setEditTaskAutoReviewMode(resolveTaskAutoReviewMode(task.autoReviewMode));
 			const fallbackBranch = task.baseRef || resolvedDefaultTaskBranchRef;
 			setEditTaskBranchRef(fallbackBranch);
+			setEditTaskRecurringEnabled(task.recurringEnabled === true);
+			setEditTaskRecurringMaxIterations(task.recurringMaxIterations ?? 1);
+			setEditTaskRecurringPeriodMs(task.recurringPeriodMs ?? 180_000);
+			setEditTaskScheduledStartAt(task.scheduledStartAt ?? null);
+			setEditTaskScheduledEndAt(task.scheduledEndAt ?? null);
 		},
 		[resolvedDefaultTaskBranchRef, setSelectedTaskId],
 	);
@@ -229,6 +273,11 @@ export function useTaskEditor({
 		setEditTaskAutoReviewMode("commit");
 		setEditTaskImages([]);
 		setEditTaskBranchRef("");
+		setEditTaskRecurringEnabled(false);
+		setEditTaskRecurringMaxIterations(1);
+		setEditTaskRecurringPeriodMs(180_000);
+		setEditTaskScheduledStartAt(null);
+		setEditTaskScheduledEndAt(null);
 	}, []);
 
 	const handleSaveEditedTask = useCallback((): string | null => {
@@ -254,6 +303,11 @@ export function useTaskEditor({
 				autoReviewMode: editTaskAutoReviewMode,
 				images: editTaskImages,
 				baseRef,
+				recurringEnabled: editTaskRecurringEnabled,
+				recurringMaxIterations: editTaskRecurringMaxIterations,
+				recurringPeriodMs: editTaskRecurringPeriodMs,
+				scheduledStartAt: editTaskScheduledStartAt,
+				scheduledEndAt: editTaskScheduledEndAt,
 			});
 			return updated.updated ? updated.board : currentBoard;
 		});
@@ -262,6 +316,11 @@ export function useTaskEditor({
 		setEditTaskAutoReviewEnabled(false);
 		setEditTaskAutoReviewMode("commit");
 		setEditTaskImages([]);
+		setEditTaskRecurringEnabled(false);
+		setEditTaskRecurringMaxIterations(1);
+		setEditTaskRecurringPeriodMs(180_000);
+		setEditTaskScheduledStartAt(null);
+		setEditTaskScheduledEndAt(null);
 		return savedTaskId;
 	}, [
 		editTaskAutoReviewEnabled,
@@ -270,6 +329,11 @@ export function useTaskEditor({
 		editTaskPrompt,
 		editTaskImages,
 		editTaskStartInPlanMode,
+		editTaskRecurringEnabled,
+		editTaskRecurringMaxIterations,
+		editTaskRecurringPeriodMs,
+		editTaskScheduledStartAt,
+		editTaskScheduledEndAt,
 		editingTaskId,
 		resolvedDefaultTaskBranchRef,
 		setBoard,
@@ -300,6 +364,11 @@ export function useTaskEditor({
 				autoReviewMode: newTaskAutoReviewMode,
 				images: newTaskImages,
 				baseRef,
+				recurringEnabled: newTaskRecurringEnabled,
+				recurringMaxIterations: newTaskRecurringMaxIterations,
+				recurringPeriodMs: newTaskRecurringPeriodMs,
+				scheduledStartAt: newTaskScheduledStartAt,
+				scheduledEndAt: newTaskScheduledEndAt,
 			});
 			setBoard(created.board);
 			trackTaskCreated({
@@ -331,6 +400,11 @@ export function useTaskEditor({
 			newTaskImages,
 			newTaskPrompt,
 			newTaskStartInPlanMode,
+			newTaskRecurringEnabled,
+			newTaskRecurringMaxIterations,
+			newTaskRecurringPeriodMs,
+			newTaskScheduledStartAt,
+			newTaskScheduledEndAt,
 			resolvedDefaultTaskBranchRef,
 			selectedAgentId,
 			setBoard,
@@ -357,6 +431,11 @@ export function useTaskEditor({
 					autoReviewMode: newTaskAutoReviewMode,
 					images: newTaskImages,
 					baseRef,
+					recurringEnabled: newTaskRecurringEnabled,
+					recurringMaxIterations: newTaskRecurringMaxIterations,
+					recurringPeriodMs: newTaskRecurringPeriodMs,
+					scheduledStartAt: newTaskScheduledStartAt,
+					scheduledEndAt: newTaskScheduledEndAt,
 				});
 				updatedBoard = created.board;
 				createdTaskIds.push(created.task.id);
@@ -392,6 +471,11 @@ export function useTaskEditor({
 			newTaskBranchRef,
 			newTaskImages,
 			newTaskStartInPlanMode,
+			newTaskRecurringEnabled,
+			newTaskRecurringMaxIterations,
+			newTaskRecurringPeriodMs,
+			newTaskScheduledStartAt,
+			newTaskScheduledEndAt,
 			resolvedDefaultTaskBranchRef,
 			selectedAgentId,
 			setBoard,
@@ -407,6 +491,11 @@ export function useTaskEditor({
 		setEditTaskAutoReviewMode("commit");
 		setEditTaskImages([]);
 		setEditTaskBranchRef("");
+		setEditTaskRecurringEnabled(false);
+		setEditTaskRecurringMaxIterations(1);
+		setEditTaskRecurringPeriodMs(180_000);
+		setEditTaskScheduledStartAt(null);
+		setEditTaskScheduledEndAt(null);
 		setNewTaskImages([]);
 	}, []);
 
@@ -425,6 +514,16 @@ export function useTaskEditor({
 		isNewTaskStartInPlanModeDisabled,
 		newTaskBranchRef,
 		setNewTaskBranchRef,
+		newTaskRecurringEnabled,
+		setNewTaskRecurringEnabled,
+		newTaskRecurringMaxIterations,
+		setNewTaskRecurringMaxIterations,
+		newTaskRecurringPeriodMs,
+		setNewTaskRecurringPeriodMs,
+		newTaskScheduledStartAt,
+		setNewTaskScheduledStartAt,
+		newTaskScheduledEndAt,
+		setNewTaskScheduledEndAt,
 		editingTaskId,
 		editTaskPrompt,
 		setEditTaskPrompt,
@@ -439,6 +538,16 @@ export function useTaskEditor({
 		isEditTaskStartInPlanModeDisabled,
 		editTaskBranchRef,
 		setEditTaskBranchRef,
+		editTaskRecurringEnabled,
+		setEditTaskRecurringEnabled,
+		editTaskRecurringMaxIterations,
+		setEditTaskRecurringMaxIterations,
+		editTaskRecurringPeriodMs,
+		setEditTaskRecurringPeriodMs,
+		editTaskScheduledStartAt,
+		setEditTaskScheduledStartAt,
+		editTaskScheduledEndAt,
+		setEditTaskScheduledEndAt,
 		handleOpenCreateTask,
 		handleCancelCreateTask,
 		handleOpenEditTask,

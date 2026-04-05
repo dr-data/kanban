@@ -97,6 +97,12 @@ export const runtimeBoardCardSchema = z.object({
 	baseRef: z.string(),
 	createdAt: z.number(),
 	updatedAt: z.number(),
+	recurringEnabled: z.boolean().optional(),
+	recurringMaxIterations: z.number().int().min(0).optional(),
+	recurringPeriodMs: z.number().int().min(0).optional(),
+	recurringCurrentIteration: z.number().int().min(0).optional(),
+	scheduledStartAt: z.number().nullable().optional(),
+	scheduledEndAt: z.number().nullable().optional(),
 });
 export type RuntimeBoardCard = z.infer<typeof runtimeBoardCardSchema>;
 
@@ -747,6 +753,7 @@ export const runtimeConfigResponseSchema = z.object({
 	openPrPromptTemplate: z.string(),
 	commitPromptTemplateDefault: z.string(),
 	openPrPromptTemplateDefault: z.string(),
+	recurringMaxTurnsPerExecution: z.number().int().min(1),
 });
 export type RuntimeConfigResponse = z.infer<typeof runtimeConfigResponseSchema>;
 
@@ -758,6 +765,7 @@ export const runtimeConfigSaveRequestSchema = z.object({
 	readyForReviewNotificationsEnabled: z.boolean().optional(),
 	commitPromptTemplate: z.string().optional(),
 	openPrPromptTemplate: z.string().optional(),
+	recurringMaxTurnsPerExecution: z.number().int().min(1).optional(),
 });
 export type RuntimeConfigSaveRequest = z.infer<typeof runtimeConfigSaveRequestSchema>;
 

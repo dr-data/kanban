@@ -16,6 +16,12 @@ export interface RuntimeCreateTaskInput {
 	autoReviewMode?: RuntimeTaskAutoReviewMode;
 	images?: RuntimeTaskImage[];
 	baseRef: string;
+	recurringEnabled?: boolean;
+	recurringMaxIterations?: number;
+	recurringPeriodMs?: number;
+	recurringCurrentIteration?: number;
+	scheduledStartAt?: number | null;
+	scheduledEndAt?: number | null;
 }
 
 export interface RuntimeUpdateTaskInput {
@@ -25,6 +31,12 @@ export interface RuntimeUpdateTaskInput {
 	autoReviewMode?: RuntimeTaskAutoReviewMode;
 	images?: RuntimeTaskImage[];
 	baseRef: string;
+	recurringEnabled?: boolean;
+	recurringMaxIterations?: number;
+	recurringPeriodMs?: number;
+	recurringCurrentIteration?: number;
+	scheduledStartAt?: number | null;
+	scheduledEndAt?: number | null;
 }
 
 function normalizeTaskAutoReviewMode(value: RuntimeTaskAutoReviewMode | null | undefined): RuntimeTaskAutoReviewMode {
@@ -32,6 +44,20 @@ function normalizeTaskAutoReviewMode(value: RuntimeTaskAutoReviewMode | null | u
 		return value;
 	}
 	return "commit";
+}
+
+/**
+ * Returns true if a task is eligible for another recurring iteration.
+ * A task recurs when recurringEnabled is true and either maxIterations is 0
+ * (unlimited) or the current iteration count is below the max.
+ */
+export function shouldTaskRecur(task: RuntimeBoardCard): boolean {
+	if (!task.recurringEnabled) {
+		return false;
+	}
+	const maxIterations = task.recurringMaxIterations ?? 0;
+	const currentIteration = task.recurringCurrentIteration ?? 0;
+	return maxIterations === 0 || currentIteration < maxIterations;
 }
 
 // Copy image metadata so board tasks do not retain caller-owned array or object references.
@@ -99,8 +125,12 @@ function collectTaskIds(board: RuntimeBoardData): Set<string> {
 	return taskIds;
 }
 
+/** Generates a short random ID for a dependency link, with fallback for non-HTTPS contexts. */
 function createDependencyId(): string {
-	return crypto.randomUUID().replaceAll("-", "").slice(0, 8);
+	if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+		return crypto.randomUUID().replaceAll("-", "").slice(0, 8);
+	}
+	return (Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)).slice(0, 8);
 }
 
 function createDependencyPairKey(backlogTaskId: string, linkedTaskId: string): string {
@@ -287,6 +317,14 @@ export function addTaskToColumn(
 		baseRef,
 		createdAt: now,
 		updatedAt: now,
+		...(input.recurringEnabled != null ? { recurringEnabled: input.recurringEnabled } : {}),
+		...(input.recurringMaxIterations != null ? { recurringMaxIterations: input.recurringMaxIterations } : {}),
+		...(input.recurringPeriodMs != null ? { recurringPeriodMs: input.recurringPeriodMs } : {}),
+		...(input.recurringCurrentIteration != null
+			? { recurringCurrentIteration: input.recurringCurrentIteration }
+			: {}),
+		...(input.scheduledStartAt !== undefined ? { scheduledStartAt: input.scheduledStartAt } : {}),
+		...(input.scheduledEndAt !== undefined ? { scheduledEndAt: input.scheduledEndAt } : {}),
 	};
 
 	const targetColumnIndex = board.columns.findIndex((column) => column.id === columnId);
@@ -599,6 +637,16 @@ export function updateTask(
 				images: input.images === undefined ? card.images : cloneTaskImages(input.images),
 				baseRef,
 				updatedAt: now,
+				...(input.recurringEnabled !== undefined ? { recurringEnabled: input.recurringEnabled } : {}),
+				...(input.recurringMaxIterations !== undefined
+					? { recurringMaxIterations: input.recurringMaxIterations }
+					: {}),
+				...(input.recurringPeriodMs !== undefined ? { recurringPeriodMs: input.recurringPeriodMs } : {}),
+				...(input.recurringCurrentIteration !== undefined
+					? { recurringCurrentIteration: input.recurringCurrentIteration }
+					: {}),
+				...(input.scheduledStartAt !== undefined ? { scheduledStartAt: input.scheduledStartAt } : {}),
+				...(input.scheduledEndAt !== undefined ? { scheduledEndAt: input.scheduledEndAt } : {}),
 			};
 			return updatedTask;
 		});

@@ -299,6 +299,16 @@ export default function App(): ReactElement {
 		isNewTaskStartInPlanModeDisabled,
 		newTaskBranchRef,
 		setNewTaskBranchRef,
+		newTaskRecurringEnabled,
+		setNewTaskRecurringEnabled,
+		newTaskRecurringMaxIterations,
+		setNewTaskRecurringMaxIterations,
+		newTaskRecurringPeriodMs,
+		setNewTaskRecurringPeriodMs,
+		newTaskScheduledStartAt,
+		setNewTaskScheduledStartAt,
+		newTaskScheduledEndAt,
+		setNewTaskScheduledEndAt,
 		editingTaskId,
 		editTaskPrompt,
 		setEditTaskPrompt,
@@ -313,6 +323,16 @@ export default function App(): ReactElement {
 		isEditTaskStartInPlanModeDisabled,
 		editTaskBranchRef,
 		setEditTaskBranchRef,
+		editTaskRecurringEnabled,
+		setEditTaskRecurringEnabled,
+		editTaskRecurringMaxIterations,
+		setEditTaskRecurringMaxIterations,
+		editTaskRecurringPeriodMs,
+		setEditTaskRecurringPeriodMs,
+		editTaskScheduledStartAt,
+		setEditTaskScheduledStartAt,
+		editTaskScheduledEndAt,
+		setEditTaskScheduledEndAt,
 		handleOpenCreateTask,
 		handleCancelCreateTask,
 		handleOpenEditTask,
@@ -737,6 +757,16 @@ export default function App(): ReactElement {
 			branchRef={editTaskBranchRef}
 			branchOptions={createTaskBranchOptions}
 			onBranchRefChange={setEditTaskBranchRef}
+			recurringEnabled={editTaskRecurringEnabled}
+			onRecurringEnabledChange={setEditTaskRecurringEnabled}
+			recurringMaxIterations={editTaskRecurringMaxIterations}
+			onRecurringMaxIterationsChange={setEditTaskRecurringMaxIterations}
+			recurringPeriodMs={editTaskRecurringPeriodMs}
+			onRecurringPeriodMsChange={setEditTaskRecurringPeriodMs}
+			scheduledStartAt={editTaskScheduledStartAt}
+			onScheduledStartAtChange={setEditTaskScheduledStartAt}
+			scheduledEndAt={editTaskScheduledEndAt}
+			onScheduledEndAtChange={setEditTaskScheduledEndAt}
 			mode="edit"
 			idPrefix={`inline-edit-task-${editingTaskId}`}
 		/>
@@ -875,7 +905,6 @@ export default function App(): ReactElement {
 										/>
 									) : (
 										<KanbanBoard
-											isMobile={isMobile}
 											data={board}
 											taskSessions={sessions}
 											workspacePath={workspacePath}
@@ -1067,6 +1096,16 @@ export default function App(): ReactElement {
 				branchRef={newTaskBranchRef}
 				branchOptions={createTaskBranchOptions}
 				onBranchRefChange={setNewTaskBranchRef}
+				recurringEnabled={newTaskRecurringEnabled}
+				onRecurringEnabledChange={setNewTaskRecurringEnabled}
+				recurringMaxIterations={newTaskRecurringMaxIterations}
+				onRecurringMaxIterationsChange={setNewTaskRecurringMaxIterations}
+				recurringPeriodMs={newTaskRecurringPeriodMs}
+				onRecurringPeriodMsChange={setNewTaskRecurringPeriodMs}
+				scheduledStartAt={newTaskScheduledStartAt}
+				onScheduledStartAtChange={setNewTaskScheduledStartAt}
+				scheduledEndAt={newTaskScheduledEndAt}
+				onScheduledEndAtChange={setNewTaskScheduledEndAt}
 			/>
 			<ClearTrashDialog
 				open={isClearTrashDialogOpen}

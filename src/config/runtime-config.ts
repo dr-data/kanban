@@ -17,6 +17,7 @@ interface RuntimeGlobalConfigFileShape {
 	readyForReviewNotificationsEnabled?: boolean;
 	commitPromptTemplate?: string;
 	openPrPromptTemplate?: string;
+	recurringMaxTurnsPerExecution?: number;
 }
 
 interface RuntimeProjectConfigFileShape {
@@ -35,6 +36,7 @@ export interface RuntimeConfigState {
 	openPrPromptTemplate: string;
 	commitPromptTemplateDefault: string;
 	openPrPromptTemplateDefault: string;
+	recurringMaxTurnsPerExecution: number;
 }
 
 export interface RuntimeConfigUpdateInput {
@@ -45,6 +47,7 @@ export interface RuntimeConfigUpdateInput {
 	shortcuts?: RuntimeProjectShortcut[];
 	commitPromptTemplate?: string;
 	openPrPromptTemplate?: string;
+	recurringMaxTurnsPerExecution?: number;
 }
 
 const RUNTIME_HOME_PARENT_DIR = ".cline";
@@ -57,6 +60,7 @@ const DEFAULT_AGENT_ID: RuntimeAgentId = "cline";
 const AUTO_SELECT_AGENT_PRIORITY: readonly RuntimeAgentId[] = ["claude", "codex"];
 const DEFAULT_AGENT_AUTONOMOUS_MODE_ENABLED = true;
 const DEFAULT_READY_FOR_REVIEW_NOTIFICATIONS_ENABLED = true;
+const DEFAULT_RECURRING_MAX_TURNS_PER_EXECUTION = 200;
 const DEFAULT_COMMIT_PROMPT_TEMPLATE = `You are in a worktree on a detached HEAD. When you are finished with the task, commit the working changes onto {{base_ref}}.
 
 - Do not run destructive commands: git reset --hard, git clean -fdx, git worktree remove, rm/mv on repository paths.
@@ -182,6 +186,14 @@ function normalizeBoolean(value: unknown, fallback: boolean): boolean {
 	return fallback;
 }
 
+/** Normalizes a positive integer value, returning the fallback for invalid inputs. */
+function normalizePositiveInteger(value: unknown, fallback: number): number {
+	if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+		return Math.round(value);
+	}
+	return fallback;
+}
+
 function normalizeShortcutLabel(value: unknown): string | null {
 	if (typeof value !== "string") {
 		return null;
@@ -288,6 +300,10 @@ function toRuntimeConfigState({
 		),
 		commitPromptTemplateDefault: DEFAULT_COMMIT_PROMPT_TEMPLATE,
 		openPrPromptTemplateDefault: DEFAULT_OPEN_PR_PROMPT_TEMPLATE,
+		recurringMaxTurnsPerExecution: normalizePositiveInteger(
+			globalConfig?.recurringMaxTurnsPerExecution,
+			DEFAULT_RECURRING_MAX_TURNS_PER_EXECUTION,
+		),
 	};
 }
 
@@ -309,6 +325,7 @@ async function writeRuntimeGlobalConfigFile(
 		readyForReviewNotificationsEnabled?: boolean;
 		commitPromptTemplate?: string;
 		openPrPromptTemplate?: string;
+		recurringMaxTurnsPerExecution?: number;
 	},
 ): Promise<void> {
 	const existing = await readRuntimeConfigFile<RuntimeGlobalConfigFileShape>(configPath);
@@ -337,6 +354,10 @@ async function writeRuntimeGlobalConfigFile(
 		config.openPrPromptTemplate === undefined
 			? DEFAULT_OPEN_PR_PROMPT_TEMPLATE
 			: normalizePromptTemplate(config.openPrPromptTemplate, DEFAULT_OPEN_PR_PROMPT_TEMPLATE);
+	const recurringMaxTurnsPerExecution =
+		config.recurringMaxTurnsPerExecution === undefined
+			? DEFAULT_RECURRING_MAX_TURNS_PER_EXECUTION
+			: normalizePositiveInteger(config.recurringMaxTurnsPerExecution, DEFAULT_RECURRING_MAX_TURNS_PER_EXECUTION);
 
 	const payload: RuntimeGlobalConfigFileShape = {};
 	if (selectedAgentId !== undefined) {
@@ -370,6 +391,12 @@ async function writeRuntimeGlobalConfigFile(
 	}
 	if (hasOwnKey(existing, "openPrPromptTemplate") || openPrPromptTemplate !== DEFAULT_OPEN_PR_PROMPT_TEMPLATE) {
 		payload.openPrPromptTemplate = openPrPromptTemplate;
+	}
+	if (
+		hasOwnKey(existing, "recurringMaxTurnsPerExecution") ||
+		recurringMaxTurnsPerExecution !== DEFAULT_RECURRING_MAX_TURNS_PER_EXECUTION
+	) {
+		payload.recurringMaxTurnsPerExecution = recurringMaxTurnsPerExecution;
 	}
 
 	await lockedFileSystem.writeJsonFileAtomic(configPath, payload, {
@@ -453,6 +480,7 @@ function createRuntimeConfigStateFromValues(input: {
 	shortcuts: RuntimeProjectShortcut[];
 	commitPromptTemplate: string;
 	openPrPromptTemplate: string;
+	recurringMaxTurnsPerExecution?: number;
 }): RuntimeConfigState {
 	return {
 		globalConfigPath: input.globalConfigPath,
@@ -472,6 +500,10 @@ function createRuntimeConfigStateFromValues(input: {
 		openPrPromptTemplate: normalizePromptTemplate(input.openPrPromptTemplate, DEFAULT_OPEN_PR_PROMPT_TEMPLATE),
 		commitPromptTemplateDefault: DEFAULT_COMMIT_PROMPT_TEMPLATE,
 		openPrPromptTemplateDefault: DEFAULT_OPEN_PR_PROMPT_TEMPLATE,
+		recurringMaxTurnsPerExecution: normalizePositiveInteger(
+			input.recurringMaxTurnsPerExecution,
+			DEFAULT_RECURRING_MAX_TURNS_PER_EXECUTION,
+		),
 	};
 }
 
@@ -486,6 +518,7 @@ export function toGlobalRuntimeConfigState(current: RuntimeConfigState): Runtime
 		shortcuts: [],
 		commitPromptTemplate: current.commitPromptTemplate,
 		openPrPromptTemplate: current.openPrPromptTemplate,
+		recurringMaxTurnsPerExecution: current.recurringMaxTurnsPerExecution,
 	});
 }
 
@@ -521,6 +554,7 @@ export async function saveRuntimeConfig(
 		shortcuts: RuntimeProjectShortcut[];
 		commitPromptTemplate: string;
 		openPrPromptTemplate: string;
+		recurringMaxTurnsPerExecution?: number;
 	},
 ): Promise<RuntimeConfigState> {
 	const { globalConfigPath, projectConfigPath } = resolveRuntimeConfigPaths(cwd);
@@ -532,6 +566,7 @@ export async function saveRuntimeConfig(
 			readyForReviewNotificationsEnabled: config.readyForReviewNotificationsEnabled,
 			commitPromptTemplate: config.commitPromptTemplate,
 			openPrPromptTemplate: config.openPrPromptTemplate,
+			recurringMaxTurnsPerExecution: config.recurringMaxTurnsPerExecution,
 		});
 		await writeRuntimeProjectConfigFile(projectConfigPath, { shortcuts: config.shortcuts });
 		return createRuntimeConfigStateFromValues({
@@ -544,6 +579,7 @@ export async function saveRuntimeConfig(
 			shortcuts: config.shortcuts,
 			commitPromptTemplate: config.commitPromptTemplate,
 			openPrPromptTemplate: config.openPrPromptTemplate,
+			recurringMaxTurnsPerExecution: config.recurringMaxTurnsPerExecution,
 		});
 	});
 }
@@ -565,6 +601,7 @@ export async function updateRuntimeConfig(cwd: string, updates: RuntimeConfigUpd
 			shortcuts: projectConfigPath ? (updates.shortcuts ?? current.shortcuts) : current.shortcuts,
 			commitPromptTemplate: updates.commitPromptTemplate ?? current.commitPromptTemplate,
 			openPrPromptTemplate: updates.openPrPromptTemplate ?? current.openPrPromptTemplate,
+			recurringMaxTurnsPerExecution: updates.recurringMaxTurnsPerExecution ?? current.recurringMaxTurnsPerExecution,
 		};
 
 		const hasChanges =
@@ -574,6 +611,7 @@ export async function updateRuntimeConfig(cwd: string, updates: RuntimeConfigUpd
 			nextConfig.readyForReviewNotificationsEnabled !== current.readyForReviewNotificationsEnabled ||
 			nextConfig.commitPromptTemplate !== current.commitPromptTemplate ||
 			nextConfig.openPrPromptTemplate !== current.openPrPromptTemplate ||
+			nextConfig.recurringMaxTurnsPerExecution !== current.recurringMaxTurnsPerExecution ||
 			!areRuntimeProjectShortcutsEqual(nextConfig.shortcuts, current.shortcuts);
 
 		if (!hasChanges) {
@@ -587,6 +625,7 @@ export async function updateRuntimeConfig(cwd: string, updates: RuntimeConfigUpd
 			readyForReviewNotificationsEnabled: nextConfig.readyForReviewNotificationsEnabled,
 			commitPromptTemplate: nextConfig.commitPromptTemplate,
 			openPrPromptTemplate: nextConfig.openPrPromptTemplate,
+			recurringMaxTurnsPerExecution: nextConfig.recurringMaxTurnsPerExecution,
 		});
 		await writeRuntimeProjectConfigFile(projectConfigPath, {
 			shortcuts: nextConfig.shortcuts,
@@ -601,6 +640,7 @@ export async function updateRuntimeConfig(cwd: string, updates: RuntimeConfigUpd
 			shortcuts: nextConfig.shortcuts,
 			commitPromptTemplate: nextConfig.commitPromptTemplate,
 			openPrPromptTemplate: nextConfig.openPrPromptTemplate,
+			recurringMaxTurnsPerExecution: nextConfig.recurringMaxTurnsPerExecution,
 		});
 	});
 }
@@ -630,6 +670,8 @@ export async function updateGlobalRuntimeConfig(
 				shortcuts: current.shortcuts,
 				commitPromptTemplate: updates.commitPromptTemplate ?? current.commitPromptTemplate,
 				openPrPromptTemplate: updates.openPrPromptTemplate ?? current.openPrPromptTemplate,
+				recurringMaxTurnsPerExecution:
+					updates.recurringMaxTurnsPerExecution ?? current.recurringMaxTurnsPerExecution,
 			};
 
 			const hasChanges =
@@ -638,7 +680,8 @@ export async function updateGlobalRuntimeConfig(
 				nextConfig.agentAutonomousModeEnabled !== current.agentAutonomousModeEnabled ||
 				nextConfig.readyForReviewNotificationsEnabled !== current.readyForReviewNotificationsEnabled ||
 				nextConfig.commitPromptTemplate !== current.commitPromptTemplate ||
-				nextConfig.openPrPromptTemplate !== current.openPrPromptTemplate;
+				nextConfig.openPrPromptTemplate !== current.openPrPromptTemplate ||
+				nextConfig.recurringMaxTurnsPerExecution !== current.recurringMaxTurnsPerExecution;
 
 			if (!hasChanges) {
 				return current;
@@ -651,6 +694,7 @@ export async function updateGlobalRuntimeConfig(
 				readyForReviewNotificationsEnabled: nextConfig.readyForReviewNotificationsEnabled,
 				commitPromptTemplate: nextConfig.commitPromptTemplate,
 				openPrPromptTemplate: nextConfig.openPrPromptTemplate,
+				recurringMaxTurnsPerExecution: nextConfig.recurringMaxTurnsPerExecution,
 			});
 
 			return createRuntimeConfigStateFromValues({
@@ -663,6 +707,7 @@ export async function updateGlobalRuntimeConfig(
 				shortcuts: nextConfig.shortcuts,
 				commitPromptTemplate: nextConfig.commitPromptTemplate,
 				openPrPromptTemplate: nextConfig.openPrPromptTemplate,
+				recurringMaxTurnsPerExecution: nextConfig.recurringMaxTurnsPerExecution,
 			});
 		},
 	);

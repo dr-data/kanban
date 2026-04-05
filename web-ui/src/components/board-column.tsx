@@ -58,6 +58,8 @@ export function BoardColumn({
 	onMobileColumnChange,
 	isDragDisabled,
 	dependencies,
+	onEnterMobileLinkMode,
+	onShowMobileDependencies,
 }: {
 	column: BoardColumnModel;
 	taskSessions: Record<string, RuntimeTaskSessionSummary>;
@@ -102,6 +104,10 @@ export function BoardColumn({
 	isDragDisabled?: boolean;
 	/** Dependencies for computing per-card link badge counts (mobile only). */
 	dependencies?: import("@/types").BoardDependency[];
+	/** Callback to activate mobile tap-based dependency link mode. */
+	onEnterMobileLinkMode?: () => void;
+	/** Callback to open the mobile dependency sheet for a given task. */
+	onShowMobileDependencies?: (taskId: string) => void;
 }): React.ReactElement {
 	const canCreate = column.id === "backlog" && onCreateTask;
 	const canStartAllTasks = column.id === "backlog" && onStartAllTasks;
@@ -286,6 +292,8 @@ export function BoardColumn({
 											onMoveToColumn={onMoveToColumn}
 											isDragDisabled={isDragDisabled}
 											dependencyCount={dependencyCountByTaskId.get(card.id) ?? 0}
+											onEnterMobileLinkMode={onEnterMobileLinkMode}
+											onShowMobileDependencies={onShowMobileDependencies}
 											onClick={() => {
 												if (column.id === "backlog") {
 													onEditTask?.(card);
