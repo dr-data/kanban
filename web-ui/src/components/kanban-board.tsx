@@ -8,13 +8,14 @@ import {
 	type SensorAPI,
 	type SnapDragActions,
 } from "@hello-pangea/dnd";
+import { Plus } from "lucide-react";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { BoardColumn } from "@/components/board-column";
 import { DependencyOverlay } from "@/components/dependencies/dependency-overlay";
 import { useDependencyLinking } from "@/components/dependencies/use-dependency-linking";
-import { MobileSplitBoard } from "@/components/mobile-split-board";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import type { RuntimeTaskSessionSummary } from "@/runtime/types";
 import { canCreateTaskDependency } from "@/state/board-state";
 import { findCardColumnId, type ProgrammaticCardMoveInFlight } from "@/state/drag-rules";
@@ -53,7 +54,6 @@ export function KanbanBoard({
 	onDragEnd,
 	onRequestProgrammaticCardMoveReady,
 	workspacePath,
-	isMobile = false,
 }: {
 	data: BoardData;
 	taskSessions: Record<string, RuntimeTaskSessionSummary>;
@@ -79,9 +79,8 @@ export function KanbanBoard({
 	onDragEnd: (result: DropResult) => void;
 	onRequestProgrammaticCardMoveReady?: (requestMove: RequestProgrammaticCardMove | null) => void;
 	workspacePath?: string | null;
-	/** Whether the viewport is below the mobile breakpoint. */
-	isMobile?: boolean;
 }): React.ReactElement {
+	const isMobile = useIsMobile();
 	const dragOccurredRef = useRef(false);
 	const boardRef = useRef<HTMLElement>(null);
 	const sensorApiRef = useRef<SensorAPI | null>(null);
@@ -89,6 +88,22 @@ export function KanbanBoard({
 	const programmaticCardMoveInFlightRef = useRef<ProgrammaticCardMoveInFlight | null>(null);
 	const [activeDragTaskId, setActiveDragTaskId] = useState<string | null>(null);
 	const [activeDragSourceColumnId, setActiveDragSourceColumnId] = useState<BoardColumnId | null>(null);
+	const [mobileTopColumnId, setMobileTopColumnIdRaw] = useState<BoardColumnId>("backlog");
+	const [mobileBottomColumnId, setMobileBottomColumnIdRaw] = useState<BoardColumnId>("in_progress");
+
+	/** Swap-aware setter: if the chosen column is already in the other pane, swap them. */
+	const setMobileTopColumnId = useCallback((id: BoardColumnId) => {
+		setMobileTopColumnIdRaw((prevTop) => {
+			setMobileBottomColumnIdRaw((prevBottom) => (id === prevBottom ? prevTop : prevBottom));
+			return id;
+		});
+	}, []);
+	const setMobileBottomColumnId = useCallback((id: BoardColumnId) => {
+		setMobileBottomColumnIdRaw((prevBottom) => {
+			setMobileTopColumnIdRaw((prevTop) => (id === prevTop ? prevBottom : prevTop));
+			return id;
+		});
+	}, []);
 	const [programmaticCardMoveInFlight, setProgrammaticCardMoveInFlight] =
 		useState<ProgrammaticCardMoveInFlight | null>(null);
 	const dependencyLinking = useDependencyLinking({
@@ -367,98 +382,154 @@ export function KanbanBoard({
 		programmaticCardMoveInFlight?.toColumnId ??
 		(activeDragTaskId !== null && activeDragSourceColumnId === "backlog" ? "in_progress" : null);
 
-	/* On mobile, render the split-panel layout instead. Dependency visualization
-	   uses badge counts and the TaskLinkPickerDialog rather than the SVG overlay. */
-	if (isMobile) {
-		return (
-			<MobileSplitBoard
-				data={data}
-				taskSessions={taskSessions}
-				dependencies={dependencies}
-				onCreateDependency={onCreateDependency}
-				onDeleteDependency={onDeleteDependency}
-				onCardSelect={onCardSelect}
-				onCreateTask={onCreateTask}
-				onStartTask={onStartTask}
-				onStartAllTasks={onStartAllTasks}
-				onClearTrash={onClearTrash}
-				editingTaskId={editingTaskId}
-				inlineTaskEditor={inlineTaskEditor}
-				onEditTask={onEditTask}
-				onCommitTask={onCommitTask}
-				onOpenPrTask={onOpenPrTask}
-				onCancelAutomaticTaskAction={onCancelAutomaticTaskAction}
-				onMoveToTrashTask={onMoveToTrashTask}
-				onRestoreFromTrashTask={onRestoreFromTrashTask}
-				commitTaskLoadingById={commitTaskLoadingById}
-				openPrTaskLoadingById={openPrTaskLoadingById}
-				moveToTrashLoadingById={moveToTrashLoadingById}
-				workspacePath={workspacePath}
-			/>
-		);
-	}
+	/** Card counts per column for the mobile dual-pane navigator. */
+	const mobileColumnCardCounts = useMemo(
+		() => Object.fromEntries(data.columns.map((col) => [col.id, col.cards.length])) as Record<BoardColumnId, number>,
+		[data.columns],
+	);
+
+	/**
+	 * Handles the mobile "Move to" action by synthesising a DropResult
+	 * and feeding it through the same onDragEnd path used for drag-and-drop.
+	 */
+	const handleMoveToColumn = useCallback(
+		(taskId: string, targetColumnId: BoardColumnId) => {
+			const sourceColumnId = findCardColumnId(data.columns, taskId);
+			if (!sourceColumnId || sourceColumnId === targetColumnId) return;
+			const sourceColumn = data.columns.find((col) => col.id === sourceColumnId);
+			if (!sourceColumn) return;
+			const sourceIndex = sourceColumn.cards.findIndex((card) => card.id === taskId);
+			if (sourceIndex < 0) return;
+			onDragEnd({
+				draggableId: taskId,
+				type: "CARD",
+				source: { droppableId: sourceColumnId, index: sourceIndex },
+				destination: { droppableId: targetColumnId, index: 0 },
+				reason: "DROP",
+				mode: "SNAP",
+				combine: null,
+			});
+		},
+		[data.columns, onDragEnd],
+	);
+
+	/**
+	 * Stable card-click handler — avoids creating a new closure per column
+	 * render, which would defeat React.memo on BoardCard.
+	 */
+	const handleCardClick = useCallback(
+		(card: BoardCard) => {
+			if (!dragOccurredRef.current) {
+				onCardSelect(card.id);
+			}
+		},
+		[onCardSelect],
+	);
 
 	return (
-		<DragDropContext
-			onBeforeCapture={handleBeforeCapture}
-			onDragStart={handleDragStart}
-			onDragEnd={handleDragEnd}
-			sensors={[programmaticSensor]}
-		>
-			<section
-				ref={boardRef}
-				className="kb-board kb-dependency-surface"
-				data-programmatic-card-move={programmaticCardMoveInFlight ? "true" : undefined}
+		<div className={isMobile ? "flex flex-1 flex-col min-h-0 min-w-0" : "contents"}>
+			<DragDropContext
+				onBeforeCapture={handleBeforeCapture}
+				onDragStart={handleDragStart}
+				onDragEnd={handleDragEnd}
+				sensors={[programmaticSensor]}
 			>
-				{data.columns.map((column) => (
-					<BoardColumn
-						key={column.id}
-						column={column}
-						taskSessions={taskSessions}
-						onCreateTask={column.id === "backlog" ? onCreateTask : undefined}
-						onStartTask={column.id === "backlog" ? onStartTask : undefined}
-						onStartAllTasks={column.id === "backlog" ? onStartAllTasks : undefined}
-						onClearTrash={column.id === "trash" ? onClearTrash : undefined}
-						editingTaskId={column.id === "backlog" ? editingTaskId : null}
-						inlineTaskEditor={column.id === "backlog" ? inlineTaskEditor : undefined}
-						onEditTask={column.id === "backlog" ? onEditTask : undefined}
-						onCommitTask={column.id === "review" ? onCommitTask : undefined}
-						onOpenPrTask={column.id === "review" ? onOpenPrTask : undefined}
-						onCancelAutomaticTaskAction={onCancelAutomaticTaskAction}
-						onMoveToTrashTask={column.id === "review" ? onMoveToTrashTask : undefined}
-						onRestoreFromTrashTask={column.id === "trash" ? onRestoreFromTrashTask : undefined}
-						commitTaskLoadingById={column.id === "review" ? commitTaskLoadingById : undefined}
-						openPrTaskLoadingById={column.id === "review" ? openPrTaskLoadingById : undefined}
-						moveToTrashLoadingById={column.id === "review" ? moveToTrashLoadingById : undefined}
-						activeDragTaskId={activeDragTaskId}
-						activeDragSourceColumnId={activeDragSourceColumnId}
-						programmaticCardMoveInFlight={programmaticCardMoveInFlight}
-						onDependencyPointerDown={dependencyLinking.onDependencyPointerDown}
-						onDependencyPointerEnter={dependencyLinking.onDependencyPointerEnter}
-						dependencySourceTaskId={dependencyLinking.draft?.sourceTaskId ?? null}
-						dependencyTargetTaskId={dependencyLinking.draft?.targetTaskId ?? null}
-						isDependencyLinking={dependencyLinking.draft !== null}
-						onTouchLinkStart={dependencyLinking.onTouchLinkStart}
-						onTouchLinkTarget={dependencyLinking.onTouchLinkTarget}
-						isTouchLinkingMode={dependencyLinking.draft?.mode === "touch"}
-						workspacePath={workspacePath}
-						onCardClick={(card) => {
-							if (!dragOccurredRef.current) {
-								onCardSelect(card.id);
-							}
-						}}
+				<section
+					ref={boardRef}
+					className="kb-board kb-dependency-surface"
+					data-programmatic-card-move={programmaticCardMoveInFlight ? "true" : undefined}
+				>
+					{data.columns.map((column) => {
+						const mobilePosition = isMobile
+							? column.id === mobileTopColumnId
+								? ("top" as const)
+								: column.id === mobileBottomColumnId
+									? ("bottom" as const)
+									: ("hidden" as const)
+							: undefined;
+
+						/* Skip mounting hidden mobile columns entirely — avoids
+					   rendering cards, hooks, and ResizeObservers for columns
+					   the user can't see. Programmatic moves targeting a hidden
+					   column gracefully return false; the state update still
+					   happens through the board state manager. */
+						if (mobilePosition === "hidden") return null;
+
+						return (
+							<BoardColumn
+								key={column.id}
+								column={column}
+								taskSessions={taskSessions}
+								mobilePosition={mobilePosition}
+								mobileColumnCardCounts={isMobile ? mobileColumnCardCounts : undefined}
+								onMobileColumnChange={
+									mobilePosition === "top"
+										? setMobileTopColumnId
+										: mobilePosition === "bottom"
+											? setMobileBottomColumnId
+											: undefined
+								}
+								onCreateTask={column.id === "backlog" ? onCreateTask : undefined}
+								onStartTask={column.id === "backlog" ? onStartTask : undefined}
+								onStartAllTasks={column.id === "backlog" ? onStartAllTasks : undefined}
+								onClearTrash={column.id === "trash" ? onClearTrash : undefined}
+								editingTaskId={column.id === "backlog" ? editingTaskId : null}
+								inlineTaskEditor={column.id === "backlog" ? inlineTaskEditor : undefined}
+								onEditTask={column.id === "backlog" ? onEditTask : undefined}
+								onCommitTask={column.id === "review" ? onCommitTask : undefined}
+								onOpenPrTask={column.id === "review" ? onOpenPrTask : undefined}
+								onCancelAutomaticTaskAction={onCancelAutomaticTaskAction}
+								onMoveToTrashTask={column.id === "review" ? onMoveToTrashTask : undefined}
+								onRestoreFromTrashTask={column.id === "trash" ? onRestoreFromTrashTask : undefined}
+								commitTaskLoadingById={column.id === "review" ? commitTaskLoadingById : undefined}
+								openPrTaskLoadingById={column.id === "review" ? openPrTaskLoadingById : undefined}
+								moveToTrashLoadingById={column.id === "review" ? moveToTrashLoadingById : undefined}
+								activeDragTaskId={activeDragTaskId}
+								activeDragSourceColumnId={activeDragSourceColumnId}
+								programmaticCardMoveInFlight={programmaticCardMoveInFlight}
+								onDependencyPointerDown={dependencyLinking.onDependencyPointerDown}
+								onDependencyPointerEnter={dependencyLinking.onDependencyPointerEnter}
+								dependencySourceTaskId={dependencyLinking.draft?.sourceTaskId ?? null}
+								dependencyTargetTaskId={dependencyLinking.draft?.targetTaskId ?? null}
+								isDependencyLinking={dependencyLinking.draft !== null}
+								workspacePath={workspacePath}
+								isMobileLinkMode={dependencyLinking.mobileLinkMode.isActive}
+								onMobileLinkTap={dependencyLinking.onMobileLinkTap}
+								onMoveToColumn={handleMoveToColumn}
+								onCardClick={handleCardClick}
+								dependencies={isMobile ? dependencies : undefined}
+							/>
+						);
+					})}
+					<DependencyOverlay
+						containerRef={boardRef}
+						dependencies={dependencies}
+						draft={dependencyLinking.draft}
+						activeTaskId={activeDragTaskId ?? programmaticCardMoveInFlight?.taskId ?? null}
+						activeTaskEffectiveColumnId={activeTaskEffectiveColumnId}
+						isMotionActive={activeDragTaskId !== null || programmaticCardMoveInFlight !== null}
+						onDeleteDependency={onDeleteDependency}
 					/>
-				))}
-				<DependencyOverlay
-					containerRef={boardRef}
-					dependencies={dependencies}
-					draft={dependencyLinking.draft}
-					activeTaskId={activeDragTaskId ?? programmaticCardMoveInFlight?.taskId ?? null}
-					activeTaskEffectiveColumnId={activeTaskEffectiveColumnId}
-					isMotionActive={activeDragTaskId !== null || programmaticCardMoveInFlight !== null}
-					onDeleteDependency={onDeleteDependency}
-				/>
-			</section>
-		</DragDropContext>
+				</section>
+			</DragDropContext>
+
+			{/* Floating action button for mobile task creation (backlog may be scrolled off-screen) */}
+			{isMobile && onCreateTask ? (
+				<button
+					type="button"
+					onClick={onCreateTask}
+					aria-label="Create task"
+					className="fixed z-40 rounded-full bg-accent shadow-lg active:bg-accent-hover flex items-center justify-center"
+					style={{
+						width: 56,
+						height: 56,
+						bottom: "calc(16px + env(safe-area-inset-bottom, 0px))",
+						right: 16,
+					}}
+				>
+					<Plus size={24} color="white" />
+				</button>
+			) : null}
+		</div>
 	);
 }

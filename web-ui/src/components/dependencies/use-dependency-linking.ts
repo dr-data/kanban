@@ -1,24 +1,27 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
 
 export interface DependencyLinkDraft {
 	sourceTaskId: string;
 	targetTaskId: string | null;
 	pointerClientX: number;
 	pointerClientY: number;
-	/** Whether the linking was initiated via desktop (Cmd/Ctrl+click) or touch (long-press). */
-	mode: "desktop" | "touch";
+}
+
+export interface MobileLinkMode {
+	/** Whether mobile link mode is currently active (tap-based dependency linking). */
+	isActive: boolean;
+	/** Activate mobile link mode so card taps create dependency links. */
+	enter: () => void;
+	/** Deactivate mobile link mode and cancel any in-progress draft. */
+	exit: () => void;
+	/** Toggle mobile link mode on or off. */
+	toggle: () => void;
 }
 
 const CARD_GAP_CAPTURE_PX = 16;
-const TOUCH_LINK_TOAST_ID = "touch-link-mode";
-const TOUCH_LINK_AUTO_CANCEL_MS = 15_000;
 
-/**
- * Finds the nearest card within a column by vertical proximity, allowing
- * clicks in the gap between cards to still resolve to a valid target.
- */
+/** Find the nearest card within a column that is close to the given vertical position. */
 function getNearestCardTaskIdInColumn(columnElement: HTMLElement, clientY: number): string | null {
 	const cards = Array.from(columnElement.querySelectorAll<HTMLElement>("[data-task-id]"));
 	if (cards.length === 0) {
@@ -60,10 +63,7 @@ function getNearestCardTaskIdInColumn(columnElement: HTMLElement, clientY: numbe
 	return null;
 }
 
-/**
- * Resolves the task ID at a specific screen coordinate by checking elements
- * at that point, falling back to nearest-card-in-column heuristic.
- */
+/** Resolve the task ID at a given screen coordinate by checking the DOM for card and column elements. */
 function getTaskIdFromPoint(clientX: number, clientY: number): string | null {
 	if (typeof document === "undefined") {
 		return null;
@@ -90,10 +90,9 @@ function getTaskIdFromPoint(clientX: number, clientY: number): string | null {
 }
 
 /**
- * Manages the dependency linking interaction for both desktop (Cmd/Ctrl+click)
- * and touch (long-press → tap target) modes. On desktop, users hold a modifier
- * key and click source then target. On touch, users long-press a card to enter
- * linking mode, then tap another card to complete the link.
+ * Hook that manages the dependency linking interaction for both desktop (modifier-key + drag)
+ * and mobile (tap-based link mode). Desktop flow: hold Cmd/Ctrl, click source card, drag to
+ * target, release. Mobile flow: activate link mode, tap source card, tap target card.
  */
 export function useDependencyLinking({
 	canLinkTasks,
@@ -105,14 +104,19 @@ export function useDependencyLinking({
 	draft: DependencyLinkDraft | null;
 	onDependencyPointerDown: (taskId: string, event: ReactMouseEvent<HTMLElement>) => void;
 	onDependencyPointerEnter: (taskId: string) => void;
-	onTouchLinkStart: (taskId: string) => void;
-	onTouchLinkTarget: (taskId: string) => void;
-	cancelTouchLink: () => void;
+	mobileLinkMode: MobileLinkMode;
+	/**
+	 * Handle a tap on a card while mobile link mode is active.
+	 * First tap sets the source card; second tap on a different card completes the link.
+	 * Returns true if the tap was consumed by the linking flow.
+	 */
+	onMobileLinkTap: (taskId: string) => boolean;
 } {
 	const [draft, setDraft] = useState<DependencyLinkDraft | null>(null);
 	const draftRef = useRef<DependencyLinkDraft | null>(null);
 	const modifierPressedRef = useRef(false);
-	const touchCancelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const [mobileLinkModeActive, setMobileLinkModeActive] = useState(false);
+	const mobileLinkModeActiveRef = useRef(false);
 
 	const getValidTargetTaskId = useCallback(
 		(sourceTaskId: string, targetTaskId: string | null): string | null => {
@@ -141,16 +145,6 @@ export function useDependencyLinking({
 		},
 		[getValidTargetTaskId, onCreateDependency],
 	);
-
-	/** Clears any active touch linking state and removes visual indicators. */
-	const clearTouchLinkState = useCallback(() => {
-		if (touchCancelTimerRef.current !== null) {
-			clearTimeout(touchCancelTimerRef.current);
-			touchCancelTimerRef.current = null;
-		}
-		document.body.classList.remove("kb-dependency-link-mode-touch");
-		toast.dismiss(TOUCH_LINK_TOAST_ID);
-	}, []);
 
 	useEffect(() => {
 		draftRef.current = draft;
@@ -185,38 +179,6 @@ export function useDependencyLinking({
 			return;
 		}
 
-		const currentDraft = draftRef.current;
-
-		/* Touch mode: cancel linking when tapping outside the board area.
-		   Uses pointerdown (not touchstart) for cross-platform support — works
-		   on both real touch devices and desktop narrow windows. Ignores taps
-		   inside the board, column tabs, and buttons to allow swiping between
-		   columns and tapping the Link button without cancelling. */
-		if (currentDraft?.mode === "touch") {
-			const handleOutsideCancel = (event: Event) => {
-				const target = event.target;
-				if (!(target instanceof Element)) return;
-				if (
-					target.closest("[data-task-id]") ||
-					target.closest(".kb-board") ||
-					target.closest(".kb-mobile-column-tabs") ||
-					target.closest("button")
-				) {
-					return;
-				}
-				clearTouchLinkState();
-				draftRef.current = null;
-				setDraft(null);
-			};
-
-			document.addEventListener("pointerdown", handleOutsideCancel, { capture: true });
-			return () => {
-				document.removeEventListener("pointerdown", handleOutsideCancel, { capture: true });
-				clearTouchLinkState();
-			};
-		}
-
-		/* Desktop mode: track mouse movement and modifier keys */
 		document.body.classList.add("kb-dependency-link-mode");
 
 		const handleMouseMove = (event: MouseEvent) => {
@@ -294,9 +256,8 @@ export function useDependencyLinking({
 			window.removeEventListener("mouseup", handleMouseUp);
 			window.removeEventListener("keyup", handleModifierRelease);
 		};
-	}, [clearTouchLinkState, completeDependencyLink, getValidTargetTaskId, isLinking]);
+	}, [completeDependencyLink, getValidTargetTaskId, isLinking]);
 
-	/** Desktop: initiates linking via Cmd/Ctrl + mouse down on a card. */
 	const handleDependencyPointerDown = useCallback((taskId: string, event: ReactMouseEvent<HTMLElement>) => {
 		modifierPressedRef.current = event.metaKey || event.ctrlKey;
 		setDraft((current) => {
@@ -304,12 +265,11 @@ export function useDependencyLinking({
 				draftRef.current = null;
 				return null;
 			}
-			const nextDraft: DependencyLinkDraft = {
+			const nextDraft = {
 				sourceTaskId: taskId,
 				targetTaskId: null,
 				pointerClientX: event.clientX,
 				pointerClientY: event.clientY,
-				mode: "desktop",
 			};
 			draftRef.current = nextDraft;
 			return nextDraft;
@@ -333,70 +293,87 @@ export function useDependencyLinking({
 		[getValidTargetTaskId],
 	);
 
-	/**
-	 * Touch: initiates linking mode via long-press on a card. Shows a toast
-	 * with instructions and sets a 15-second auto-cancel timeout.
-	 */
-	const handleTouchLinkStart = useCallback((taskId: string) => {
-		document.body.classList.add("kb-dependency-link-mode-touch");
-		toast("Tap another card to link, or tap elsewhere to cancel", {
-			id: TOUCH_LINK_TOAST_ID,
-			duration: TOUCH_LINK_AUTO_CANCEL_MS,
-		});
+	/* --- Mobile link mode --- */
 
-		const nextDraft: DependencyLinkDraft = {
-			sourceTaskId: taskId,
-			targetTaskId: null,
-			pointerClientX: 0,
-			pointerClientY: 0,
-			mode: "touch",
-		};
-		draftRef.current = nextDraft;
-		setDraft(nextDraft);
+	useEffect(() => {
+		mobileLinkModeActiveRef.current = mobileLinkModeActive;
+	}, [mobileLinkModeActive]);
 
-		/* Auto-cancel after timeout */
-		touchCancelTimerRef.current = setTimeout(() => {
-			touchCancelTimerRef.current = null;
-			clearTouchLinkState();
-			draftRef.current = null;
-			setDraft(null);
-		}, TOUCH_LINK_AUTO_CANCEL_MS);
-	}, [clearTouchLinkState]);
+	/** Activate mobile link mode so taps on cards create dependency links. */
+	const enterMobileLinkMode = useCallback(() => {
+		setMobileLinkModeActive(true);
+		mobileLinkModeActiveRef.current = true;
+	}, []);
 
-	/**
-	 * Touch: completes the link by validating and creating the dependency
-	 * between the source (from long-press) and the tapped target card.
-	 */
-	const handleTouchLinkTarget = useCallback(
-		(taskId: string) => {
-			const current = draftRef.current;
-			if (!current || current.mode !== "touch") return;
-
-			const validTarget = getValidTargetTaskId(current.sourceTaskId, taskId);
-			if (validTarget) {
-				completeDependencyLink(validTarget);
-			} else {
-				draftRef.current = null;
-				setDraft(null);
-			}
-			clearTouchLinkState();
-		},
-		[clearTouchLinkState, completeDependencyLink, getValidTargetTaskId],
-	);
-
-	/** Touch: cancels the active touch linking mode without creating a link. */
-	const handleCancelTouchLink = useCallback(() => {
-		clearTouchLinkState();
+	/** Deactivate mobile link mode and cancel any in-progress draft. */
+	const exitMobileLinkMode = useCallback(() => {
+		setMobileLinkModeActive(false);
+		mobileLinkModeActiveRef.current = false;
 		draftRef.current = null;
 		setDraft(null);
-	}, [clearTouchLinkState]);
+	}, []);
+
+	/** Toggle mobile link mode on or off. */
+	const toggleMobileLinkMode = useCallback(() => {
+		if (mobileLinkModeActiveRef.current) {
+			exitMobileLinkMode();
+		} else {
+			enterMobileLinkMode();
+		}
+	}, [enterMobileLinkMode, exitMobileLinkMode]);
+
+	/**
+	 * Handle a tap on a card in mobile link mode.
+	 * If no source is set, this tap sets the source. If a source is already set
+	 * and the tapped card is a valid target, the dependency is created.
+	 * Returns true if the tap was consumed by the linking flow.
+	 */
+	const handleMobileLinkTap = useCallback(
+		(taskId: string): boolean => {
+			if (!mobileLinkModeActiveRef.current) {
+				return false;
+			}
+			const current = draftRef.current;
+			if (!current) {
+				const nextDraft: DependencyLinkDraft = {
+					sourceTaskId: taskId,
+					targetTaskId: null,
+					pointerClientX: 0,
+					pointerClientY: 0,
+				};
+				draftRef.current = nextDraft;
+				setDraft(nextDraft);
+				return true;
+			}
+			if (current.sourceTaskId === taskId) {
+				draftRef.current = null;
+				setDraft(null);
+				return true;
+			}
+			const validTarget = getValidTargetTaskId(current.sourceTaskId, taskId);
+			if (validTarget) {
+				onCreateDependency?.(current.sourceTaskId, validTarget);
+				draftRef.current = null;
+				setDraft(null);
+				return true;
+			}
+			return true;
+		},
+		[getValidTargetTaskId, onCreateDependency],
+	);
+
+	const mobileLinkMode: MobileLinkMode = {
+		isActive: mobileLinkModeActive,
+		enter: enterMobileLinkMode,
+		exit: exitMobileLinkMode,
+		toggle: toggleMobileLinkMode,
+	};
 
 	return {
 		draft,
 		onDependencyPointerDown: handleDependencyPointerDown,
 		onDependencyPointerEnter: handleDependencyPointerEnter,
-		onTouchLinkStart: handleTouchLinkStart,
-		onTouchLinkTarget: handleTouchLinkTarget,
-		cancelTouchLink: handleCancelTouchLink,
+		mobileLinkMode,
+		onMobileLinkTap: handleMobileLinkTap,
 	};
 }

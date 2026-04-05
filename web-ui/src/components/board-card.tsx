@@ -1,16 +1,18 @@
 import { Draggable } from "@hello-pangea/dnd";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { formatClineToolCallLabel } from "@runtime-cline-tool-call-display";
 import { buildTaskWorktreeDisplayPath } from "@runtime-task-worktree-path";
-import { AlertCircle, GitBranch, Link2, Play, RotateCcw, Trash2 } from "lucide-react";
-import type { MouseEvent } from "react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, GitBranch, Link2, MoveHorizontal, Play, RotateCcw, Trash2 } from "lucide-react";
+import { type MouseEvent, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
+import { ColumnIndicator } from "@/components/ui/column-indicator";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip } from "@/components/ui/tooltip";
-import { useLongPress } from "@/hooks/use-long-press";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import type { RuntimeTaskSessionSummary } from "@/runtime/types";
+import { isAllowedCrossColumnCardMove } from "@/state/drag-rules";
 import { useTaskWorkspaceSnapshotValue } from "@/stores/workspace-metadata-store";
 import type { BoardCard as BoardCardModel, BoardColumnId } from "@/types";
 import { getTaskAutoReviewCancelButtonLabel } from "@/types";
@@ -42,6 +44,17 @@ const SESSION_PREVIEW_COLLAPSE_LINES = 6;
 const DESCRIPTION_EXPAND_LABEL = "See more";
 const DESCRIPTION_COLLAPSE_LABEL = "Less";
 const DESCRIPTION_COLLAPSE_SUFFIX = `… ${DESCRIPTION_EXPAND_LABEL}`;
+
+/** Human-readable labels for each board column, used in the mobile move-to menu. */
+const COLUMN_LABELS: Record<BoardColumnId, string> = {
+	backlog: "Backlog",
+	in_progress: "In Progress",
+	review: "Review",
+	trash: "Trash",
+};
+
+/** All column IDs in board order, used to compute mobile move targets. */
+const ALL_COLUMN_IDS: BoardColumnId[] = ["backlog", "in_progress", "review", "trash"];
 
 function reconstructTaskWorktreeDisplayPath(taskId: string, workspacePath: string | null | undefined): string | null {
 	if (!workspacePath) {
@@ -188,7 +201,61 @@ function getCardSessionActivity(summary: RuntimeTaskSessionSummary | undefined):
 	return null;
 }
 
-export function BoardCard({
+/**
+ * Dropdown menu that lets mobile users move a card to another column.
+ * Renders a small ghost button with a MoveHorizontal icon that opens a
+ * Radix DropdownMenu listing valid destination columns with color indicators.
+ */
+function MobileMoveToMenu({
+	cardId,
+	targets,
+	onMoveToColumn,
+	stopEvent,
+}: {
+	cardId: string;
+	targets: BoardColumnId[];
+	onMoveToColumn: (taskId: string, targetColumnId: BoardColumnId) => void;
+	stopEvent: (event: MouseEvent<HTMLElement>) => void;
+}): React.ReactElement {
+	return (
+		<DropdownMenu.Root>
+			<Tooltip content="Move to...">
+				<DropdownMenu.Trigger asChild>
+					<Button
+						icon={<MoveHorizontal size={14} />}
+						variant="ghost"
+						size="sm"
+						aria-label="Move to..."
+						onMouseDown={stopEvent}
+						onClick={stopEvent}
+					/>
+				</DropdownMenu.Trigger>
+			</Tooltip>
+			<DropdownMenu.Portal>
+				<DropdownMenu.Content
+					side="bottom"
+					align="end"
+					sideOffset={4}
+					className="z-50 min-w-[140px] rounded-md border border-border-bright bg-surface-1 p-1 shadow-lg"
+					onCloseAutoFocus={(event) => event.preventDefault()}
+				>
+					{targets.map((targetColumnId) => (
+						<DropdownMenu.Item
+							key={targetColumnId}
+							className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-[13px] text-text-primary cursor-pointer outline-none data-[highlighted]:bg-surface-3"
+							onSelect={() => onMoveToColumn(cardId, targetColumnId)}
+						>
+							<ColumnIndicator columnId={targetColumnId} size={12} />
+							{COLUMN_LABELS[targetColumnId]}
+						</DropdownMenu.Item>
+					))}
+				</DropdownMenu.Content>
+			</DropdownMenu.Portal>
+		</DropdownMenu.Root>
+	);
+}
+
+export const BoardCard = memo(function BoardCard({
 	card,
 	index,
 	columnId,
@@ -209,13 +276,12 @@ export function BoardCard({
 	isDependencySource = false,
 	isDependencyTarget = false,
 	isDependencyLinking = false,
+	isMobileLinkMode = false,
+	onMobileLinkTap,
 	workspacePath,
-	onTouchLinkStart,
-	onTouchLinkTarget,
-	isTouchLinkingMode = false,
-	isMobile = false,
-	dependencyCount = 0,
+	onMoveToColumn,
 	isDragDisabled = false,
+	dependencyCount = 0,
 }: {
 	card: BoardCardModel;
 	index: number;
@@ -237,16 +303,17 @@ export function BoardCard({
 	isDependencySource?: boolean;
 	isDependencyTarget?: boolean;
 	isDependencyLinking?: boolean;
+	/** When true, card taps trigger the mobile dependency linking flow instead of navigation. */
+	isMobileLinkMode?: boolean;
+	/** Callback for a card tap in mobile link mode. Returns true if the tap was consumed. */
+	onMobileLinkTap?: (taskId: string) => boolean;
 	workspacePath?: string | null;
-	onTouchLinkStart?: (taskId: string) => void;
-	onTouchLinkTarget?: (taskId: string) => void;
-	isTouchLinkingMode?: boolean;
-	/** Whether the viewport is below the mobile breakpoint. */
-	isMobile?: boolean;
-	/** Number of dependencies this card has (for badge display on mobile). */
-	dependencyCount?: number;
+	/** Callback for the mobile "Move to" action on board cards. */
+	onMoveToColumn?: (taskId: string, targetColumnId: BoardColumnId) => void;
 	/** When true, prevents drag-and-drop for this card (used in mobile layout). */
 	isDragDisabled?: boolean;
+	/** Number of dependencies this card has (for badge display on mobile). */
+	dependencyCount?: number;
 }): React.ReactElement {
 	const [isHovered, setIsHovered] = useState(false);
 	const [titleContainerRef, titleRect] = useMeasure<HTMLDivElement>();
@@ -263,11 +330,17 @@ export function BoardCard({
 	const [sessionPreviewFont, setSessionPreviewFont] = useState(DEFAULT_TEXT_MEASURE_FONT);
 	const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
 	const [isSessionPreviewExpanded, setIsSessionPreviewExpanded] = useState(false);
-	const longPressHandlers = useLongPress({
-		onLongPress: () => onTouchLinkStart?.(card.id),
-	});
 	const reviewWorkspaceSnapshot = useTaskWorkspaceSnapshotValue(card.id);
 	const isTrashCard = columnId === "trash";
+	const isMobile = useIsMobile();
+
+	/** Valid destination columns for the mobile "Move to" dropdown. */
+	const mobileMoveTargets = useMemo(
+		() =>
+			ALL_COLUMN_IDS.filter((targetId) => targetId !== columnId && isAllowedCrossColumnCardMove(columnId, targetId)),
+		[columnId],
+	);
+
 	const isCardInteractive = !isTrashCard;
 	const titleWidth = titleRect.width > 0 ? titleRect.width : titleWidthFallback;
 	const descriptionWidth = descriptionRect.width > 0 ? descriptionRect.width : descriptionWidthFallback;
@@ -478,10 +551,13 @@ export function BoardCard({
 							if (isDependencyLinking) {
 								event.preventDefault();
 								event.stopPropagation();
-								/* In touch linking mode, tapping a card selects it as the link target */
-								if (isTouchLinkingMode) {
-									onTouchLinkTarget?.(card.id);
-								}
+								return;
+							}
+							/* In mobile link mode, taps create dependencies instead of navigating. */
+							if (isMobileLinkMode && onMobileLinkTap) {
+								event.preventDefault();
+								event.stopPropagation();
+								onMobileLinkTap(card.id);
 								return;
 							}
 							if (event.metaKey || event.ctrlKey) {
@@ -491,7 +567,6 @@ export function BoardCard({
 								onClick();
 							}
 						}}
-						{...longPressHandlers}
 						style={{
 							...provided.draggableProps.style,
 							marginBottom: 6,
@@ -512,13 +587,12 @@ export function BoardCard({
 					>
 						<div
 							className={cn(
-								"rounded-md border border-border-bright bg-surface-2 p-2.5 max-[767.98px]:p-3.5",
+								"rounded-md border border-border-bright bg-surface-2 p-2.5",
 								isCardInteractive && "cursor-pointer hover:bg-surface-3 hover:border-border-bright",
 								isDragging && "shadow-lg",
 								isHovered && isCardInteractive && "bg-surface-3 border-border-bright",
 								isDependencySource && "kb-board-card-dependency-source",
 								isDependencyTarget && "kb-board-card-dependency-target",
-								isDependencySource && isTouchLinkingMode && "kb-board-card-dependency-source-touch",
 							)}
 						>
 							<div className="flex items-center gap-2" style={{ minHeight: 24 }}>
@@ -534,30 +608,6 @@ export function BoardCard({
 										{displayPromptSplit.title}
 									</p>
 								</div>
-								{isMobile && dependencyCount > 0 ? (
-									<span
-										className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-sm bg-accent/15 text-accent text-[10px] font-medium shrink-0"
-										title={`${dependencyCount} ${dependencyCount === 1 ? "link" : "links"}`}
-									>
-										<Link2 size={10} />
-										{dependencyCount}
-									</span>
-								) : null}
-								{isMobile && onTouchLinkStart && columnId !== "trash" ? (
-									<Button
-										icon={<Link2 size={14} />}
-										variant="ghost"
-										size="sm"
-										aria-label="Link task"
-										onMouseDown={stopEvent}
-										onClick={(event) => {
-											stopEvent(event);
-											onTouchLinkStart(card.id);
-										}}
-									>
-										{isMobile ? <span className="text-xs">Link</span> : null}
-									</Button>
-								) : null}
 								{columnId === "backlog" ? (
 									<Button
 										icon={<Play size={14} />}
@@ -569,9 +619,7 @@ export function BoardCard({
 											stopEvent(event);
 											onStart?.(card.id);
 										}}
-									>
-										{isMobile ? <span className="text-xs">Start</span> : null}
-									</Button>
+									/>
 								) : columnId === "review" ? (
 									<Button
 										icon={isMoveToTrashLoading ? <Spinner size={13} /> : <Trash2 size={13} />}
@@ -584,9 +632,7 @@ export function BoardCard({
 											stopEvent(event);
 											onMoveToTrash?.(card.id);
 										}}
-									>
-										{isMobile ? <span className="text-xs">Trash</span> : null}
-									</Button>
+									/>
 								) : columnId === "trash" ? (
 									<Tooltip
 										side="bottom"
@@ -610,6 +656,20 @@ export function BoardCard({
 											}}
 										/>
 									</Tooltip>
+								) : null}
+								{isMobile && mobileMoveTargets.length > 0 && onMoveToColumn ? (
+									<MobileMoveToMenu
+										cardId={card.id}
+										targets={mobileMoveTargets}
+										onMoveToColumn={onMoveToColumn}
+										stopEvent={stopEvent}
+									/>
+								) : null}
+								{isMobile && dependencyCount > 0 ? (
+									<span className="inline-flex items-center gap-0.5 text-[11px] text-text-tertiary">
+										<Link2 size={10} />
+										{dependencyCount}
+									</span>
 								) : null}
 							</div>
 							{displayPromptSplit.description ? (
@@ -847,4 +907,4 @@ export function BoardCard({
 			}}
 		</Draggable>
 	);
-}
+});

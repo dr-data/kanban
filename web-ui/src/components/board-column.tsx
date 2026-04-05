@@ -5,10 +5,22 @@ import { useMemo } from "react";
 
 import { BoardCard } from "@/components/board-card";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/components/ui/cn";
 import { ColumnIndicator } from "@/components/ui/column-indicator";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import type { RuntimeTaskSessionSummary } from "@/runtime/types";
 import { isCardDropDisabled, type ProgrammaticCardMoveInFlight } from "@/state/drag-rules";
 import type { BoardCard as BoardCardModel, BoardColumnId, BoardColumn as BoardColumnModel } from "@/types";
+
+/** Abbreviated labels for the mobile inline pane selector pills. */
+const MOBILE_COLUMN_LABELS: Record<BoardColumnId, string> = {
+	backlog: "Backlog",
+	in_progress: "In Prog",
+	review: "Review",
+	trash: "Trash",
+};
+
+const MOBILE_COLUMN_IDS: BoardColumnId[] = ["backlog", "in_progress", "review", "trash"];
 
 export function BoardColumn({
 	column,
@@ -37,13 +49,15 @@ export function BoardColumn({
 	dependencySourceTaskId,
 	dependencyTargetTaskId,
 	isDependencyLinking,
+	isMobileLinkMode,
+	onMobileLinkTap,
 	workspacePath,
-	onTouchLinkStart,
-	onTouchLinkTarget,
-	isTouchLinkingMode,
-	isMobile,
-	dependencies,
+	onMoveToColumn,
+	mobilePosition,
+	mobileColumnCardCounts,
+	onMobileColumnChange,
 	isDragDisabled,
+	dependencies,
 }: {
 	column: BoardColumnModel;
 	taskSessions: Record<string, RuntimeTaskSessionSummary>;
@@ -71,20 +85,28 @@ export function BoardColumn({
 	dependencySourceTaskId?: string | null;
 	dependencyTargetTaskId?: string | null;
 	isDependencyLinking?: boolean;
+	/** Whether the mobile tap-based dependency link mode is active. */
+	isMobileLinkMode?: boolean;
+	/** Callback for a card tap in mobile link mode. Returns true if consumed. */
+	onMobileLinkTap?: (taskId: string) => boolean;
 	workspacePath?: string | null;
-	onTouchLinkStart?: (taskId: string) => void;
-	onTouchLinkTarget?: (taskId: string) => void;
-	isTouchLinkingMode?: boolean;
-	/** Whether the viewport is below the mobile breakpoint. */
-	isMobile?: boolean;
-	/** Dependencies for showing link badges on cards (mobile only). */
-	dependencies?: import("@/types").BoardDependency[];
+	/** Callback for the mobile "Move to" action on board cards. */
+	onMoveToColumn?: (taskId: string, targetColumnId: BoardColumnId) => void;
+	/** Position of this column in the mobile dual-pane layout (top, bottom, or hidden). */
+	mobilePosition?: "top" | "bottom" | "hidden";
+	/** Card counts per column, used by the mobile inline pane selector pills. */
+	mobileColumnCardCounts?: Record<BoardColumnId, number>;
+	/** Callback to switch which column this mobile pane displays. */
+	onMobileColumnChange?: (columnId: BoardColumnId) => void;
 	/** When true, disables drag-and-drop for all cards in this column. */
 	isDragDisabled?: boolean;
+	/** Dependencies for computing per-card link badge counts (mobile only). */
+	dependencies?: import("@/types").BoardDependency[];
 }): React.ReactElement {
 	const canCreate = column.id === "backlog" && onCreateTask;
 	const canStartAllTasks = column.id === "backlog" && onStartAllTasks;
 	const canClearTrash = column.id === "trash" && onClearTrash;
+	const isMobile = useIsMobile();
 	const cardDropType = "CARD";
 	const isDropDisabled = isCardDropDisabled(column.id, activeDragSourceColumnId ?? null, {
 		activeDragTaskId,
@@ -104,54 +126,106 @@ export function BoardColumn({
 	const createTaskButtonText = (
 		<span className="inline-flex items-center gap-1.5">
 			<span>Create task</span>
-			<span aria-hidden className="text-text-secondary kb-shortcut-hint">
-				(c)
-			</span>
+			{!isMobile && (
+				<span aria-hidden className="text-text-secondary">
+					(c)
+				</span>
+			)}
 		</span>
 	);
 
 	return (
 		<section
 			data-column-id={column.id}
-			className="flex flex-col min-w-0 min-h-0 bg-surface-1 rounded-lg overflow-hidden flex-1"
+			data-mobile-position={mobilePosition}
+			className="kb-board-column flex flex-col min-w-0 min-h-0 bg-surface-1 rounded-lg overflow-hidden"
 		>
 			<div className="flex flex-col min-h-0" style={{ flex: "1 1 0" }}>
-				<div
-					className="flex items-center justify-between"
-					style={{
-						height: 40,
-						padding: "0 12px",
-					}}
-				>
-					<div className="flex items-center gap-2">
-						<ColumnIndicator columnId={column.id} />
-						<span className="font-semibold text-sm">{column.title}</span>
-						<span className="text-text-secondary text-xs">{column.cards.length}</span>
+				{/* On mobile, show inline pill selector so users can switch the pane's column */}
+				{isMobile && mobilePosition && onMobileColumnChange ? (
+					<div className="flex items-center gap-1 px-2 py-1.5 shrink-0">
+						<div className="flex gap-1 flex-1 overflow-x-auto">
+							{MOBILE_COLUMN_IDS.map((id) => {
+								const isActive = id === column.id;
+								const count = mobileColumnCardCounts?.[id] ?? 0;
+								return (
+									<button
+										key={id}
+										type="button"
+										onClick={() => onMobileColumnChange(id)}
+										className={cn(
+											"flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors whitespace-nowrap",
+											isActive ? "bg-accent text-white" : "bg-surface-2 text-text-secondary",
+										)}
+										aria-current={isActive ? "true" : undefined}
+									>
+										<ColumnIndicator columnId={id} size={8} />
+										{MOBILE_COLUMN_LABELS[id]}
+										{count > 0 && <span className="opacity-70">{count}</span>}
+									</button>
+								);
+							})}
+						</div>
+						{canStartAllTasks ? (
+							<Button
+								icon={<Play size={14} />}
+								variant="ghost"
+								size="sm"
+								onClick={onStartAllTasks}
+								disabled={column.cards.length === 0}
+								aria-label="Start all backlog tasks"
+							/>
+						) : null}
+						{canClearTrash ? (
+							<Button
+								icon={<Trash2 size={14} />}
+								variant="ghost"
+								size="sm"
+								className="text-status-red hover:text-status-red"
+								onClick={onClearTrash}
+								disabled={column.cards.length === 0}
+								aria-label="Clear trash"
+							/>
+						) : null}
 					</div>
-					{canStartAllTasks ? (
-						<Button
-							icon={<Play size={14} />}
-							variant="ghost"
-							size="sm"
-							onClick={onStartAllTasks}
-							disabled={column.cards.length === 0}
-							aria-label="Start all backlog tasks"
-							title={column.cards.length > 0 ? "Start all backlog tasks" : "Backlog is empty"}
-						/>
-					) : null}
-					{canClearTrash ? (
-						<Button
-							icon={<Trash2 size={14} />}
-							variant="ghost"
-							size="sm"
-							className="text-status-red hover:text-status-red"
-							onClick={onClearTrash}
-							disabled={column.cards.length === 0}
-							aria-label="Clear trash"
-							title={column.cards.length > 0 ? "Clear trash permanently" : "Trash is empty"}
-						/>
-					) : null}
-				</div>
+				) : (
+					<div
+						className="flex items-center justify-between"
+						style={{
+							height: 40,
+							padding: "0 12px",
+						}}
+					>
+						<div className="flex items-center gap-2">
+							<ColumnIndicator columnId={column.id} />
+							<span className="font-semibold text-sm">{column.title}</span>
+							<span className="text-text-secondary text-xs">{column.cards.length}</span>
+						</div>
+						{canStartAllTasks ? (
+							<Button
+								icon={<Play size={14} />}
+								variant="ghost"
+								size="sm"
+								onClick={onStartAllTasks}
+								disabled={column.cards.length === 0}
+								aria-label="Start all backlog tasks"
+								title={column.cards.length > 0 ? "Start all backlog tasks" : "Backlog is empty"}
+							/>
+						) : null}
+						{canClearTrash ? (
+							<Button
+								icon={<Trash2 size={14} />}
+								variant="ghost"
+								size="sm"
+								className="text-status-red hover:text-status-red"
+								onClick={onClearTrash}
+								disabled={column.cards.length === 0}
+								aria-label="Clear trash"
+								title={column.cards.length > 0 ? "Clear trash permanently" : "Trash is empty"}
+							/>
+						) : null}
+					</div>
+				)}
 
 				<Droppable droppableId={column.id} type={cardDropType} isDropDisabled={isDropDisabled}>
 					{(cardProvided) => (
@@ -166,11 +240,6 @@ export function BoardColumn({
 								>
 									{createTaskButtonText}
 								</Button>
-							) : null}
-							{isMobile && canCreate && column.cards.length === 0 ? (
-								<p className="text-text-tertiary text-xs text-center mt-4 px-4">
-									Tap + to create tasks. Use the link button to connect them.
-								</p>
 							) : null}
 
 							{(() => {
@@ -211,13 +280,12 @@ export function BoardColumn({
 											isDependencySource={dependencySourceTaskId === card.id}
 											isDependencyTarget={dependencyTargetTaskId === card.id}
 											isDependencyLinking={isDependencyLinking}
+											isMobileLinkMode={isMobileLinkMode}
+											onMobileLinkTap={onMobileLinkTap}
 											workspacePath={workspacePath}
-											onTouchLinkStart={onTouchLinkStart}
-											onTouchLinkTarget={onTouchLinkTarget}
-											isTouchLinkingMode={isTouchLinkingMode}
-											isMobile={isMobile}
-											dependencyCount={dependencyCountByTaskId.get(card.id) ?? 0}
+											onMoveToColumn={onMoveToColumn}
 											isDragDisabled={isDragDisabled}
+											dependencyCount={dependencyCountByTaskId.get(card.id) ?? 0}
 											onClick={() => {
 												if (column.id === "backlog") {
 													onEditTask?.(card);

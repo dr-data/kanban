@@ -67,6 +67,10 @@ body,
 	padding: 8px;
 }
 
+.kb-board-column {
+	flex: 1 1 0;
+}
+
 .kb-dependency-surface {
 	position: relative;
 }
@@ -923,6 +927,54 @@ body.kb-dependency-link-mode-touch {
 	.kb-top-bar [data-radix-collection-item] {
 		-webkit-app-region: no-drag;
 		app-region: no-drag;
+	}
+}
+
+/* -- Mobile responsive layout -- */
+
+@media (max-width: 767px) {
+	/* Vertical two-pane layout: top & bottom columns visible simultaneously
+	   so users can see and create dependency links between them. */
+	.kb-board {
+		flex-direction: column;
+		overflow: hidden;
+		padding: 0;
+		gap: 0;
+	}
+
+	.kb-board-column {
+		min-width: 0;
+		border-radius: 0;
+	}
+
+	/* Use explicit height instead of flex-basis to guarantee both panes
+	   share the board equally, regardless of content size. */
+	.kb-board-column[data-mobile-position="top"],
+	.kb-board-column[data-mobile-position="bottom"] {
+		flex: none;
+		height: 50%;
+		width: 100%;
+	}
+
+	.kb-board-column[data-mobile-position="top"] {
+		order: 0;
+		border-bottom: 1px solid var(--color-border);
+	}
+
+	.kb-board-column[data-mobile-position="bottom"] {
+		order: 1;
+	}
+
+	.kb-board-column[data-mobile-position="hidden"] {
+		display: none;
+	}
+
+	.kb-column-cards {
+		padding: 8px;
+	}
+
+	.kb-board-card-shell {
+		-webkit-tap-highlight-color: transparent;
 	}
 }
 

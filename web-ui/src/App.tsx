@@ -768,7 +768,6 @@ export default function App(): ReactElement {
 					onAddProject={() => {
 						void handleAddProject();
 					}}
-					isMobile={isMobile}
 					isMobileDrawerOpen={isMobileSidebarOpen}
 					onCloseMobileDrawer={() => setIsMobileSidebarOpen(false)}
 				/>
