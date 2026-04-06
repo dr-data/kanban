@@ -36,6 +36,8 @@ export interface AgentAdapterLaunchInput {
 	resumeFromTrash?: boolean;
 	env?: Record<string, string | undefined>;
 	workspaceId?: string;
+	/** When true, enable remote control for Claude Code sessions. */
+	remoteControlEnabled?: boolean;
 }
 
 export type AgentOutputTransitionDetector = (
@@ -619,6 +621,10 @@ const claudeAdapter: AgentSessionAdapter = {
 		const env: Record<string, string | undefined> = {
 			FORCE_HYPERLINK: "1",
 		};
+		if (input.remoteControlEnabled && !hasCliOption(args, "--remote-control-session-name-prefix")) {
+			args.push("--remote-control-session-name-prefix", `kanban-${input.taskId.slice(0, 8)}`);
+		}
+
 		const appendedSystemPrompt = resolveHomeAgentAppendSystemPrompt(input.taskId);
 		if (
 			input.autonomousModeEnabled &&

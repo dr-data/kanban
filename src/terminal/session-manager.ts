@@ -73,6 +73,8 @@ interface SessionEntry {
 	suppressAutoRestartOnExit: boolean;
 	autoRestartTimestamps: number[];
 	pendingAutoRestart: Promise<void> | null;
+	/** Whether remote control (teleport) is enabled for this session. */
+	remoteControlEnabled: boolean;
 }
 
 export interface StartTaskSessionRequest {
@@ -90,6 +92,8 @@ export interface StartTaskSessionRequest {
 	rows?: number;
 	env?: Record<string, string | undefined>;
 	workspaceId?: string;
+	/** When true, enable remote control for Claude Code sessions. */
+	remoteControlEnabled?: boolean;
 }
 
 export interface StartShellSessionRequest {
@@ -123,6 +127,7 @@ function createDefaultSummary(taskId: string): RuntimeTaskSessionSummary {
 		warningMessage: null,
 		latestTurnCheckpoint: null,
 		previousTurnCheckpoint: null,
+		remoteControlEnabled: false,
 	};
 }
 
@@ -254,6 +259,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 				suppressAutoRestartOnExit: false,
 				autoRestartTimestamps: [],
 				pendingAutoRestart: null,
+				remoteControlEnabled: summary.remoteControlEnabled ?? false,
 			});
 		}
 	}
@@ -261,6 +267,21 @@ export class TerminalSessionManager implements TerminalSessionService {
 	getSummary(taskId: string): RuntimeTaskSessionSummary | null {
 		const entry = this.entries.get(taskId);
 		return entry ? cloneSummary(entry.summary) : null;
+	}
+
+	/**
+	 * Updates the remoteControlEnabled flag on a session entry and its summary.
+	 * Returns the updated summary, or null if the session does not exist.
+	 */
+	setRemoteControlEnabled(taskId: string, enabled: boolean): RuntimeTaskSessionSummary | null {
+		const entry = this.entries.get(taskId);
+		if (!entry) {
+			return null;
+		}
+		entry.remoteControlEnabled = enabled;
+		const summary = updateSummary(entry, { remoteControlEnabled: enabled });
+		this.emitSummary(summary);
+		return cloneSummary(summary);
 	}
 
 	listSummaries(): RuntimeTaskSessionSummary[] {
@@ -334,6 +355,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 			resumeFromTrash: request.resumeFromTrash,
 			env: request.env,
 			workspaceId: request.workspaceId,
+			remoteControlEnabled: request.remoteControlEnabled,
 		});
 
 		const env = buildTerminalEnvironment(request.env, launch.env);
@@ -528,6 +550,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 		};
 		entry.active = active;
 		entry.terminalStateMirror = terminalStateMirror;
+		entry.remoteControlEnabled = request.remoteControlEnabled ?? false;
 
 		const startedAt = now();
 		updateSummary(entry, {
@@ -544,6 +567,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 			warningMessage: null,
 			latestTurnCheckpoint: null,
 			previousTurnCheckpoint: null,
+			remoteControlEnabled: request.remoteControlEnabled ?? false,
 		});
 		this.emitSummary(entry.summary);
 
@@ -974,6 +998,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 			suppressAutoRestartOnExit: false,
 			autoRestartTimestamps: [],
 			pendingAutoRestart: null,
+			remoteControlEnabled: false,
 		};
 		this.entries.set(taskId, created);
 		return created;

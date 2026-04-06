@@ -37,6 +37,7 @@ import { KanbanAccessBlockedFallback } from "@/hooks/kanban-access-blocked-fallb
 import { RuntimeDisconnectedFallback } from "@/hooks/runtime-disconnected-fallback";
 import { useAppHotkeys } from "@/hooks/use-app-hotkeys";
 import { useBoardInteractions } from "@/hooks/use-board-interactions";
+import { useCcrBridge } from "@/hooks/use-ccr-bridge";
 import { useDebugTools } from "@/hooks/use-debug-tools";
 import { useDocumentVisibility } from "@/hooks/use-document-visibility";
 import { useGitActions } from "@/hooks/use-git-actions";
@@ -687,6 +688,17 @@ export default function App(): ReactElement {
 	const detailSession = selectedCard
 		? (sessions[selectedCard.card.id] ?? createIdleTaskSession(selectedCard.card.id))
 		: null;
+	const {
+		isTeleportDisabled,
+		isTeleportActive,
+		teleport: handleTeleport,
+	} = useCcrBridge({
+		selectedTaskId: selectedCard?.card.id ?? null,
+		selectedAgentId: runtimeProjectConfig?.selectedAgentId ?? null,
+		sessionState: detailSession?.state ?? null,
+		remoteControlEnabled: detailSession?.remoteControlEnabled ?? false,
+		currentProjectId,
+	});
 	const detailTerminalSummary = detailTerminalTaskId ? (sessions[detailTerminalTaskId] ?? null) : null;
 	const detailTerminalSubtitle = useMemo(() => {
 		if (!selectedCard) {
@@ -881,6 +893,9 @@ export default function App(): ReactElement {
 					onToggleGitHistory={hasNoProjects ? undefined : handleToggleGitHistory}
 					isGitHistoryOpen={isGitHistoryOpen}
 					hideProjectDependentActions={shouldHideProjectDependentTopBarActions}
+					onTeleport={handleTeleport}
+					isTeleportActive={isTeleportActive}
+					isTeleportDisabled={isTeleportDisabled}
 				/>
 				<div className="relative flex flex-1 min-h-0 min-w-0 overflow-hidden">
 					<div

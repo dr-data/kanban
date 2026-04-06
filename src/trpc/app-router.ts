@@ -28,6 +28,8 @@ import type {
 	RuntimeConfigResponse,
 	RuntimeConfigSaveRequest,
 	RuntimeDebugResetAllStateResponse,
+	RuntimeEnableRemoteControlRequest,
+	RuntimeEnableRemoteControlResponse,
 	RuntimeGitCheckoutRequest,
 	RuntimeGitCheckoutResponse,
 	RuntimeGitCommitDiffRequest,
@@ -105,6 +107,8 @@ import {
 	runtimeConfigResponseSchema,
 	runtimeConfigSaveRequestSchema,
 	runtimeDebugResetAllStateResponseSchema,
+	runtimeEnableRemoteControlRequestSchema,
+	runtimeEnableRemoteControlResponseSchema,
 	runtimeGitCheckoutRequestSchema,
 	runtimeGitCheckoutResponseSchema,
 	runtimeGitCommitDiffRequestSchema,
@@ -247,6 +251,10 @@ export interface RuntimeTrpcContext {
 			input: RuntimeCommandRunRequest,
 		) => Promise<RuntimeCommandRunResponse>;
 		resetAllState: (scope: RuntimeTrpcWorkspaceScope | null) => Promise<RuntimeDebugResetAllStateResponse>;
+		enableRemoteControl: (
+			scope: RuntimeTrpcWorkspaceScope,
+			input: RuntimeEnableRemoteControlRequest,
+		) => Promise<RuntimeEnableRemoteControlResponse>;
 		openFile: (input: RuntimeOpenFileRequest) => Promise<RuntimeOpenFileResponse>;
 	};
 	workspaceApi: {
@@ -502,6 +510,12 @@ export const runtimeAppRouter = t.router({
 		resetAllState: t.procedure.output(runtimeDebugResetAllStateResponseSchema).mutation(async ({ ctx }) => {
 			return await ctx.runtimeApi.resetAllState(ctx.workspaceScope);
 		}),
+		enableRemoteControl: workspaceProcedure
+			.input(runtimeEnableRemoteControlRequestSchema)
+			.output(runtimeEnableRemoteControlResponseSchema)
+			.mutation(async ({ ctx, input }) => {
+				return await ctx.runtimeApi.enableRemoteControl(ctx.workspaceScope, input);
+			}),
 		openFile: t.procedure
 			.input(runtimeOpenFileRequestSchema)
 			.output(runtimeOpenFileResponseSchema)

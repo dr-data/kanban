@@ -359,6 +359,7 @@ describe("CardDetailView", () => {
 						lastHookAt: null,
 						latestHookActivity: null,
 						warningMessage: null,
+						remoteControlEnabled: false,
 					}}
 					taskSessions={{}}
 					onSessionSummary={() => {}}
@@ -397,6 +398,7 @@ describe("CardDetailView", () => {
 						lastHookAt: null,
 						latestHookActivity: null,
 						warningMessage: null,
+						remoteControlEnabled: false,
 					}}
 					taskSessions={{}}
 					onSessionSummary={() => {}}

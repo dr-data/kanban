@@ -1,6 +1,6 @@
 import * as Collapsible from "@radix-ui/react-collapsible";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { ChevronDown, ChevronUp, Ellipsis, Plus } from "lucide-react";
+import { ChevronDown, ChevronUp, Ellipsis, Plus, X } from "lucide-react";
 import { type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ClineIcon } from "@/components/ui/cline-icon";
@@ -209,47 +209,110 @@ export function ProjectNavigationPanel({
 					onClick={(e) => e.stopPropagation()}
 				>
 					<div style={{ padding: "12px 12px 8px" }}>
-						<div className="font-semibold text-base flex items-baseline gap-1.5">
-							Cline <span className="text-text-secondary font-normal text-xs">v{__APP_VERSION__}</span>
+						<div className="font-semibold text-base flex items-center justify-between gap-1.5">
+							<span className="flex items-baseline gap-1.5">
+								<ClineIcon size={18} className="text-text-primary shrink-0 self-center" />
+								Cline <span className="text-text-secondary font-normal text-xs">v{__APP_VERSION__}</span>
+							</span>
+							<Button
+								variant="ghost"
+								size="sm"
+								icon={<X size={16} />}
+								onClick={onCloseMobileDrawer}
+								aria-label="Close sidebar"
+							/>
 						</div>
-					</div>
-					<div className="flex-1 min-h-0 overflow-y-auto px-1 pb-3">
-						{sortedProjects.map((project) => {
-							const isCurrent = currentProjectId === project.id;
-							return (
+						<div className="mt-2 rounded-md bg-surface-2 p-1">
+							<div className="grid grid-cols-2 gap-1">
 								<button
-									key={project.id}
 									type="button"
-									onClick={() => {
-										onSelectProject(project.id);
-										onCloseMobileDrawer?.();
-									}}
+									onClick={() => onActiveSectionChange("projects")}
 									className={cn(
-										"w-full text-left px-3 py-3 rounded-md text-sm cursor-pointer border-0",
-										isCurrent
-											? "bg-accent/15 text-accent font-medium"
-											: "bg-transparent text-text-secondary hover:text-text-primary hover:bg-surface-3",
+										"cursor-pointer rounded-sm px-2 py-1 text-xs font-medium",
+										activeSection === "projects"
+											? "bg-surface-4 text-text-primary"
+											: "text-text-secondary hover:text-text-primary",
 									)}
 								>
-									{project.name}
+									Projects
 								</button>
-							);
-						})}
+								<button
+									type="button"
+									onClick={() => onActiveSectionChange("agent")}
+									disabled={!canShowAgentSection}
+									className={cn(
+										"cursor-pointer rounded-sm px-2 py-1 text-xs font-medium",
+										activeSection === "agent"
+											? "bg-surface-4 text-text-primary"
+											: "text-text-secondary hover:text-text-primary",
+										!canShowAgentSection ? "cursor-not-allowed opacity-50" : null,
+									)}
+								>
+									Kanban Agent
+								</button>
+							</div>
+						</div>
+						{activeSection === "agent" ? (
+							<p className="text-text-tertiary text-xs" style={{ padding: "8px 4px 0" }}>
+								Add tasks, link dependencies, break work down, and manage your board.
+							</p>
+						) : null}
 					</div>
-					<div className="p-3 border-t border-border">
-						<button
-							type="button"
-							onClick={() => {
-								onAddProject();
-								onCloseMobileDrawer?.();
-							}}
-							disabled={removingProjectId !== null}
-							className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-md text-sm text-text-secondary hover:text-text-primary hover:bg-surface-2 bg-transparent border-0 cursor-pointer"
-						>
-							<Plus size={16} />
-							Add project
-						</button>
-					</div>
+					{activeSection === "projects" ? (
+						<>
+							<div className="flex-1 min-h-0 overflow-y-auto px-1 pb-3">
+								{sortedProjects.map((project) => {
+									const isCurrent = currentProjectId === project.id;
+									return (
+										<button
+											key={project.id}
+											type="button"
+											onClick={() => {
+												onSelectProject(project.id);
+												onCloseMobileDrawer?.();
+											}}
+											className={cn(
+												"w-full text-left px-3 py-3 rounded-md text-sm cursor-pointer border-0",
+												isCurrent
+													? "bg-accent/15 text-accent font-medium"
+													: "bg-transparent text-text-secondary hover:text-text-primary hover:bg-surface-3",
+											)}
+										>
+											{project.name}
+										</button>
+									);
+								})}
+							</div>
+							<div className="p-3 border-t border-border">
+								<button
+									type="button"
+									onClick={() => {
+										onAddProject();
+										onCloseMobileDrawer?.();
+									}}
+									disabled={removingProjectId !== null}
+									className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-md text-sm text-text-secondary hover:text-text-primary hover:bg-surface-2 bg-transparent border-0 cursor-pointer"
+								>
+									<Plus size={16} />
+									Add project
+								</button>
+							</div>
+						</>
+					) : (
+						<div className="fixed inset-0 z-[60] flex flex-col bg-surface-0">
+							<div className="flex items-center justify-between h-11 px-3 border-b border-border bg-surface-1 shrink-0">
+								<span className="text-sm font-medium text-text-primary">Kanban Agent</span>
+								<Button
+									variant="ghost"
+									size="sm"
+									icon={<X size={16} />}
+									onClick={onCloseMobileDrawer}
+									aria-label="Close agent panel"
+								/>
+							</div>
+							<div className="flex flex-col flex-1 min-h-0">{agentSectionContent}</div>
+						</div>
+					)}
 				</aside>
 			</div>
 		);

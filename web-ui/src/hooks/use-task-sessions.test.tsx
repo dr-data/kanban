@@ -81,6 +81,7 @@ describe("useTaskSessions", () => {
 				exitCode: null,
 				lastHookAt: null,
 				latestHookActivity: null,
+				remoteControlEnabled: false,
 			},
 		});
 		previousActEnvironment = (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })

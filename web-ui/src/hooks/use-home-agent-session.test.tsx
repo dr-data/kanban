@@ -56,6 +56,7 @@ function createSummary(taskId: string, agentId: RuntimeTaskSessionSummary["agent
 		latestHookActivity: null,
 		latestTurnCheckpoint: null,
 		previousTurnCheckpoint: null,
+		remoteControlEnabled: false,
 	};
 }
 

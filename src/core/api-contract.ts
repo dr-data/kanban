@@ -233,6 +233,7 @@ export const runtimeTaskSessionSummarySchema = z.object({
 	warningMessage: z.string().nullable().optional(),
 	latestTurnCheckpoint: runtimeTaskTurnCheckpointSchema.nullable().optional(),
 	previousTurnCheckpoint: runtimeTaskTurnCheckpointSchema.nullable().optional(),
+	remoteControlEnabled: z.boolean().default(false),
 });
 export type RuntimeTaskSessionSummary = z.infer<typeof runtimeTaskSessionSummarySchema>;
 
@@ -1071,3 +1072,16 @@ export const runtimeHookIngestResponseSchema = z.object({
 	error: z.string().optional(),
 });
 export type RuntimeHookIngestResponse = z.infer<typeof runtimeHookIngestResponseSchema>;
+
+export const runtimeEnableRemoteControlRequestSchema = z.object({
+	taskId: z.string(),
+	enabled: z.boolean(),
+});
+export type RuntimeEnableRemoteControlRequest = z.infer<typeof runtimeEnableRemoteControlRequestSchema>;
+
+export const runtimeEnableRemoteControlResponseSchema = z.object({
+	ok: z.boolean(),
+	error: z.string().optional(),
+	requiresRestart: z.boolean().optional(),
+});
+export type RuntimeEnableRemoteControlResponse = z.infer<typeof runtimeEnableRemoteControlResponseSchema>;
