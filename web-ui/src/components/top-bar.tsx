@@ -6,6 +6,7 @@ import {
 	Bug,
 	Check,
 	ChevronDown,
+	ChevronUp,
 	CircleArrowDown,
 	Command,
 	GitBranch,
@@ -16,7 +17,7 @@ import {
 	Settings,
 	Terminal,
 } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { OpenWorkspaceButton } from "@/components/open-workspace-button";
 import {
 	getRuntimeShortcutIconComponent,
@@ -30,6 +31,7 @@ import { Dialog, DialogBody, DialogFooter, DialogHeader } from "@/components/ui/
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip } from "@/components/ui/tooltip";
 import type { RuntimeGitSyncAction, RuntimeProjectShortcut } from "@/runtime/types";
+import { LocalStorageKey, readLocalStorageItem, writeLocalStorageItem } from "@/storage/local-storage-store";
 import {
 	useHomeGitSummaryValue,
 	useTaskWorkspaceInfoValue,
@@ -425,6 +427,19 @@ export function TopBar({
 		setIsCreateShortcutDialogOpen(false);
 	};
 
+	const [isMobileGitCollapsed, setIsMobileGitCollapsed] = useState(
+		() => readLocalStorageItem(LocalStorageKey.MobileGitStatusCollapsed) === "true",
+	);
+
+	/** Toggles the mobile git status section collapsed state and persists it. */
+	const toggleMobileGitCollapsed = useCallback(() => {
+		setIsMobileGitCollapsed((prev) => {
+			const next = !prev;
+			writeLocalStorageItem(LocalStorageKey.MobileGitStatusCollapsed, String(next));
+			return next;
+		});
+	}, []);
+
 	/** Git status JSX — rendered in Row 1 on desktop, Row 2 on mobile. */
 	const gitStatusElement = !hideProjectDependentActions ? (
 		<TopBarGitStatusSection
@@ -623,7 +638,7 @@ export function TopBar({
 						{!isMobile ? gitStatusElement : null}
 					</div>
 					<div className="flex flex-nowrap items-center h-10 pr-0.5 shrink-0">
-						{!isMobile ? runShortcutElement : null}
+						{runShortcutElement}
 						{onToggleTerminal ? (
 							<Tooltip
 								side="bottom"
@@ -685,11 +700,23 @@ export function TopBar({
 						/>
 					</div>
 				</div>
-				{/* Row 2: git status + shortcuts — mobile only */}
-				{isMobile && !hideProjectDependentActions && (gitStatusElement || runShortcutElement) ? (
-					<div className="flex items-center min-h-10 w-full px-3 gap-1.5 border-t border-border/50 flex-wrap">
-						<div className="flex items-center flex-1 min-w-0">{gitStatusElement}</div>
-						<div className="flex items-center shrink-0">{runShortcutElement}</div>
+				{/* Row 2: collapsible git status — mobile only */}
+				{isMobile && !hideProjectDependentActions && gitStatusElement ? (
+					<div className="border-t border-border/50 bg-surface-1">
+						<button
+							type="button"
+							className="flex items-center gap-1 w-full px-3 py-1 text-xs text-text-secondary hover:text-text-primary"
+							onClick={toggleMobileGitCollapsed}
+						>
+							<GitBranch size={10} />
+							<span>Git</span>
+							{isMobileGitCollapsed ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
+						</button>
+						{!isMobileGitCollapsed ? (
+							<div className="flex items-center flex-wrap min-h-10 w-full px-3 gap-1.5 pb-1.5">
+								<div className="flex items-center flex-1 min-w-0">{gitStatusElement}</div>
+							</div>
+						) : null}
 					</div>
 				) : null}
 			</nav>

@@ -77,6 +77,33 @@ export const TASK_START_ONBOARDING_SLIDES: OnboardingSlide[] = [
 		assetHeightPx: 1080,
 	},
 	{
+		kind: "media",
+		title: "Recurring and scheduled tasks",
+		description:
+			"Set tasks to repeat on a schedule with configurable intervals and iteration limits. Recurring tasks automatically restart from the trash column after each iteration completes, and scheduled windows let you control exactly when they run.",
+		assetAlt: "Configuring recurring task schedule on a Kanban card",
+		assetWidthPx: 1156,
+		assetHeightPx: 720,
+	},
+	{
+		kind: "media",
+		title: "Smart task lifecycle",
+		description:
+			"Finished tasks move to trash automatically when auto-review is off, so recurring tasks can restart immediately. Tasks only stay in review when they need your attention — errors, hook pauses, or when auto-review actions like commit and PR are enabled.",
+		assetAlt: "Task moving from in-progress to trash after completing",
+		assetWidthPx: 1156,
+		assetHeightPx: 720,
+	},
+	{
+		kind: "media",
+		title: "Terminal access everywhere",
+		description:
+			"View the agent terminal from any column — in progress, review, backlog, or trash. Active tasks keep the terminal live, while completed tasks let you reconnect on demand to inspect past sessions and output.",
+		assetAlt: "Connecting to a terminal for a trashed task",
+		assetWidthPx: 1156,
+		assetHeightPx: 720,
+	},
+	{
 		kind: "agent-selection",
 		title: "Choose your agent",
 		description: "Choose a coding agent to complete your tasks. You can change this anytime in Settings.",

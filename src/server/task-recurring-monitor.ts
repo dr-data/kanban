@@ -1,5 +1,11 @@
 import type { RuntimeBoardCard, RuntimeBoardData, RuntimeWorkspaceStateResponse } from "../core/api-contract";
-import { getTaskColumnId, moveTaskToColumn, shouldTaskRecur, updateTask } from "../core/task-board-mutations";
+import {
+	getLinkedBacklogTaskIdsBlockedByTrashTask,
+	getTaskColumnId,
+	moveTaskToColumn,
+	shouldTaskRecur,
+	updateTask,
+} from "../core/task-board-mutations";
 import type { RuntimeWorkspaceAtomicMutationResult } from "../state/workspace-state";
 
 const TASK_RECURRING_POLL_INTERVAL_MS = 5_000;
@@ -54,15 +60,6 @@ function findTrashCard(board: RuntimeBoardData, taskId: string): RuntimeBoardCar
 	return trash?.cards.find((card) => card.id === taskId) ?? null;
 }
 
-/** Finds a card in the review column, returning null if not found. */
-function findReviewCard(board: RuntimeBoardData, taskId: string): RuntimeBoardCard | null {
-	if (getTaskColumnId(board, taskId) !== "review") {
-		return null;
-	}
-	const review = board.columns.find((col) => col.id === "review");
-	return review?.cards.find((card) => card.id === taskId) ?? null;
-}
-
 /**
  * Builds an updateTask input that preserves all existing card fields while
  * overriding the specified recurring fields.
@@ -99,11 +96,10 @@ function computeRemainingRecurringDelay(card: RuntimeBoardCard): number {
  * Server-side monitor that polls all workspaces on a fixed interval and
  * auto-restarts recurring tasks whose recurrence period has elapsed.
  *
- * Scans both the review and trash columns:
- * - Review: recurring tasks are moved to trash automatically so the
- *   lifecycle continues even when auto-review is disabled or the browser
- *   tab is closed.
- * - Trash: eligible tasks are claimed and restarted.
+ * Only scans the trash column — recurring tasks restart after they are
+ * fully done (moved to trash by auto-review, manual user action, or
+ * session stop). Tasks in review are left alone so the user can inspect
+ * results without the task being snatched away for the next iteration.
  *
  * For each eligible task in trash:
  * 1. Checks `shouldTaskRecur()` and that `scheduledEndAt` has not passed.
@@ -128,53 +124,60 @@ export function createTaskRecurringMonitor(deps: CreateTaskRecurringMonitorDepen
 	/**
 	 * Claims and restarts a recurring task. Atomically increments the iteration
 	 * counter and moves the task from trash to backlog, then ensures the worktree
-	 * and starts a new agent session.
+	 * and starts a new agent session. Also resolves dependency links: any backlog
+	 * tasks that were blocked by this recurring task (while it sat in trash) are
+	 * started as well.
 	 */
 	const restartRecurringTask = async (
 		workspace: WorkspaceIndexEntry,
 		taskSnapshot: RuntimeBoardCard,
 	): Promise<void> => {
-		/* Atomically claim the task by incrementing recurringCurrentIteration and moving to backlog. */
-		const claim = await deps.mutateWorkspaceState<{ claimed: boolean; card: RuntimeBoardCard | null }>(
-			workspace.repoPath,
-			(state) => {
-				const card = findTrashCard(state.board, taskSnapshot.id);
-				if (!card || !shouldTaskRecur(card)) {
-					return { board: state.board, value: { claimed: false, card: null }, save: false };
-				}
+		/* Atomically claim the task by incrementing recurringCurrentIteration and moving to backlog.
+		   Also capture linked backlog task IDs that were blocked by this task while it was in trash. */
+		const claim = await deps.mutateWorkspaceState<{
+			claimed: boolean;
+			card: RuntimeBoardCard | null;
+			readyLinkedTaskIds: string[];
+		}>(workspace.repoPath, (state) => {
+			const card = findTrashCard(state.board, taskSnapshot.id);
+			if (!card || !shouldTaskRecur(card)) {
+				return { board: state.board, value: { claimed: false, card: null, readyLinkedTaskIds: [] }, save: false };
+			}
 
-				/* Check if scheduledEndAt has passed — if so, do not recur. */
-				if (card.scheduledEndAt != null && card.scheduledEndAt < Date.now()) {
-					return { board: state.board, value: { claimed: false, card: null }, save: false };
-				}
+			/* Check if scheduledEndAt has passed — if so, do not recur. */
+			if (card.scheduledEndAt != null && card.scheduledEndAt < Date.now()) {
+				return { board: state.board, value: { claimed: false, card: null, readyLinkedTaskIds: [] }, save: false };
+			}
 
-				/* Re-check the delay under the lock to avoid races. */
-				const remaining = computeRemainingRecurringDelay(card);
-				if (remaining > 0) {
-					return { board: state.board, value: { claimed: false, card: null }, save: false };
-				}
+			/* Re-check the delay under the lock to avoid races. */
+			const remaining = computeRemainingRecurringDelay(card);
+			if (remaining > 0) {
+				return { board: state.board, value: { claimed: false, card: null, readyLinkedTaskIds: [] }, save: false };
+			}
 
-				const nextIteration = (card.recurringCurrentIteration ?? 0) + 1;
-				const updated = updateTask(
-					state.board,
-					taskSnapshot.id,
-					buildRecurringUpdateInput(card, {
-						recurringCurrentIteration: nextIteration,
-					}),
-				);
-				if (!updated.updated) {
-					return { board: state.board, value: { claimed: false, card: null }, save: false };
-				}
+			/* Snapshot linked backlog tasks before moving the recurring task out of trash. */
+			const readyLinkedTaskIds = getLinkedBacklogTaskIdsBlockedByTrashTask(state.board, taskSnapshot.id);
 
-				/* Move from trash to backlog. */
-				const movement = moveTaskToColumn(updated.board, taskSnapshot.id, "backlog");
-				if (!movement.moved) {
-					return { board: state.board, value: { claimed: false, card: null }, save: false };
-				}
+			const nextIteration = (card.recurringCurrentIteration ?? 0) + 1;
+			const updated = updateTask(
+				state.board,
+				taskSnapshot.id,
+				buildRecurringUpdateInput(card, {
+					recurringCurrentIteration: nextIteration,
+				}),
+			);
+			if (!updated.updated) {
+				return { board: state.board, value: { claimed: false, card: null, readyLinkedTaskIds: [] }, save: false };
+			}
 
-				return { board: movement.board, value: { claimed: true, card } };
-			},
-		);
+			/* Move from trash to backlog. */
+			const movement = moveTaskToColumn(updated.board, taskSnapshot.id, "backlog");
+			if (!movement.moved) {
+				return { board: state.board, value: { claimed: false, card: null, readyLinkedTaskIds: [] }, save: false };
+			}
+
+			return { board: movement.board, value: { claimed: true, card, readyLinkedTaskIds } };
+		});
 
 		if (!claim.value.claimed || !claim.value.card) {
 			return;
@@ -214,33 +217,72 @@ export function createTaskRecurringMonitor(deps: CreateTaskRecurringMonitorDepen
 		});
 
 		await broadcastWorkspaceUpdate(workspace);
+
+		/* Start any linked backlog tasks whose blocking dependency (this recurring task) just completed. */
+		await startLinkedBacklogTasks(workspace, claim.value.readyLinkedTaskIds);
 	};
 
 	/**
-	 * Moves a recurring task from the review column to trash so the restart
-	 * logic can pick it up. This handles the case where auto-review is disabled
-	 * or the browser is closed — the server ensures the lifecycle continues.
+	 * Starts linked backlog tasks that became ready because their blocking
+	 * dependency completed. For each task: ensures the worktree, starts an
+	 * agent session, and moves the task to in_progress.
 	 */
-	const moveReviewTaskToTrash = async (
-		workspace: WorkspaceIndexEntry,
-		taskSnapshot: RuntimeBoardCard,
-	): Promise<boolean> => {
-		const result = await deps.mutateWorkspaceState<boolean>(workspace.repoPath, (state) => {
-			const card = findReviewCard(state.board, taskSnapshot.id);
-			if (!card || !shouldTaskRecur(card)) {
-				return { board: state.board, value: false, save: false };
-			}
-			const movement = moveTaskToColumn(state.board, taskSnapshot.id, "trash");
-			if (!movement.moved) {
-				return { board: state.board, value: false, save: false };
-			}
-			return { board: movement.board, value: true };
-		});
-
-		if (result.value) {
-			await broadcastWorkspaceUpdate(workspace);
+	const startLinkedBacklogTasks = async (workspace: WorkspaceIndexEntry, readyTaskIds: string[]): Promise<void> => {
+		if (readyTaskIds.length === 0) {
+			return;
 		}
-		return result.value;
+
+		const client = deps.createTrpcClient(workspace.workspaceId);
+
+		for (const readyTaskId of readyTaskIds) {
+			try {
+				/* Re-load state to verify the task is still in backlog. */
+				const freshState = await deps.loadWorkspaceState(workspace.repoPath);
+				if (getTaskColumnId(freshState.board, readyTaskId) !== "backlog") {
+					continue;
+				}
+
+				const backlog = freshState.board.columns.find((col) => col.id === "backlog");
+				const readyCard = backlog?.cards.find((card) => card.id === readyTaskId);
+				if (!readyCard) {
+					continue;
+				}
+
+				const ensured = await client.workspace.ensureWorktree.mutate({
+					taskId: readyTaskId,
+					baseRef: readyCard.baseRef,
+				});
+				if (!ensured.ok) {
+					deps.warn(
+						`[kanban] Recurring monitor: worktree setup failed for linked task ${readyTaskId}: ${ensured.error ?? "unknown"}`,
+					);
+					continue;
+				}
+
+				const started = await client.runtime.startTaskSession.mutate({
+					taskId: readyTaskId,
+					prompt: readyCard.prompt,
+					startInPlanMode: readyCard.startInPlanMode,
+					baseRef: readyCard.baseRef,
+				});
+				if (!started.ok) {
+					deps.warn(
+						`[kanban] Recurring monitor: session start failed for linked task ${readyTaskId}: ${started.error ?? "unknown"}`,
+					);
+					continue;
+				}
+
+				await deps.mutateWorkspaceState(workspace.repoPath, (state) => {
+					const movement = moveTaskToColumn(state.board, readyTaskId, "in_progress");
+					return { board: movement.moved ? movement.board : state.board, value: movement.moved };
+				});
+
+				await broadcastWorkspaceUpdate(workspace);
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				deps.warn(`[kanban] Recurring monitor: failed to start linked task ${readyTaskId}: ${message}`);
+			}
+		}
 	};
 
 	/** Processes a single recurring task — restarts it if the delay has elapsed. */
@@ -259,37 +301,14 @@ export function createTaskRecurringMonitor(deps: CreateTaskRecurringMonitorDepen
 		await restartRecurringTask(workspace, task);
 	};
 
-	/** Scans all workspaces for recurring tasks in review or trash whose recurrence period has elapsed. */
+	/** Scans all workspaces for recurring tasks in trash whose recurrence period has elapsed. */
 	const doTick = async (): Promise<void> => {
 		const workspaces = await deps.listWorkspaceIndexEntries().catch(() => [] as WorkspaceIndexEntry[]);
 
 		for (const workspace of workspaces) {
 			try {
 				const state = await deps.loadWorkspaceState(workspace.repoPath);
-
-				/* Move recurring tasks stuck in review to trash so the restart
-				   logic below can pick them up. This handles the case where
-				   auto-review is disabled or the browser tab is closed. */
-				const review = state.board.columns.find((col) => col.id === "review");
-				if (review) {
-					const reviewRecurring = review.cards.filter(
-						(card) => card.recurringEnabled === true && shouldTaskRecur(card),
-					);
-					for (const task of reviewRecurring) {
-						try {
-							await moveReviewTaskToTrash(workspace, task);
-						} catch (err) {
-							const message = err instanceof Error ? err.message : String(err);
-							deps.warn(
-								`[kanban] Recurring monitor: failed to move review task ${task.id} to trash: ${message}`,
-							);
-						}
-					}
-				}
-
-				/* Re-load state after potential review->trash moves above. */
-				const freshState = review ? await deps.loadWorkspaceState(workspace.repoPath) : state;
-				const trash = freshState.board.columns.find((col) => col.id === "trash");
+				const trash = state.board.columns.find((col) => col.id === "trash");
 				if (!trash) {
 					continue;
 				}

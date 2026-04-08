@@ -105,8 +105,8 @@ export function BoardColumn({
 	isDragDisabled?: boolean;
 	/** Dependencies for computing per-card link badge counts (mobile only). */
 	dependencies?: import("@/types").BoardDependency[];
-	/** Callback to activate mobile tap-based dependency link mode. */
-	onEnterMobileLinkMode?: () => void;
+	/** Callback to activate mobile tap-based dependency link mode with the given card as source. */
+	onEnterMobileLinkMode?: (taskId: string) => void;
 	/** Callback to open the mobile dependency sheet for a given task. */
 	onShowMobileDependencies?: (taskId: string) => void;
 	/** Callback to update recurring/schedule fields on a task. */
@@ -298,6 +298,7 @@ export function BoardColumn({
 											onEnterMobileLinkMode={onEnterMobileLinkMode}
 											onShowMobileDependencies={onShowMobileDependencies}
 											onUpdateTask={onUpdateTask}
+											onEditTask={onEditTask}
 											onClick={() => {
 												if (column.id === "backlog") {
 													onEditTask?.(card);

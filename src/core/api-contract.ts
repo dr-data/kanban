@@ -39,6 +39,13 @@ export const runtimeWorkspaceChangesResponseSchema = z.object({
 });
 export type RuntimeWorkspaceChangesResponse = z.infer<typeof runtimeWorkspaceChangesResponseSchema>;
 
+export const runtimeWorkspaceFileContentRequestSchema = z.object({
+	taskId: z.string(),
+	baseRef: z.string(),
+	path: z.string(),
+});
+export type RuntimeWorkspaceFileContentRequest = z.infer<typeof runtimeWorkspaceFileContentRequestSchema>;
+
 export const runtimeWorkspaceFileSearchRequestSchema = z.object({
 	query: z.string(),
 	limit: z.number().int().positive().optional(),

@@ -1,6 +1,5 @@
 import { Draggable } from "@hello-pangea/dnd";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import * as Popover from "@radix-ui/react-popover";
 import { formatClineToolCallLabel } from "@runtime-cline-tool-call-display";
 import { buildTaskWorktreeDisplayPath } from "@runtime-task-worktree-path";
 import {
@@ -17,7 +16,6 @@ import {
 } from "lucide-react";
 import { type MouseEvent, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { TaskRecurringScheduleBar } from "@/components/task-recurring-schedule-bar";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
 import { ColumnIndicator } from "@/components/ui/column-indicator";
@@ -191,10 +189,33 @@ function resolveToolCallLabel(
 	return formatClineToolCallLabel(parsed.toolName, parsed.toolInputSummary);
 }
 
+/**
+ * Detects whether a "running" session is actually stale — the process has
+ * exited (pid is null) but the state machine never transitioned out of
+ * "running". This can happen when process exit events are missed.
+ */
+function isStaleRunningSession(summary: RuntimeTaskSessionSummary): boolean {
+	if (summary.state !== "running") {
+		return false;
+	}
+	return summary.pid === null;
+}
+
 function getCardSessionActivity(summary: RuntimeTaskSessionSummary | undefined): CardSessionActivity | null {
 	if (!summary) {
 		return null;
 	}
+
+	/* If state is "running" but the process is gone, show a stale indicator
+	   instead of an endlessly spinning "Thinking..." label. */
+	if (isStaleRunningSession(summary)) {
+		const lastActivity = summary.latestHookActivity?.finalMessage?.trim();
+		return {
+			dotColor: SESSION_ACTIVITY_COLOR.muted,
+			text: lastActivity || "Session ended",
+		};
+	}
+
 	const hookActivity = summary.latestHookActivity;
 	const activityText = hookActivity?.activityText?.trim();
 	const toolName = hookActivity?.toolName?.trim() ?? null;
@@ -345,7 +366,8 @@ export const BoardCard = memo(function BoardCard({
 	dependencyCount = 0,
 	onEnterMobileLinkMode,
 	onShowMobileDependencies,
-	onUpdateTask,
+	onUpdateTask: _onUpdateTask,
+	onEditTask,
 }: {
 	card: BoardCardModel;
 	index: number;
@@ -378,12 +400,14 @@ export const BoardCard = memo(function BoardCard({
 	isDragDisabled?: boolean;
 	/** Number of dependencies this card has (for badge display on mobile). */
 	dependencyCount?: number;
-	/** Callback to activate mobile tap-based dependency link mode from this card. */
-	onEnterMobileLinkMode?: () => void;
+	/** Callback to activate mobile tap-based dependency link mode with this card as source. */
+	onEnterMobileLinkMode?: (taskId: string) => void;
 	/** Callback to open the mobile dependency sheet for a given task. */
 	onShowMobileDependencies?: (taskId: string) => void;
 	/** Callback to update recurring/schedule fields on a task. */
 	onUpdateTask?: (taskId: string, updates: Record<string, unknown>) => void;
+	/** Callback to open the task editor for this card. */
+	onEditTask?: (card: BoardCardModel) => void;
 }): React.ReactElement {
 	const [isHovered, setIsHovered] = useState(false);
 	const [titleContainerRef, titleRect] = useMeasure<HTMLDivElement>();
@@ -569,6 +593,10 @@ export const BoardCard = memo(function BoardCard({
 			if (sessionSummary?.state === "failed") {
 				return <AlertCircle size={12} className="text-status-red" />;
 			}
+			/* Stop the spinner for stale sessions where the process is gone. */
+			if (sessionSummary && isStaleRunningSession(sessionSummary)) {
+				return <AlertCircle size={12} className="text-text-tertiary" />;
+			}
 			return <Spinner size={12} />;
 		}
 		return null;
@@ -739,31 +767,18 @@ export const BoardCard = memo(function BoardCard({
 										/>
 									</Tooltip>
 								) : null}
-								{columnId !== "backlog" && onUpdateTask ? (
-									<Popover.Root>
-										<Popover.Trigger asChild>
-											<Button
-												icon={<Settings size={14} />}
-												variant="ghost"
-												size="sm"
-												aria-label="Task settings"
-												onMouseDown={stopEvent}
-												onClick={stopEvent}
-											/>
-										</Popover.Trigger>
-										<Popover.Portal>
-											<Popover.Content
-												side="bottom"
-												align="end"
-												sideOffset={4}
-												className="z-50 w-72 rounded-lg border border-border bg-surface-1 shadow-lg"
-												onMouseDown={stopEvent}
-												onClick={stopEvent}
-											>
-												<TaskRecurringScheduleBar card={card} onUpdate={onUpdateTask} defaultExpanded />
-											</Popover.Content>
-										</Popover.Portal>
-									</Popover.Root>
+								{columnId !== "backlog" && onEditTask ? (
+									<Button
+										icon={<Settings size={14} />}
+										variant="ghost"
+										size="sm"
+										aria-label="Edit task settings"
+										onMouseDown={stopEvent}
+										onClick={(e) => {
+											stopEvent(e);
+											onEditTask(card);
+										}}
+									/>
 								) : null}
 								{isMobile && mobileMoveTargets.length > 0 && onMoveToColumn ? (
 									<MobileMoveToMenu
@@ -783,7 +798,7 @@ export const BoardCard = memo(function BoardCard({
 											onMouseDown={stopEvent}
 											onClick={(e) => {
 												stopEvent(e);
-												onEnterMobileLinkMode();
+												onEnterMobileLinkMode(card.id);
 											}}
 										/>
 									</Tooltip>

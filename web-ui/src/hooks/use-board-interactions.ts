@@ -442,6 +442,35 @@ export function useBoardInteractions({
 				}
 				const columnId = getTaskColumnId(nextBoard, summary.taskId);
 				if (summary.state === "awaiting_review" && columnId === "in_progress") {
+					/* When the process exits cleanly and auto-review is disabled,
+					   move directly to trash — the task is done and there is no
+					   automatic action (commit/PR) to perform in review. This also
+					   enables recurring tasks to restart from trash immediately. */
+					const cardSelection = findCardSelection(nextBoard, summary.taskId);
+					const shouldAutoTrash =
+						summary.reviewReason === "exit" && cardSelection?.card.autoReviewEnabled !== true;
+
+					if (shouldAutoTrash) {
+						const nextTaskId = getNextDetailTaskIdAfterTrashMove(nextBoard, summary.taskId);
+						const programmaticMoveAttempt = tryProgrammaticCardMove(summary.taskId, columnId, "trash", {
+							skipWorkingChangeWarning: true,
+						});
+						if (programmaticMoveAttempt === "started" || programmaticMoveAttempt === "blocked") {
+							setSelectedTaskId((currentSelectedTaskId) =>
+								currentSelectedTaskId === summary.taskId ? nextTaskId : currentSelectedTaskId,
+							);
+							continue;
+						}
+						const moved = moveTaskToColumn(nextBoard, summary.taskId, "trash", { insertAtTop: true });
+						if (moved.moved) {
+							setSelectedTaskId((currentSelectedTaskId) =>
+								currentSelectedTaskId === summary.taskId ? nextTaskId : currentSelectedTaskId,
+							);
+							nextBoard = moved.board;
+						}
+						continue;
+					}
+
 					const programmaticMoveAttempt = tryProgrammaticCardMove(summary.taskId, columnId, "review");
 					if (programmaticMoveAttempt === "started" || programmaticMoveAttempt === "blocked") {
 						continue;
@@ -473,7 +502,7 @@ export function useBoardInteractions({
 				) {
 					const nextTaskId = getNextDetailTaskIdAfterTrashMove(nextBoard, summary.taskId);
 					const programmaticMoveAttempt = tryProgrammaticCardMove(summary.taskId, columnId, "trash", {
-						skipTrashWorkflow: true,
+						skipWorkingChangeWarning: true,
 					});
 					if (programmaticMoveAttempt === "started" || programmaticMoveAttempt === "blocked") {
 						if (programmaticMoveAttempt === "blocked") {

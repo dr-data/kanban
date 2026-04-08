@@ -447,10 +447,13 @@ export function KanbanBoard({
 		[onCardSelect],
 	);
 
-	/** Activates mobile tap-based dependency link mode. */
-	const handleEnterMobileLinkMode = useCallback(() => {
-		dependencyLinking.mobileLinkMode.enter();
-	}, [dependencyLinking.mobileLinkMode]);
+	/** Activates mobile tap-based dependency link mode with the given card as the source. */
+	const handleEnterMobileLinkMode = useCallback(
+		(taskId: string) => {
+			dependencyLinking.mobileLinkMode.enter(taskId);
+		},
+		[dependencyLinking.mobileLinkMode],
+	);
 
 	/** Opens the mobile dependency sheet for the given task. */
 	const handleShowMobileDependencies = useCallback((taskId: string) => {

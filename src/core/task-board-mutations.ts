@@ -216,9 +216,9 @@ function resolveDependencyEndpoints(
 function getLinkedBacklogTaskIdsReadyAfterTaskTrashed(
 	board: RuntimeBoardData,
 	taskId: string,
-	fromColumnId: RuntimeBoardColumnId | null,
+	_fromColumnId: RuntimeBoardColumnId | null,
 ): string[] {
-	if (!taskId || board.dependencies.length === 0 || fromColumnId !== "review") {
+	if (!taskId || board.dependencies.length === 0) {
 		return [];
 	}
 	const readyTaskIds = new Set<string>();
@@ -425,6 +425,33 @@ export function removeTaskDependency(board: RuntimeBoardData, dependencyId: stri
 
 export function getReadyLinkedTaskIdsForTaskInTrash(board: RuntimeBoardData, taskId: string): string[] {
 	return getLinkedBacklogTaskIdsReadyAfterTaskTrashed(board, taskId, getTaskColumnId(board, taskId));
+}
+
+/**
+ * Returns backlog task IDs that are linked (blocked by) the given task which is
+ * currently in trash. Unlike `getReadyLinkedTaskIdsForTaskInTrash` which requires
+ * the task to have come from the review column, this variant works for any task
+ * already sitting in trash — specifically for the recurring monitor which needs
+ * to resolve dependencies before restarting a completed recurring task.
+ */
+export function getLinkedBacklogTaskIdsBlockedByTrashTask(board: RuntimeBoardData, taskId: string): string[] {
+	if (!taskId || board.dependencies.length === 0) {
+		return [];
+	}
+	if (getTaskColumnId(board, taskId) !== "trash") {
+		return [];
+	}
+	const readyTaskIds = new Set<string>();
+	for (const dependency of board.dependencies) {
+		if (dependency.toTaskId !== taskId) {
+			continue;
+		}
+		if (getTaskColumnId(board, dependency.fromTaskId) !== "backlog") {
+			continue;
+		}
+		readyTaskIds.add(dependency.fromTaskId);
+	}
+	return [...readyTaskIds];
 }
 
 export function trashTaskAndGetReadyLinkedTaskIds(

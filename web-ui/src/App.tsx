@@ -939,6 +939,7 @@ export default function App(): ReactElement {
 												void discardHomeWorkingChanges();
 											}}
 											isDiscardWorkingChangesPending={isDiscardingHomeWorkingChanges}
+											isMobile={isMobile}
 										/>
 									) : (
 										<KanbanBoard
@@ -1065,7 +1066,11 @@ export default function App(): ReactElement {
 								isMoveToTrashLoading={moveToTrashLoadingById[selectedCard.card.id] ?? false}
 								gitHistoryPanel={
 									isGitHistoryOpen ? (
-										<GitHistoryView workspaceId={currentProjectId} gitHistory={gitHistory} />
+										<GitHistoryView
+											workspaceId={currentProjectId}
+											gitHistory={gitHistory}
+											isMobile={isMobile}
+										/>
 									) : undefined
 								}
 								onCloseGitHistory={handleCloseGitHistory}

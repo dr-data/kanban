@@ -74,6 +74,8 @@ import type {
 	RuntimeTaskWorkspaceInfoResponse,
 	RuntimeWorkspaceChangesRequest,
 	RuntimeWorkspaceChangesResponse,
+	RuntimeWorkspaceFileChange,
+	RuntimeWorkspaceFileContentRequest,
 	RuntimeWorkspaceFileSearchRequest,
 	RuntimeWorkspaceFileSearchResponse,
 	RuntimeWorkspaceStateNotifyResponse,
@@ -153,6 +155,8 @@ import {
 	runtimeTaskWorkspaceInfoResponseSchema,
 	runtimeWorkspaceChangesRequestSchema,
 	runtimeWorkspaceChangesResponseSchema,
+	runtimeWorkspaceFileChangeSchema,
+	runtimeWorkspaceFileContentRequestSchema,
 	runtimeWorkspaceFileSearchRequestSchema,
 	runtimeWorkspaceFileSearchResponseSchema,
 	runtimeWorkspaceStateNotifyResponseSchema,
@@ -278,6 +282,10 @@ export interface RuntimeTrpcContext {
 			scope: RuntimeTrpcWorkspaceScope,
 			input: RuntimeWorkspaceChangesRequest,
 		) => Promise<RuntimeWorkspaceChangesResponse>;
+		getFileContent: (
+			scope: RuntimeTrpcWorkspaceScope,
+			input: RuntimeWorkspaceFileContentRequest,
+		) => Promise<RuntimeWorkspaceFileChange | null>;
 		ensureWorktree: (
 			scope: RuntimeTrpcWorkspaceScope,
 			input: RuntimeWorktreeEnsureRequest,
@@ -553,6 +561,12 @@ export const runtimeAppRouter = t.router({
 			.output(runtimeWorkspaceChangesResponseSchema)
 			.query(async ({ ctx, input }) => {
 				return await ctx.workspaceApi.loadChanges(ctx.workspaceScope, input);
+			}),
+		getFileContent: workspaceProcedure
+			.input(runtimeWorkspaceFileContentRequestSchema)
+			.output(runtimeWorkspaceFileChangeSchema.nullable())
+			.query(async ({ ctx, input }) => {
+				return await ctx.workspaceApi.getFileContent(ctx.workspaceScope, input);
 			}),
 		ensureWorktree: workspaceProcedure
 			.input(runtimeWorktreeEnsureRequestSchema)

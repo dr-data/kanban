@@ -1,5 +1,5 @@
 import type { DropResult } from "@hello-pangea/dnd";
-import { GitCompareArrows, Maximize2, Minimize2, X } from "lucide-react";
+import { GitCompareArrows, Maximize2, Minimize2, Terminal, X } from "lucide-react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
@@ -444,7 +444,10 @@ export function CardDetailView({
 	const diffPanelPercent = `${((1 - agentPanelRatio) * 100).toFixed(1)}%`;
 	const fileTreePanelFlex = `0 0 ${isDiffExpanded ? EXPANDED_FILE_TREE_PANEL_BASIS : COLLAPSED_FILE_TREE_PANEL_BASIS}`;
 	const showMoveToTrashActions = selection.column.id === "review" || selection.column.id === "in_progress";
-	const isTaskTerminalEnabled = selection.column.id === "in_progress" || selection.column.id === "review";
+	const [disconnectedTerminalRequested, setDisconnectedTerminalRequested] = useState(false);
+	const isActiveTaskColumn = selection.column.id === "in_progress" || selection.column.id === "review";
+	const isTrashColumn = selection.column.id === "trash";
+	const isTaskTerminalEnabled = isActiveTaskColumn || isTrashColumn || disconnectedTerminalRequested;
 	const showClineAgentChatPanel = isNativeClineAgentSelected(sessionSummary?.agentId ?? selectedAgentId);
 	const availablePaths = useMemo(() => {
 		if (!runtimeFiles || runtimeFiles.length === 0) {
@@ -530,6 +533,10 @@ export function CardDetailView({
 
 	useEffect(() => {
 		setDiffMode("working_copy");
+	}, [selection.card.id]);
+
+	useEffect(() => {
+		setDisconnectedTerminalRequested(false);
 	}, [selection.card.id]);
 
 	const handleToggleDiffExpand = useCallback(() => {
@@ -651,7 +658,7 @@ export function CardDetailView({
 										minHeight: 0,
 									}}
 								>
-									{showClineAgentChatPanel ? (
+									{showClineAgentChatPanel && isActiveTaskColumn ? (
 										<ClineAgentChatPanel
 											ref={clineAgentChatPanelRef}
 											taskId={selection.card.id}
@@ -684,6 +691,21 @@ export function CardDetailView({
 													: null
 											}
 										/>
+									) : !isActiveTaskColumn && !isTrashColumn && !disconnectedTerminalRequested ? (
+										<div
+											className="flex flex-1 flex-col items-center justify-center gap-3 text-text-tertiary"
+											style={{ background: TERMINAL_THEME_COLORS.surfacePrimary }}
+										>
+											<Terminal size={32} />
+											<p className="text-sm">Terminal is available after the task starts</p>
+											<Button
+												variant="default"
+												size="sm"
+												onClick={() => setDisconnectedTerminalRequested(true)}
+											>
+												Connect Terminal
+											</Button>
+										</div>
 									) : (
 										<AgentTerminalPanel
 											taskId={selection.card.id}
