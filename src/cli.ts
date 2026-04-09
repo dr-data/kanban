@@ -4,7 +4,6 @@ import { createServer as createNetServer } from "node:net";
 import { Command, Option } from "commander";
 import ora, { type Ora } from "ora";
 import packageJson from "../package.json" with { type: "json" };
-import { disposeCliTelemetryService } from "./cline-sdk/cline-telemetry-service.js";
 import { registerHooksCommand } from "./commands/hooks";
 import { registerTaskCommand } from "./commands/task";
 import { loadGlobalRuntimeConfig, loadRuntimeConfig } from "./config/runtime-config";
@@ -26,9 +25,39 @@ import {
 } from "./core/runtime-endpoint";
 import { terminateProcessForTimeout } from "./server/process-termination";
 import type { RuntimeStateHub } from "./server/runtime-state-hub";
-import { captureNodeException, flushNodeTelemetry } from "./telemetry/sentry-node.js";
 import type { TerminalSessionManager } from "./terminal/session-manager";
 import type { RuntimeAppRouter } from "./trpc/app-router";
+
+/*
+	Telemetry modules (@sentry/node + Cline SDK telemetry) are loaded lazily
+	because their import graphs are very heavy (~10 seconds of cold-start tsx
+	compilation). They are only needed for error reporting, shutdown cleanup,
+	and non-critical lifecycle hooks — never on the hot path to
+	`console.log("Cline Kanban running at ...")`.
+
+	Keeping them top-level caused the source CLI to take 20-30 seconds before
+	the server could print its ready message, which broke integration tests
+	that wait for that output.
+*/
+
+/** Lazily import and dispose the Cline telemetry singleton. */
+async function lazyDisposeCliTelemetryService(): Promise<void> {
+	const { disposeCliTelemetryService } = await import("./cline-sdk/cline-telemetry-service.js");
+	await disposeCliTelemetryService();
+}
+
+/** Lazily import Sentry and capture an exception. */
+function lazyCaptureNodeException(error: unknown, options?: { area?: string }): void {
+	void import("./telemetry/sentry-node.js").then(({ captureNodeException }) => {
+		captureNodeException(error, options);
+	});
+}
+
+/** Lazily import Sentry and flush pending telemetry events. */
+async function lazyFlushNodeTelemetry(): Promise<void> {
+	const { flushNodeTelemetry } = await import("./telemetry/sentry-node.js");
+	await flushNodeTelemetry();
+}
 
 interface CliOptions {
 	noOpen: boolean;
@@ -438,9 +467,20 @@ async function startServer(): Promise<{
 
 	const monitorWarn = (message: string) => console.warn(`[kanban] ${message}`);
 
+	/** Loads workspace state with live in-memory session summaries overlaid on
+	 *  the persisted disk data. Without this overlay the lifecycle sweep sees
+	 *  stale session state and may trash actively-running tasks. */
+	const loadWorkspaceStateWithLiveSessions = async (cwd: string) => {
+		const workspaceId = workspaceRegistry.getActiveWorkspaceId();
+		if (workspaceId) {
+			return workspaceRegistry.buildWorkspaceStateSnapshot(workspaceId, cwd);
+		}
+		return loadWorkspaceState(cwd);
+	};
+
 	const monitorDeps = {
 		listWorkspaceIndexEntries,
-		loadWorkspaceState,
+		loadWorkspaceState: loadWorkspaceStateWithLiveSessions,
 		mutateWorkspaceState,
 		createTrpcClient: createLocalTrpcClient,
 		broadcastRuntimeWorkspaceStateUpdated: runtimeHub.broadcastRuntimeWorkspaceStateUpdated,
@@ -561,7 +601,7 @@ async function runMainCommand(options: CliOptions, shouldAutoOpenBrowser: boolea
 		await runtime.shutdown({
 			skipSessionCleanup: options.skipShutdownCleanup,
 		});
-		await disposeCliTelemetryService().catch(() => {});
+		await lazyDisposeCliTelemetryService().catch(() => {});
 	};
 
 	installGracefulShutdownHandlers({
@@ -582,7 +622,7 @@ async function runMainCommand(options: CliOptions, shouldAutoOpenBrowser: boolea
 		},
 		onShutdownError: (error) => {
 			shutdownIndicator.stop("failed");
-			captureNodeException(error, { area: "shutdown" });
+			lazyCaptureNodeException(error, { area: "shutdown" });
 			const message = error instanceof Error ? error.message : String(error);
 			console.error(`Shutdown failed: ${message}`);
 		},
@@ -644,14 +684,14 @@ async function run(): Promise<void> {
 	const program = createProgram(argv);
 	await program.parseAsync(argv, { from: "user" });
 	if (!shouldAutoOpenBrowserTabForInvocation(argv)) {
-		await Promise.allSettled([disposeCliTelemetryService(), flushNodeTelemetry()]);
+		await Promise.allSettled([lazyDisposeCliTelemetryService(), lazyFlushNodeTelemetry()]);
 		process.exit(process.exitCode ?? 0);
 	}
 }
 
 void run().catch(async (error) => {
-	captureNodeException(error, { area: "startup" });
-	await Promise.allSettled([disposeCliTelemetryService(), flushNodeTelemetry()]);
+	lazyCaptureNodeException(error, { area: "startup" });
+	await Promise.allSettled([lazyDisposeCliTelemetryService(), lazyFlushNodeTelemetry()]);
 	const message = error instanceof Error ? error.message : String(error);
 	console.error(`Failed to start Kanban: ${message}`);
 	process.exit(1);

@@ -110,6 +110,9 @@ export const runtimeBoardCardSchema = z.object({
 	recurringCurrentIteration: z.number().int().min(0).optional(),
 	scheduledStartAt: z.number().nullable().optional(),
 	scheduledEndAt: z.number().nullable().optional(),
+	/** Durable record of linked task IDs for recurring dependencies. Survives
+	 *  dependency pruning so the recurring monitor can restore links on restart. */
+	recurringLinkedTaskIds: z.array(z.string()).optional(),
 });
 export type RuntimeBoardCard = z.infer<typeof runtimeBoardCardSchema>;
 
@@ -258,6 +261,11 @@ export const runtimeWorkspaceStateSaveRequestSchema = z.object({
 	board: runtimeBoardDataSchema,
 	sessions: z.record(z.string(), runtimeTaskSessionSummarySchema),
 	expectedRevision: z.number().int().nonnegative().optional(),
+	/** Explicit dependency removals. When present, the server removes these
+	 *  dependencies before merging the remaining ones. Required for client-driven
+	 *  dependency deletes because the server is authoritative and otherwise
+	 *  re-adds any dep missing from `board.dependencies`. */
+	removedDependencyIds: z.array(z.string()).optional(),
 });
 export type RuntimeWorkspaceStateSaveRequest = z.infer<typeof runtimeWorkspaceStateSaveRequestSchema>;
 

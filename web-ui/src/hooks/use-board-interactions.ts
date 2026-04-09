@@ -453,7 +453,7 @@ export function useBoardInteractions({
 					if (shouldAutoTrash) {
 						const nextTaskId = getNextDetailTaskIdAfterTrashMove(nextBoard, summary.taskId);
 						const programmaticMoveAttempt = tryProgrammaticCardMove(summary.taskId, columnId, "trash", {
-							skipWorkingChangeWarning: true,
+							skipTrashWorkflow: true,
 						});
 						if (programmaticMoveAttempt === "started" || programmaticMoveAttempt === "blocked") {
 							setSelectedTaskId((currentSelectedTaskId) =>
@@ -502,7 +502,7 @@ export function useBoardInteractions({
 				) {
 					const nextTaskId = getNextDetailTaskIdAfterTrashMove(nextBoard, summary.taskId);
 					const programmaticMoveAttempt = tryProgrammaticCardMove(summary.taskId, columnId, "trash", {
-						skipWorkingChangeWarning: true,
+						skipTrashWorkflow: true,
 					});
 					if (programmaticMoveAttempt === "started" || programmaticMoveAttempt === "blocked") {
 						if (programmaticMoveAttempt === "blocked") {

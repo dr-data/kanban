@@ -937,6 +937,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 		return cloneSummary(summary);
 	}
 
+	/** Stop a running task session and immediately transition its state to "interrupted". */
 	stopTaskSession(taskId: string): RuntimeTaskSessionSummary | null {
 		const entry = this.entries.get(taskId);
 		if (!entry?.active) {
@@ -946,23 +947,54 @@ export class TerminalSessionManager implements TerminalSessionService {
 		const cleanupFn = entry.active.onSessionCleanup;
 		entry.active.onSessionCleanup = null;
 		stopWorkspaceTrustTimers(entry.active);
-		entry.active.session.stop();
+		entry.active.session.stop({ interrupted: true });
 		if (cleanupFn) {
 			cleanupFn().catch(() => {
 				// Best effort: cleanup failure is non-critical.
 			});
 		}
+		/* Transition state immediately so the frontend doesn't stay stuck on
+		   "Thinking ..." if the PTY onExit callback fires late or never arrives.
+		   Mirrors what the Cline SDK's stopTaskSession does. */
+		if (entry.summary.state !== "idle") {
+			const summary = updateSummary(entry, {
+				state: "interrupted",
+				reviewReason: "interrupted",
+				exitCode: null,
+				pid: null,
+				lastOutputAt: now(),
+			});
+			for (const listener of entry.listeners.values()) {
+				listener.onState?.(cloneSummary(summary));
+			}
+			this.emitSummary(summary);
+		}
 		return cloneSummary(entry.summary);
 	}
 
+	/** Stop every active task session during server shutdown and immediately mark them interrupted. */
 	markInterruptedAndStopAll(): RuntimeTaskSessionSummary[] {
 		const activeEntries = Array.from(this.entries.values()).filter((entry) => entry.active != null);
 		for (const entry of activeEntries) {
 			if (!entry.active) {
 				continue;
 			}
+			entry.suppressAutoRestartOnExit = true;
 			stopWorkspaceTrustTimers(entry.active);
 			entry.active.session.stop({ interrupted: true });
+			if (entry.summary.state !== "idle") {
+				const summary = updateSummary(entry, {
+					state: "interrupted",
+					reviewReason: "interrupted",
+					exitCode: null,
+					pid: null,
+					lastOutputAt: now(),
+				});
+				for (const listener of entry.listeners.values()) {
+					listener.onState?.(cloneSummary(summary));
+				}
+				this.emitSummary(summary);
+			}
 		}
 		return activeEntries.map((entry) => cloneSummary(entry.summary));
 	}

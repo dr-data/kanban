@@ -37,6 +37,7 @@ export interface RuntimeUpdateTaskInput {
 	recurringCurrentIteration?: number;
 	scheduledStartAt?: number | null;
 	scheduledEndAt?: number | null;
+	recurringLinkedTaskIds?: string[];
 }
 
 function normalizeTaskAutoReviewMode(value: RuntimeTaskAutoReviewMode | null | undefined): RuntimeTaskAutoReviewMode {
@@ -234,11 +235,26 @@ function getLinkedBacklogTaskIdsReadyAfterTaskTrashed(
 	return [...readyTaskIds];
 }
 
+/**
+ * Reconciles dependencies after board mutations. Drops invalid entries
+ * (missing tasks, self-links, duplicates) and reorients endpoints so
+ * the backlog task is always `fromTaskId`. Dependencies where at least
+ * one task has `recurringEnabled` are preserved even when neither task
+ * is currently in backlog — they will be restored on the next
+ * recurring iteration.
+ */
 export function updateTaskDependencies(board: RuntimeBoardData): RuntimeBoardData {
 	if (board.dependencies.length === 0) {
 		return board;
 	}
 	const taskIds = collectTaskIds(board);
+	/* Build a quick card lookup for recurring checks. */
+	const cardById = new Map<string, RuntimeBoardCard>();
+	for (const column of board.columns) {
+		for (const card of column.cards) {
+			cardById.set(card.id, card);
+		}
+	}
 	const dependencies: RuntimeBoardDependency[] = [];
 	const existingPairs = new Set<string>();
 	for (const dependency of board.dependencies) {
@@ -252,6 +268,25 @@ export function updateTaskDependencies(board: RuntimeBoardData): RuntimeBoardDat
 		}
 		const resolved = resolveDependencyEndpoints(board, firstTaskId, secondTaskId);
 		if ("reason" in resolved) {
+			/* Normally we'd drop the dependency when neither task is in backlog.
+			   But for recurring tasks the link must survive across iterations so
+			   the dependency is re-activated when one of them returns to backlog. */
+			const firstCard = cardById.get(firstTaskId);
+			const secondCard = cardById.get(secondTaskId);
+			if (!firstCard?.recurringEnabled && !secondCard?.recurringEnabled) {
+				continue;
+			}
+			/* Preserve the dependency as-is (original orientation). */
+			const pairKey = createDependencyPairKey(firstTaskId, secondTaskId);
+			if (!existingPairs.has(pairKey)) {
+				existingPairs.add(pairKey);
+				dependencies.push({
+					id: dependency.id,
+					fromTaskId: firstTaskId,
+					toTaskId: secondTaskId,
+					createdAt: dependency.createdAt,
+				});
+			}
 			continue;
 		}
 		const pairKey = createDependencyPairKey(resolved.backlogTaskId, resolved.linkedTaskId);
@@ -386,14 +421,52 @@ export function addTaskDependency(
 		toTaskId: resolved.linkedTaskId,
 		createdAt: Date.now(),
 	};
+
+	/* For recurring tasks, persist the link on both cards so the recurring
+	   monitor can restore the dependency after it gets pruned by
+	   updateTaskDependencies. */
+	let updatedBoard: RuntimeBoardData = {
+		...board,
+		dependencies: [...board.dependencies, dependency],
+	};
+	const fromLoc = findTaskLocation(updatedBoard, resolved.backlogTaskId);
+	const toLoc = findTaskLocation(updatedBoard, resolved.linkedTaskId);
+	if (fromLoc?.task.recurringEnabled || toLoc?.task.recurringEnabled) {
+		updatedBoard = stampRecurringLink(updatedBoard, resolved.backlogTaskId, resolved.linkedTaskId);
+	}
+
 	return {
-		board: {
-			...board,
-			dependencies: [...board.dependencies, dependency],
-		},
+		board: updatedBoard,
 		added: true,
 		dependency,
 	};
+}
+
+/**
+ * Stamps `recurringLinkedTaskIds` on both cards so the recurring monitor can
+ * re-create the dependency across iterations even if `board.dependencies`
+ * loses it.
+ */
+function stampRecurringLink(board: RuntimeBoardData, taskIdA: string, taskIdB: string): RuntimeBoardData {
+	const columns = board.columns.map((column) => ({
+		...column,
+		cards: column.cards.map((card) => {
+			if (card.id === taskIdA) {
+				const existing = new Set(card.recurringLinkedTaskIds ?? []);
+				if (!existing.has(taskIdB)) {
+					return { ...card, recurringLinkedTaskIds: [...existing, taskIdB] };
+				}
+			}
+			if (card.id === taskIdB) {
+				const existing = new Set(card.recurringLinkedTaskIds ?? []);
+				if (!existing.has(taskIdA)) {
+					return { ...card, recurringLinkedTaskIds: [...existing, taskIdA] };
+				}
+			}
+			return card;
+		}),
+	}));
+	return { ...board, columns };
 }
 
 export function canAddTaskDependency(board: RuntimeBoardData, firstTaskId: string, secondTaskId: string): boolean {
@@ -674,6 +747,9 @@ export function updateTask(
 					: {}),
 				...(input.scheduledStartAt !== undefined ? { scheduledStartAt: input.scheduledStartAt } : {}),
 				...(input.scheduledEndAt !== undefined ? { scheduledEndAt: input.scheduledEndAt } : {}),
+				...(input.recurringLinkedTaskIds !== undefined
+					? { recurringLinkedTaskIds: input.recurringLinkedTaskIds }
+					: {}),
 			};
 			return updatedTask;
 		});

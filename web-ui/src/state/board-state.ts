@@ -119,6 +119,7 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 		recurringCurrentIteration?: unknown;
 		scheduledStartAt?: unknown;
 		scheduledEndAt?: unknown;
+		recurringLinkedTaskIds?: unknown;
 	};
 	const prompt = typeof card.prompt === "string" ? card.prompt.trim() : "";
 	if (!prompt) {
@@ -161,6 +162,9 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 			: typeof card.scheduledEndAt === "number"
 				? { scheduledEndAt: card.scheduledEndAt }
 				: {}),
+		...(Array.isArray(card.recurringLinkedTaskIds)
+			? { recurringLinkedTaskIds: card.recurringLinkedTaskIds.filter((id): id is string => typeof id === "string") }
+			: {}),
 	};
 }
 

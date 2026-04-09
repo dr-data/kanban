@@ -1,5 +1,11 @@
-import type { RuntimeBoardCard, RuntimeBoardData, RuntimeWorkspaceStateResponse } from "../core/api-contract";
+import type {
+	RuntimeBoardCard,
+	RuntimeBoardColumnId,
+	RuntimeBoardData,
+	RuntimeWorkspaceStateResponse,
+} from "../core/api-contract";
 import {
+	addTaskDependency,
 	getLinkedBacklogTaskIdsBlockedByTrashTask,
 	getTaskColumnId,
 	moveTaskToColumn,
@@ -10,6 +16,8 @@ import type { RuntimeWorkspaceAtomicMutationResult } from "../state/workspace-st
 
 const TASK_RECURRING_POLL_INTERVAL_MS = 5_000;
 const MINIMUM_RECURRING_PERIOD_MS = 180_000;
+/** Grace period before moving orphaned in_progress cards with no session. */
+const ORPHAN_GRACE_PERIOD_MS = 60_000;
 
 interface WorkspaceIndexEntry {
 	workspaceId: string;
@@ -78,6 +86,7 @@ function buildRecurringUpdateInput(card: RuntimeBoardCard, overrides: { recurrin
 		recurringCurrentIteration: overrides.recurringCurrentIteration ?? card.recurringCurrentIteration,
 		scheduledStartAt: card.scheduledStartAt,
 		scheduledEndAt: card.scheduledEndAt,
+		recurringLinkedTaskIds: card.recurringLinkedTaskIds,
 	};
 }
 
@@ -184,6 +193,29 @@ export function createTaskRecurringMonitor(deps: CreateTaskRecurringMonitorDepen
 		}
 
 		const claimedCard = claim.value.card;
+
+		/* Restore recurring dependencies from the card's durable linked task IDs.
+		   This is necessary because updateTaskDependencies may have pruned the
+		   board.dependencies entry during a previous iteration when both tasks
+		   were outside backlog. */
+		const linkedIds = claimedCard.recurringLinkedTaskIds ?? [];
+		if (linkedIds.length > 0) {
+			await deps.mutateWorkspaceState(workspace.repoPath, (state) => {
+				let nextBoard = state.board;
+				for (const linkedId of linkedIds) {
+					const result = addTaskDependency(nextBoard, claimedCard.id, linkedId);
+					if (result.added) {
+						nextBoard = result.board;
+						deps.warn(`[kanban] Recurring monitor: restored dependency ${claimedCard.id} <-> ${linkedId}`);
+					}
+				}
+				if (nextBoard === state.board) {
+					return { board: state.board, value: false, save: false };
+				}
+				return { board: nextBoard, value: true };
+			});
+		}
+
 		const client = deps.createTrpcClient(workspace.workspaceId);
 
 		const ensured = await client.workspace.ensureWorktree.mutate({
@@ -301,14 +333,169 @@ export function createTaskRecurringMonitor(deps: CreateTaskRecurringMonitorDepen
 		await restartRecurringTask(workspace, task);
 	};
 
-	/** Scans all workspaces for recurring tasks in trash whose recurrence period has elapsed. */
+	/**
+	 * Detects tasks stuck in in_progress whose session has already finished.
+	 * Returns a list of moves that the server should perform. This closes the
+	 * gap where the frontend auto-move logic was not running (browser closed,
+	 * missed state transition, React batching race).
+	 */
+	const sweepStuckInProgressTasks = (
+		state: RuntimeWorkspaceStateResponse,
+	): Array<{ taskId: string; fromColumn: RuntimeBoardColumnId; targetColumn: "review" | "trash" }> => {
+		const inProgress = state.board.columns.find((col) => col.id === "in_progress");
+		if (!inProgress) {
+			return [];
+		}
+		const moves: Array<{ taskId: string; fromColumn: RuntimeBoardColumnId; targetColumn: "review" | "trash" }> = [];
+		const now = Date.now();
+
+		for (const card of inProgress.cards) {
+			const session = state.sessions[card.id];
+			if (!session) {
+				/* No session at all — orphaned card. Wait for the grace period. */
+				if (now - card.updatedAt > ORPHAN_GRACE_PERIOD_MS) {
+					moves.push({ taskId: card.id, fromColumn: "in_progress", targetColumn: "trash" });
+				}
+				continue;
+			}
+			if (session.state === "awaiting_review") {
+				/* Mirror the frontend auto-trash logic: clean exit + no auto-review → trash. */
+				const shouldAutoTrash = session.reviewReason === "exit" && card.autoReviewEnabled !== true;
+				moves.push({
+					taskId: card.id,
+					fromColumn: "in_progress",
+					targetColumn: shouldAutoTrash ? "trash" : "review",
+				});
+			} else if (session.state === "interrupted" || session.state === "failed") {
+				moves.push({ taskId: card.id, fromColumn: "in_progress", targetColumn: "trash" });
+			}
+			/* state === "running" or "idle" → leave alone, task is active or starting. */
+		}
+		return moves;
+	};
+
+	/**
+	 * Detects recurring tasks stuck in review that should have gone straight to
+	 * trash. Non-recurring tasks are left alone — the user wants to inspect them.
+	 */
+	const sweepStuckReviewTasks = (
+		state: RuntimeWorkspaceStateResponse,
+	): Array<{ taskId: string; fromColumn: RuntimeBoardColumnId; targetColumn: "trash" }> => {
+		const review = state.board.columns.find((col) => col.id === "review");
+		if (!review) {
+			return [];
+		}
+		const moves: Array<{ taskId: string; fromColumn: RuntimeBoardColumnId; targetColumn: "trash" }> = [];
+
+		for (const card of review.cards) {
+			/* Only auto-move recurring tasks that don't have auto-review enabled.
+			   Tasks with auto-review wait for the frontend's commit/PR automation. */
+			if (card.recurringEnabled === true && card.autoReviewEnabled !== true) {
+				moves.push({ taskId: card.id, fromColumn: "review", targetColumn: "trash" });
+			}
+		}
+		return moves;
+	};
+
+	/**
+	 * Atomically moves a task from one column to another if it's still in the
+	 * expected source column. When moving to trash, also captures any linked
+	 * backlog tasks that were blocked by this task so they can be started
+	 * immediately (without waiting for the recurring period). Returns the list
+	 * of linked task IDs that became ready, or null if the move didn't happen.
+	 */
+	const moveStuckTask = async (
+		workspace: WorkspaceIndexEntry,
+		taskId: string,
+		expectedFrom: RuntimeBoardColumnId,
+		target: RuntimeBoardColumnId,
+	): Promise<{ moved: boolean; readyLinkedTaskIds: string[] }> => {
+		const result = await deps.mutateWorkspaceState<{ moved: boolean; readyLinkedTaskIds: string[] }>(
+			workspace.repoPath,
+			(state) => {
+				if (getTaskColumnId(state.board, taskId) !== expectedFrom) {
+					return { board: state.board, value: { moved: false, readyLinkedTaskIds: [] }, save: false };
+				}
+				const movement = moveTaskToColumn(state.board, taskId, target);
+				if (!movement.moved) {
+					return { board: state.board, value: { moved: false, readyLinkedTaskIds: [] }, save: false };
+				}
+				/* When moving to trash, find linked backlog tasks that can now start.
+				   Compute this against the post-move board so the task is actually in trash. */
+				const readyLinkedTaskIds =
+					target === "trash" ? getLinkedBacklogTaskIdsBlockedByTrashTask(movement.board, taskId) : [];
+				return { board: movement.board, value: { moved: true, readyLinkedTaskIds } };
+			},
+		);
+		return result.value;
+	};
+
+	/** Scans all workspaces for stuck tasks and recurring tasks in trash whose recurrence period has elapsed. */
 	const doTick = async (): Promise<void> => {
 		const workspaces = await deps.listWorkspaceIndexEntries().catch(() => [] as WorkspaceIndexEntry[]);
 
 		for (const workspace of workspaces) {
 			try {
 				const state = await deps.loadWorkspaceState(workspace.repoPath);
-				const trash = state.board.columns.find((col) => col.id === "trash");
+
+				/* Phase 1: Lifecycle sweep — move stuck tasks to the right column.
+				   This must run before the recurring restart phase so tasks that move
+				   from review → trash become immediately eligible for restart. */
+				const stuckMoves = [...sweepStuckInProgressTasks(state), ...sweepStuckReviewTasks(state)];
+				const aggregatedReadyTaskIds = new Set<string>();
+				for (const { taskId, fromColumn, targetColumn } of stuckMoves) {
+					try {
+						const { moved, readyLinkedTaskIds } = await moveStuckTask(
+							workspace,
+							taskId,
+							fromColumn,
+							targetColumn,
+						);
+						if (moved) {
+							deps.warn(`[kanban] Lifecycle sweep: moved task ${taskId} from ${fromColumn} to ${targetColumn}`);
+							await broadcastWorkspaceUpdate(workspace);
+							for (const readyId of readyLinkedTaskIds) {
+								aggregatedReadyTaskIds.add(readyId);
+							}
+						}
+					} catch (err) {
+						const message = err instanceof Error ? err.message : String(err);
+						deps.warn(`[kanban] Lifecycle sweep: failed to move task ${taskId}: ${message}`);
+					}
+				}
+
+				/* Start linked backlog tasks that became ready during the sweep.
+				   This unblocks Task B immediately when Task A (its dependency) hits
+				   trash, instead of waiting for the recurring period to elapse. */
+				if (aggregatedReadyTaskIds.size > 0) {
+					await startLinkedBacklogTasks(workspace, Array.from(aggregatedReadyTaskIds));
+				}
+
+				/* Additional pass: find backlog tasks that are blocked by trash tasks
+				   and are ready to start. This handles tasks that entered trash via a
+				   path other than the lifecycle sweep (e.g., direct user action, or
+				   tasks that were already in trash when the server restarted). The
+				   operation is idempotent — started tasks will have moved out of
+				   backlog and won't be picked up again. */
+				const freshStateForLinked = await deps.loadWorkspaceState(workspace.repoPath);
+				const trashForLinkedScan = freshStateForLinked.board.columns.find((col) => col.id === "trash");
+				if (trashForLinkedScan) {
+					const additionalReadyIds = new Set<string>();
+					for (const trashedCard of trashForLinkedScan.cards) {
+						const readyIds = getLinkedBacklogTaskIdsBlockedByTrashTask(freshStateForLinked.board, trashedCard.id);
+						for (const readyId of readyIds) {
+							additionalReadyIds.add(readyId);
+						}
+					}
+					if (additionalReadyIds.size > 0) {
+						await startLinkedBacklogTasks(workspace, Array.from(additionalReadyIds));
+					}
+				}
+
+				/* Phase 2: Recurring restart — restart eligible tasks in trash.
+				   Re-load state since the sweep phase may have moved tasks into trash. */
+				const freshState = stuckMoves.length > 0 ? await deps.loadWorkspaceState(workspace.repoPath) : state;
+				const trash = freshState.board.columns.find((col) => col.id === "trash");
 				if (!trash) {
 					continue;
 				}

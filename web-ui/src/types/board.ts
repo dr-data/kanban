@@ -52,6 +52,7 @@ export interface BoardCard {
 	recurringCurrentIteration?: number;
 	scheduledStartAt?: number | null;
 	scheduledEndAt?: number | null;
+	recurringLinkedTaskIds?: string[];
 }
 
 export interface BoardColumn {
