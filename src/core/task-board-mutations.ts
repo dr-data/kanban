@@ -16,6 +16,12 @@ export interface RuntimeCreateTaskInput {
 	autoReviewMode?: RuntimeTaskAutoReviewMode;
 	images?: RuntimeTaskImage[];
 	baseRef: string;
+	recurringEnabled?: boolean;
+	recurringMaxIterations?: number;
+	recurringPeriodMs?: number;
+	recurringCurrentIteration?: number;
+	scheduledStartAt?: number | null;
+	scheduledEndAt?: number | null;
 }
 
 export interface RuntimeUpdateTaskInput {
@@ -25,6 +31,13 @@ export interface RuntimeUpdateTaskInput {
 	autoReviewMode?: RuntimeTaskAutoReviewMode;
 	images?: RuntimeTaskImage[];
 	baseRef: string;
+	recurringEnabled?: boolean;
+	recurringMaxIterations?: number;
+	recurringPeriodMs?: number;
+	recurringCurrentIteration?: number;
+	scheduledStartAt?: number | null;
+	scheduledEndAt?: number | null;
+	recurringLinkedTaskIds?: string[];
 }
 
 function normalizeTaskAutoReviewMode(value: RuntimeTaskAutoReviewMode | null | undefined): RuntimeTaskAutoReviewMode {
@@ -32,6 +45,20 @@ function normalizeTaskAutoReviewMode(value: RuntimeTaskAutoReviewMode | null | u
 		return value;
 	}
 	return "commit";
+}
+
+/**
+ * Returns true if a task is eligible for another recurring iteration.
+ * A task recurs when recurringEnabled is true and either maxIterations is 0
+ * (unlimited) or the current iteration count is below the max.
+ */
+export function shouldTaskRecur(task: RuntimeBoardCard): boolean {
+	if (!task.recurringEnabled) {
+		return false;
+	}
+	const maxIterations = task.recurringMaxIterations ?? 0;
+	const currentIteration = task.recurringCurrentIteration ?? 0;
+	return maxIterations === 0 || currentIteration < maxIterations;
 }
 
 // Copy image metadata so board tasks do not retain caller-owned array or object references.
@@ -99,8 +126,12 @@ function collectTaskIds(board: RuntimeBoardData): Set<string> {
 	return taskIds;
 }
 
+/** Generates a short random ID for a dependency link, with fallback for non-HTTPS contexts. */
 function createDependencyId(): string {
-	return crypto.randomUUID().replaceAll("-", "").slice(0, 8);
+	if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+		return crypto.randomUUID().replaceAll("-", "").slice(0, 8);
+	}
+	return (Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)).slice(0, 8);
 }
 
 function createDependencyPairKey(backlogTaskId: string, linkedTaskId: string): string {
@@ -186,9 +217,9 @@ function resolveDependencyEndpoints(
 function getLinkedBacklogTaskIdsReadyAfterTaskTrashed(
 	board: RuntimeBoardData,
 	taskId: string,
-	fromColumnId: RuntimeBoardColumnId | null,
+	_fromColumnId: RuntimeBoardColumnId | null,
 ): string[] {
-	if (!taskId || board.dependencies.length === 0 || fromColumnId !== "review") {
+	if (!taskId || board.dependencies.length === 0) {
 		return [];
 	}
 	const readyTaskIds = new Set<string>();
@@ -204,11 +235,26 @@ function getLinkedBacklogTaskIdsReadyAfterTaskTrashed(
 	return [...readyTaskIds];
 }
 
+/**
+ * Reconciles dependencies after board mutations. Drops invalid entries
+ * (missing tasks, self-links, duplicates) and reorients endpoints so
+ * the backlog task is always `fromTaskId`. Dependencies where at least
+ * one task has `recurringEnabled` are preserved even when neither task
+ * is currently in backlog — they will be restored on the next
+ * recurring iteration.
+ */
 export function updateTaskDependencies(board: RuntimeBoardData): RuntimeBoardData {
 	if (board.dependencies.length === 0) {
 		return board;
 	}
 	const taskIds = collectTaskIds(board);
+	/* Build a quick card lookup for recurring checks. */
+	const cardById = new Map<string, RuntimeBoardCard>();
+	for (const column of board.columns) {
+		for (const card of column.cards) {
+			cardById.set(card.id, card);
+		}
+	}
 	const dependencies: RuntimeBoardDependency[] = [];
 	const existingPairs = new Set<string>();
 	for (const dependency of board.dependencies) {
@@ -222,6 +268,25 @@ export function updateTaskDependencies(board: RuntimeBoardData): RuntimeBoardDat
 		}
 		const resolved = resolveDependencyEndpoints(board, firstTaskId, secondTaskId);
 		if ("reason" in resolved) {
+			/* Normally we'd drop the dependency when neither task is in backlog.
+			   But for recurring tasks the link must survive across iterations so
+			   the dependency is re-activated when one of them returns to backlog. */
+			const firstCard = cardById.get(firstTaskId);
+			const secondCard = cardById.get(secondTaskId);
+			if (!firstCard?.recurringEnabled && !secondCard?.recurringEnabled) {
+				continue;
+			}
+			/* Preserve the dependency as-is (original orientation). */
+			const pairKey = createDependencyPairKey(firstTaskId, secondTaskId);
+			if (!existingPairs.has(pairKey)) {
+				existingPairs.add(pairKey);
+				dependencies.push({
+					id: dependency.id,
+					fromTaskId: firstTaskId,
+					toTaskId: secondTaskId,
+					createdAt: dependency.createdAt,
+				});
+			}
 			continue;
 		}
 		const pairKey = createDependencyPairKey(resolved.backlogTaskId, resolved.linkedTaskId);
@@ -287,6 +352,14 @@ export function addTaskToColumn(
 		baseRef,
 		createdAt: now,
 		updatedAt: now,
+		...(input.recurringEnabled != null ? { recurringEnabled: input.recurringEnabled } : {}),
+		...(input.recurringMaxIterations != null ? { recurringMaxIterations: input.recurringMaxIterations } : {}),
+		...(input.recurringPeriodMs != null ? { recurringPeriodMs: input.recurringPeriodMs } : {}),
+		...(input.recurringCurrentIteration != null
+			? { recurringCurrentIteration: input.recurringCurrentIteration }
+			: {}),
+		...(input.scheduledStartAt !== undefined ? { scheduledStartAt: input.scheduledStartAt } : {}),
+		...(input.scheduledEndAt !== undefined ? { scheduledEndAt: input.scheduledEndAt } : {}),
 	};
 
 	const targetColumnIndex = board.columns.findIndex((column) => column.id === columnId);
@@ -348,14 +421,52 @@ export function addTaskDependency(
 		toTaskId: resolved.linkedTaskId,
 		createdAt: Date.now(),
 	};
+
+	/* For recurring tasks, persist the link on both cards so the recurring
+	   monitor can restore the dependency after it gets pruned by
+	   updateTaskDependencies. */
+	let updatedBoard: RuntimeBoardData = {
+		...board,
+		dependencies: [...board.dependencies, dependency],
+	};
+	const fromLoc = findTaskLocation(updatedBoard, resolved.backlogTaskId);
+	const toLoc = findTaskLocation(updatedBoard, resolved.linkedTaskId);
+	if (fromLoc?.task.recurringEnabled || toLoc?.task.recurringEnabled) {
+		updatedBoard = stampRecurringLink(updatedBoard, resolved.backlogTaskId, resolved.linkedTaskId);
+	}
+
 	return {
-		board: {
-			...board,
-			dependencies: [...board.dependencies, dependency],
-		},
+		board: updatedBoard,
 		added: true,
 		dependency,
 	};
+}
+
+/**
+ * Stamps `recurringLinkedTaskIds` on both cards so the recurring monitor can
+ * re-create the dependency across iterations even if `board.dependencies`
+ * loses it.
+ */
+function stampRecurringLink(board: RuntimeBoardData, taskIdA: string, taskIdB: string): RuntimeBoardData {
+	const columns = board.columns.map((column) => ({
+		...column,
+		cards: column.cards.map((card) => {
+			if (card.id === taskIdA) {
+				const existing = new Set(card.recurringLinkedTaskIds ?? []);
+				if (!existing.has(taskIdB)) {
+					return { ...card, recurringLinkedTaskIds: [...existing, taskIdB] };
+				}
+			}
+			if (card.id === taskIdB) {
+				const existing = new Set(card.recurringLinkedTaskIds ?? []);
+				if (!existing.has(taskIdA)) {
+					return { ...card, recurringLinkedTaskIds: [...existing, taskIdA] };
+				}
+			}
+			return card;
+		}),
+	}));
+	return { ...board, columns };
 }
 
 export function canAddTaskDependency(board: RuntimeBoardData, firstTaskId: string, secondTaskId: string): boolean {
@@ -387,6 +498,33 @@ export function removeTaskDependency(board: RuntimeBoardData, dependencyId: stri
 
 export function getReadyLinkedTaskIdsForTaskInTrash(board: RuntimeBoardData, taskId: string): string[] {
 	return getLinkedBacklogTaskIdsReadyAfterTaskTrashed(board, taskId, getTaskColumnId(board, taskId));
+}
+
+/**
+ * Returns backlog task IDs that are linked (blocked by) the given task which is
+ * currently in trash. Unlike `getReadyLinkedTaskIdsForTaskInTrash` which requires
+ * the task to have come from the review column, this variant works for any task
+ * already sitting in trash — specifically for the recurring monitor which needs
+ * to resolve dependencies before restarting a completed recurring task.
+ */
+export function getLinkedBacklogTaskIdsBlockedByTrashTask(board: RuntimeBoardData, taskId: string): string[] {
+	if (!taskId || board.dependencies.length === 0) {
+		return [];
+	}
+	if (getTaskColumnId(board, taskId) !== "trash") {
+		return [];
+	}
+	const readyTaskIds = new Set<string>();
+	for (const dependency of board.dependencies) {
+		if (dependency.toTaskId !== taskId) {
+			continue;
+		}
+		if (getTaskColumnId(board, dependency.fromTaskId) !== "backlog") {
+			continue;
+		}
+		readyTaskIds.add(dependency.fromTaskId);
+	}
+	return [...readyTaskIds];
 }
 
 export function trashTaskAndGetReadyLinkedTaskIds(
@@ -599,6 +737,19 @@ export function updateTask(
 				images: input.images === undefined ? card.images : cloneTaskImages(input.images),
 				baseRef,
 				updatedAt: now,
+				...(input.recurringEnabled !== undefined ? { recurringEnabled: input.recurringEnabled } : {}),
+				...(input.recurringMaxIterations !== undefined
+					? { recurringMaxIterations: input.recurringMaxIterations }
+					: {}),
+				...(input.recurringPeriodMs !== undefined ? { recurringPeriodMs: input.recurringPeriodMs } : {}),
+				...(input.recurringCurrentIteration !== undefined
+					? { recurringCurrentIteration: input.recurringCurrentIteration }
+					: {}),
+				...(input.scheduledStartAt !== undefined ? { scheduledStartAt: input.scheduledStartAt } : {}),
+				...(input.scheduledEndAt !== undefined ? { scheduledEndAt: input.scheduledEndAt } : {}),
+				...(input.recurringLinkedTaskIds !== undefined
+					? { recurringLinkedTaskIds: input.recurringLinkedTaskIds }
+					: {}),
 			};
 			return updatedTask;
 		});

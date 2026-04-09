@@ -39,6 +39,13 @@ export const runtimeWorkspaceChangesResponseSchema = z.object({
 });
 export type RuntimeWorkspaceChangesResponse = z.infer<typeof runtimeWorkspaceChangesResponseSchema>;
 
+export const runtimeWorkspaceFileContentRequestSchema = z.object({
+	taskId: z.string(),
+	baseRef: z.string(),
+	path: z.string(),
+});
+export type RuntimeWorkspaceFileContentRequest = z.infer<typeof runtimeWorkspaceFileContentRequestSchema>;
+
 export const runtimeWorkspaceFileSearchRequestSchema = z.object({
 	query: z.string(),
 	limit: z.number().int().positive().optional(),
@@ -97,6 +104,15 @@ export const runtimeBoardCardSchema = z.object({
 	baseRef: z.string(),
 	createdAt: z.number(),
 	updatedAt: z.number(),
+	recurringEnabled: z.boolean().optional(),
+	recurringMaxIterations: z.number().int().min(0).optional(),
+	recurringPeriodMs: z.number().int().min(0).optional(),
+	recurringCurrentIteration: z.number().int().min(0).optional(),
+	scheduledStartAt: z.number().nullable().optional(),
+	scheduledEndAt: z.number().nullable().optional(),
+	/** Durable record of linked task IDs for recurring dependencies. Survives
+	 *  dependency pruning so the recurring monitor can restore links on restart. */
+	recurringLinkedTaskIds: z.array(z.string()).optional(),
 });
 export type RuntimeBoardCard = z.infer<typeof runtimeBoardCardSchema>;
 
@@ -227,6 +243,7 @@ export const runtimeTaskSessionSummarySchema = z.object({
 	warningMessage: z.string().nullable().optional(),
 	latestTurnCheckpoint: runtimeTaskTurnCheckpointSchema.nullable().optional(),
 	previousTurnCheckpoint: runtimeTaskTurnCheckpointSchema.nullable().optional(),
+	remoteControlEnabled: z.boolean().default(false),
 });
 export type RuntimeTaskSessionSummary = z.infer<typeof runtimeTaskSessionSummarySchema>;
 
@@ -244,6 +261,11 @@ export const runtimeWorkspaceStateSaveRequestSchema = z.object({
 	board: runtimeBoardDataSchema,
 	sessions: z.record(z.string(), runtimeTaskSessionSummarySchema),
 	expectedRevision: z.number().int().nonnegative().optional(),
+	/** Explicit dependency removals. When present, the server removes these
+	 *  dependencies before merging the remaining ones. Required for client-driven
+	 *  dependency deletes because the server is authoritative and otherwise
+	 *  re-adds any dep missing from `board.dependencies`. */
+	removedDependencyIds: z.array(z.string()).optional(),
 });
 export type RuntimeWorkspaceStateSaveRequest = z.infer<typeof runtimeWorkspaceStateSaveRequestSchema>;
 
@@ -747,6 +769,7 @@ export const runtimeConfigResponseSchema = z.object({
 	openPrPromptTemplate: z.string(),
 	commitPromptTemplateDefault: z.string(),
 	openPrPromptTemplateDefault: z.string(),
+	recurringMaxTurnsPerExecution: z.number().int().min(1),
 });
 export type RuntimeConfigResponse = z.infer<typeof runtimeConfigResponseSchema>;
 
@@ -758,6 +781,7 @@ export const runtimeConfigSaveRequestSchema = z.object({
 	readyForReviewNotificationsEnabled: z.boolean().optional(),
 	commitPromptTemplate: z.string().optional(),
 	openPrPromptTemplate: z.string().optional(),
+	recurringMaxTurnsPerExecution: z.number().int().min(1).optional(),
 });
 export type RuntimeConfigSaveRequest = z.infer<typeof runtimeConfigSaveRequestSchema>;
 
@@ -1063,3 +1087,16 @@ export const runtimeHookIngestResponseSchema = z.object({
 	error: z.string().optional(),
 });
 export type RuntimeHookIngestResponse = z.infer<typeof runtimeHookIngestResponseSchema>;
+
+export const runtimeEnableRemoteControlRequestSchema = z.object({
+	taskId: z.string(),
+	enabled: z.boolean(),
+});
+export type RuntimeEnableRemoteControlRequest = z.infer<typeof runtimeEnableRemoteControlRequestSchema>;
+
+export const runtimeEnableRemoteControlResponseSchema = z.object({
+	ok: z.boolean(),
+	error: z.string().optional(),
+	requiresRestart: z.boolean().optional(),
+});
+export type RuntimeEnableRemoteControlResponse = z.infer<typeof runtimeEnableRemoteControlResponseSchema>;

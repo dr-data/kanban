@@ -9,6 +9,7 @@ import {
 	type RuntimeClineProviderSettingsSaveRequest,
 	type RuntimeCommandRunRequest,
 	type RuntimeConfigSaveRequest,
+	type RuntimeEnableRemoteControlRequest,
 	type RuntimeGitCheckoutRequest,
 	type RuntimeHookIngestRequest,
 	type RuntimeProjectAddRequest,
@@ -37,6 +38,7 @@ import {
 	runtimeClineProviderSettingsSaveRequestSchema,
 	runtimeCommandRunRequestSchema,
 	runtimeConfigSaveRequestSchema,
+	runtimeEnableRemoteControlRequestSchema,
 	runtimeGitCheckoutRequestSchema,
 	runtimeHookIngestRequestSchema,
 	runtimeProjectAddRequestSchema,
@@ -518,4 +520,9 @@ export function parseTerminalWsClientMessage(value: unknown): RuntimeTerminalWsC
 		return null;
 	}
 	return parsed.data;
+}
+
+/** Validates and parses a request to enable or disable remote control on a task session. */
+export function parseEnableRemoteControlRequest(value: unknown): RuntimeEnableRemoteControlRequest {
+	return parseWithSchema(runtimeEnableRemoteControlRequestSchema, value);
 }

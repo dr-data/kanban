@@ -24,6 +24,12 @@ export interface TaskDraft {
 	autoReviewMode?: TaskAutoReviewMode;
 	images?: TaskImage[];
 	baseRef: string;
+	recurringEnabled?: boolean;
+	recurringMaxIterations?: number;
+	recurringPeriodMs?: number;
+	recurringCurrentIteration?: number;
+	scheduledStartAt?: number | null;
+	scheduledEndAt?: number | null;
 }
 
 export interface TaskMoveEvent {
@@ -107,6 +113,13 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 		baseRef?: unknown;
 		createdAt?: unknown;
 		updatedAt?: unknown;
+		recurringEnabled?: unknown;
+		recurringMaxIterations?: unknown;
+		recurringPeriodMs?: unknown;
+		recurringCurrentIteration?: unknown;
+		scheduledStartAt?: unknown;
+		scheduledEndAt?: unknown;
+		recurringLinkedTaskIds?: unknown;
 	};
 	const prompt = typeof card.prompt === "string" ? card.prompt.trim() : "";
 	if (!prompt) {
@@ -131,6 +144,27 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 		baseRef,
 		createdAt: typeof card.createdAt === "number" ? card.createdAt : now,
 		updatedAt: typeof card.updatedAt === "number" ? card.updatedAt : now,
+		...(typeof card.recurringEnabled === "boolean" ? { recurringEnabled: card.recurringEnabled } : {}),
+		...(typeof card.recurringMaxIterations === "number"
+			? { recurringMaxIterations: card.recurringMaxIterations }
+			: {}),
+		...(typeof card.recurringPeriodMs === "number" ? { recurringPeriodMs: card.recurringPeriodMs } : {}),
+		...(typeof card.recurringCurrentIteration === "number"
+			? { recurringCurrentIteration: card.recurringCurrentIteration }
+			: {}),
+		...(card.scheduledStartAt === null
+			? { scheduledStartAt: null }
+			: typeof card.scheduledStartAt === "number"
+				? { scheduledStartAt: card.scheduledStartAt }
+				: {}),
+		...(card.scheduledEndAt === null
+			? { scheduledEndAt: null }
+			: typeof card.scheduledEndAt === "number"
+				? { scheduledEndAt: card.scheduledEndAt }
+				: {}),
+		...(Array.isArray(card.recurringLinkedTaskIds)
+			? { recurringLinkedTaskIds: card.recurringLinkedTaskIds.filter((id): id is string => typeof id === "string") }
+			: {}),
 	};
 }
 
@@ -274,6 +308,12 @@ export function addTaskToColumnWithResult(
 			autoReviewMode: draft.autoReviewMode,
 			images: draft.images,
 			baseRef: draft.baseRef,
+			recurringEnabled: draft.recurringEnabled,
+			recurringMaxIterations: draft.recurringMaxIterations,
+			recurringPeriodMs: draft.recurringPeriodMs,
+			recurringCurrentIteration: draft.recurringCurrentIteration,
+			scheduledStartAt: draft.scheduledStartAt,
+			scheduledEndAt: draft.scheduledEndAt,
 		},
 		createBrowserUuid,
 	);
@@ -469,6 +509,16 @@ export function updateTask(board: BoardData, taskId: string, draft: TaskDraft): 
 							: undefined,
 				baseRef,
 				updatedAt: Date.now(),
+				...(draft.recurringEnabled !== undefined ? { recurringEnabled: draft.recurringEnabled } : {}),
+				...(draft.recurringMaxIterations !== undefined
+					? { recurringMaxIterations: draft.recurringMaxIterations }
+					: {}),
+				...(draft.recurringPeriodMs !== undefined ? { recurringPeriodMs: draft.recurringPeriodMs } : {}),
+				...(draft.recurringCurrentIteration !== undefined
+					? { recurringCurrentIteration: draft.recurringCurrentIteration }
+					: {}),
+				...(draft.scheduledStartAt !== undefined ? { scheduledStartAt: draft.scheduledStartAt } : {}),
+				...(draft.scheduledEndAt !== undefined ? { scheduledEndAt: draft.scheduledEndAt } : {}),
 			};
 		});
 		return columnUpdated ? { ...column, cards } : column;

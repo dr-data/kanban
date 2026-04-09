@@ -71,6 +71,7 @@ function createSummary(taskId: string): RuntimeTaskSessionSummary {
 		exitCode: null,
 		lastHookAt: null,
 		latestHookActivity: null,
+		remoteControlEnabled: false,
 	};
 }
 

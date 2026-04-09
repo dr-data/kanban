@@ -4,7 +4,6 @@ import { createServer as createNetServer } from "node:net";
 import { Command, Option } from "commander";
 import ora, { type Ora } from "ora";
 import packageJson from "../package.json" with { type: "json" };
-import { disposeCliTelemetryService } from "./cline-sdk/cline-telemetry-service.js";
 import { registerHooksCommand } from "./commands/hooks";
 import { registerTaskCommand } from "./commands/task";
 import { loadGlobalRuntimeConfig, loadRuntimeConfig } from "./config/runtime-config";
@@ -26,8 +25,39 @@ import {
 } from "./core/runtime-endpoint";
 import { terminateProcessForTimeout } from "./server/process-termination";
 import type { RuntimeStateHub } from "./server/runtime-state-hub";
-import { captureNodeException, flushNodeTelemetry } from "./telemetry/sentry-node.js";
 import type { TerminalSessionManager } from "./terminal/session-manager";
+import type { RuntimeAppRouter } from "./trpc/app-router";
+
+/*
+	Telemetry modules (@sentry/node + Cline SDK telemetry) are loaded lazily
+	because their import graphs are very heavy (~10 seconds of cold-start tsx
+	compilation). They are only needed for error reporting, shutdown cleanup,
+	and non-critical lifecycle hooks — never on the hot path to
+	`console.log("Cline Kanban running at ...")`.
+
+	Keeping them top-level caused the source CLI to take 20-30 seconds before
+	the server could print its ready message, which broke integration tests
+	that wait for that output.
+*/
+
+/** Lazily import and dispose the Cline telemetry singleton. */
+async function lazyDisposeCliTelemetryService(): Promise<void> {
+	const { disposeCliTelemetryService } = await import("./cline-sdk/cline-telemetry-service.js");
+	await disposeCliTelemetryService();
+}
+
+/** Lazily import Sentry and capture an exception. */
+function lazyCaptureNodeException(error: unknown, options?: { area?: string }): void {
+	void import("./telemetry/sentry-node.js").then(({ captureNodeException }) => {
+		captureNodeException(error, options);
+	});
+}
+
+/** Lazily import Sentry and flush pending telemetry events. */
+async function lazyFlushNodeTelemetry(): Promise<void> {
+	const { flushNodeTelemetry } = await import("./telemetry/sentry-node.js");
+	await flushNodeTelemetry();
+}
 
 interface CliOptions {
 	noOpen: boolean;
@@ -358,6 +388,10 @@ async function startServer(): Promise<{
 		{ resolveInteractiveShellCommand },
 		{ shutdownRuntimeServer },
 		{ collectProjectWorktreeTaskIdsForRemoval, createWorkspaceRegistry },
+		{ listWorkspaceIndexEntries, loadWorkspaceState, mutateWorkspaceState },
+		{ createTRPCProxyClient, httpBatchLink },
+		{ createTaskScheduleMonitor },
+		{ createTaskRecurringMonitor },
 	] = await Promise.all([
 		import("./projects/project-path.js"),
 		import("./server/directory-picker.js"),
@@ -366,6 +400,10 @@ async function startServer(): Promise<{
 		import("./server/shell.js"),
 		import("./server/shutdown-coordinator.js"),
 		import("./server/workspace-registry.js"),
+		import("./state/workspace-state.js"),
+		import("@trpc/client"),
+		import("./server/task-schedule-monitor.js"),
+		import("./server/task-recurring-monitor.js"),
 	]);
 	let runtimeStateHub: RuntimeStateHub | undefined;
 	const workspaceRegistry = await createWorkspaceRegistry({
@@ -416,17 +454,60 @@ async function startServer(): Promise<{
 		pickDirectoryPathFromSystemDialog,
 	});
 
+	/** Creates a tRPC proxy client that targets the local runtime server for a given workspace. */
+	const createLocalTrpcClient = (workspaceId: string) =>
+		createTRPCProxyClient<RuntimeAppRouter>({
+			links: [
+				httpBatchLink({
+					url: buildKanbanRuntimeUrl("/api/trpc"),
+					headers: () => ({ "x-kanban-workspace-id": workspaceId }),
+				}),
+			],
+		});
+
+	const monitorWarn = (message: string) => console.warn(`[kanban] ${message}`);
+
+	/** Loads workspace state with live in-memory session summaries overlaid on
+	 *  the persisted disk data. Without this overlay the lifecycle sweep sees
+	 *  stale session state and may trash actively-running tasks. */
+	const loadWorkspaceStateWithLiveSessions = async (cwd: string) => {
+		const workspaceId = workspaceRegistry.getActiveWorkspaceId();
+		if (workspaceId) {
+			return workspaceRegistry.buildWorkspaceStateSnapshot(workspaceId, cwd);
+		}
+		return loadWorkspaceState(cwd);
+	};
+
+	const monitorDeps = {
+		listWorkspaceIndexEntries,
+		loadWorkspaceState: loadWorkspaceStateWithLiveSessions,
+		mutateWorkspaceState,
+		createTrpcClient: createLocalTrpcClient,
+		broadcastRuntimeWorkspaceStateUpdated: runtimeHub.broadcastRuntimeWorkspaceStateUpdated,
+		broadcastRuntimeProjectsUpdated: runtimeHub.broadcastRuntimeProjectsUpdated,
+		warn: monitorWarn,
+	};
+
+	const scheduleMonitor = createTaskScheduleMonitor(monitorDeps);
+	const recurringMonitor = createTaskRecurringMonitor(monitorDeps);
+
 	const close = async () => {
+		scheduleMonitor.close();
+		recurringMonitor.close();
 		await runtimeServer.close();
 	};
 
 	const shutdown = async (options?: { skipSessionCleanup?: boolean }) => {
+		scheduleMonitor.close();
+		recurringMonitor.close();
 		await shutdownRuntimeServer({
 			workspaceRegistry,
 			warn: (message) => {
 				console.warn(`[kanban] ${message}`);
 			},
-			closeRuntimeServer: close,
+			closeRuntimeServer: async () => {
+				await runtimeServer.close();
+			},
 			skipSessionCleanup: options?.skipSessionCleanup ?? false,
 		});
 	};
@@ -520,7 +601,7 @@ async function runMainCommand(options: CliOptions, shouldAutoOpenBrowser: boolea
 		await runtime.shutdown({
 			skipSessionCleanup: options.skipShutdownCleanup,
 		});
-		await disposeCliTelemetryService().catch(() => {});
+		await lazyDisposeCliTelemetryService().catch(() => {});
 	};
 
 	installGracefulShutdownHandlers({
@@ -541,7 +622,7 @@ async function runMainCommand(options: CliOptions, shouldAutoOpenBrowser: boolea
 		},
 		onShutdownError: (error) => {
 			shutdownIndicator.stop("failed");
-			captureNodeException(error, { area: "shutdown" });
+			lazyCaptureNodeException(error, { area: "shutdown" });
 			const message = error instanceof Error ? error.message : String(error);
 			console.error(`Shutdown failed: ${message}`);
 		},
@@ -603,14 +684,14 @@ async function run(): Promise<void> {
 	const program = createProgram(argv);
 	await program.parseAsync(argv, { from: "user" });
 	if (!shouldAutoOpenBrowserTabForInvocation(argv)) {
-		await Promise.allSettled([disposeCliTelemetryService(), flushNodeTelemetry()]);
+		await Promise.allSettled([lazyDisposeCliTelemetryService(), lazyFlushNodeTelemetry()]);
 		process.exit(process.exitCode ?? 0);
 	}
 }
 
 void run().catch(async (error) => {
-	captureNodeException(error, { area: "startup" });
-	await Promise.allSettled([disposeCliTelemetryService(), flushNodeTelemetry()]);
+	lazyCaptureNodeException(error, { area: "startup" });
+	await Promise.allSettled([lazyDisposeCliTelemetryService(), lazyFlushNodeTelemetry()]);
 	const message = error instanceof Error ? error.message : String(error);
 	console.error(`Failed to start Kanban: ${message}`);
 	process.exit(1);

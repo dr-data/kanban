@@ -12,3 +12,13 @@ playwright-report
 web-ui/.env
 web-ui/.env.*
 !web-ui/.env.example
+.gstack/
+.claude/plans/
+.playwright-mcp/
+.serena/
+.spec-workflow/
+*.skill
+mobile-*.png
+web-ui/web-ui/
+src/**/CLAUDE.md
+web-ui/**/CLAUDE.md

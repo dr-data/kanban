@@ -28,6 +28,8 @@ import type {
 	RuntimeConfigResponse,
 	RuntimeConfigSaveRequest,
 	RuntimeDebugResetAllStateResponse,
+	RuntimeEnableRemoteControlRequest,
+	RuntimeEnableRemoteControlResponse,
 	RuntimeGitCheckoutRequest,
 	RuntimeGitCheckoutResponse,
 	RuntimeGitCommitDiffRequest,
@@ -72,6 +74,8 @@ import type {
 	RuntimeTaskWorkspaceInfoResponse,
 	RuntimeWorkspaceChangesRequest,
 	RuntimeWorkspaceChangesResponse,
+	RuntimeWorkspaceFileChange,
+	RuntimeWorkspaceFileContentRequest,
 	RuntimeWorkspaceFileSearchRequest,
 	RuntimeWorkspaceFileSearchResponse,
 	RuntimeWorkspaceStateNotifyResponse,
@@ -105,6 +109,8 @@ import {
 	runtimeConfigResponseSchema,
 	runtimeConfigSaveRequestSchema,
 	runtimeDebugResetAllStateResponseSchema,
+	runtimeEnableRemoteControlRequestSchema,
+	runtimeEnableRemoteControlResponseSchema,
 	runtimeGitCheckoutRequestSchema,
 	runtimeGitCheckoutResponseSchema,
 	runtimeGitCommitDiffRequestSchema,
@@ -149,6 +155,8 @@ import {
 	runtimeTaskWorkspaceInfoResponseSchema,
 	runtimeWorkspaceChangesRequestSchema,
 	runtimeWorkspaceChangesResponseSchema,
+	runtimeWorkspaceFileChangeSchema,
+	runtimeWorkspaceFileContentRequestSchema,
 	runtimeWorkspaceFileSearchRequestSchema,
 	runtimeWorkspaceFileSearchResponseSchema,
 	runtimeWorkspaceStateNotifyResponseSchema,
@@ -247,6 +255,10 @@ export interface RuntimeTrpcContext {
 			input: RuntimeCommandRunRequest,
 		) => Promise<RuntimeCommandRunResponse>;
 		resetAllState: (scope: RuntimeTrpcWorkspaceScope | null) => Promise<RuntimeDebugResetAllStateResponse>;
+		enableRemoteControl: (
+			scope: RuntimeTrpcWorkspaceScope,
+			input: RuntimeEnableRemoteControlRequest,
+		) => Promise<RuntimeEnableRemoteControlResponse>;
 		openFile: (input: RuntimeOpenFileRequest) => Promise<RuntimeOpenFileResponse>;
 	};
 	workspaceApi: {
@@ -270,6 +282,10 @@ export interface RuntimeTrpcContext {
 			scope: RuntimeTrpcWorkspaceScope,
 			input: RuntimeWorkspaceChangesRequest,
 		) => Promise<RuntimeWorkspaceChangesResponse>;
+		getFileContent: (
+			scope: RuntimeTrpcWorkspaceScope,
+			input: RuntimeWorkspaceFileContentRequest,
+		) => Promise<RuntimeWorkspaceFileChange | null>;
 		ensureWorktree: (
 			scope: RuntimeTrpcWorkspaceScope,
 			input: RuntimeWorktreeEnsureRequest,
@@ -502,6 +518,12 @@ export const runtimeAppRouter = t.router({
 		resetAllState: t.procedure.output(runtimeDebugResetAllStateResponseSchema).mutation(async ({ ctx }) => {
 			return await ctx.runtimeApi.resetAllState(ctx.workspaceScope);
 		}),
+		enableRemoteControl: workspaceProcedure
+			.input(runtimeEnableRemoteControlRequestSchema)
+			.output(runtimeEnableRemoteControlResponseSchema)
+			.mutation(async ({ ctx, input }) => {
+				return await ctx.runtimeApi.enableRemoteControl(ctx.workspaceScope, input);
+			}),
 		openFile: t.procedure
 			.input(runtimeOpenFileRequestSchema)
 			.output(runtimeOpenFileResponseSchema)
@@ -539,6 +561,12 @@ export const runtimeAppRouter = t.router({
 			.output(runtimeWorkspaceChangesResponseSchema)
 			.query(async ({ ctx, input }) => {
 				return await ctx.workspaceApi.loadChanges(ctx.workspaceScope, input);
+			}),
+		getFileContent: workspaceProcedure
+			.input(runtimeWorkspaceFileContentRequestSchema)
+			.output(runtimeWorkspaceFileChangeSchema.nullable())
+			.query(async ({ ctx, input }) => {
+				return await ctx.workspaceApi.getFileContent(ctx.workspaceScope, input);
 			}),
 		ensureWorktree: workspaceProcedure
 			.input(runtimeWorktreeEnsureRequestSchema)

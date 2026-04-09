@@ -44,6 +44,7 @@ function createSummary(
 		latestHookActivity: null,
 		latestTurnCheckpoint: null,
 		previousTurnCheckpoint: null,
+		remoteControlEnabled: false,
 		...overrides,
 	};
 }

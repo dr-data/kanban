@@ -56,6 +56,7 @@ function createSummary(taskId: string, agentId: RuntimeTaskSessionSummary["agent
 		latestHookActivity: null,
 		latestTurnCheckpoint: null,
 		previousTurnCheckpoint: null,
+		remoteControlEnabled: false,
 	};
 }
 
@@ -114,6 +115,7 @@ function createRuntimeConfig(overrides: Partial<RuntimeConfigResponse> = {}): Ru
 		openPrPromptTemplate: "pr",
 		commitPromptTemplateDefault: "commit",
 		openPrPromptTemplateDefault: "pr",
+		recurringMaxTurnsPerExecution: 200,
 		...overrides,
 	};
 }

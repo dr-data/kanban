@@ -46,6 +46,13 @@ export interface BoardCard {
 	baseRef: string;
 	createdAt: number;
 	updatedAt: number;
+	recurringEnabled?: boolean;
+	recurringMaxIterations?: number;
+	recurringPeriodMs?: number;
+	recurringCurrentIteration?: number;
+	scheduledStartAt?: number | null;
+	scheduledEndAt?: number | null;
+	recurringLinkedTaskIds?: string[];
 }
 
 export interface BoardColumn {

@@ -109,6 +109,7 @@ function createSummary(
 		latestHookActivity: null,
 		latestTurnCheckpoint: null,
 		previousTurnCheckpoint: null,
+		remoteControlEnabled: false,
 		...overrides,
 	};
 }
@@ -293,6 +294,7 @@ describe("BoardCard", () => {
 						},
 						latestTurnCheckpoint: null,
 						previousTurnCheckpoint: null,
+						remoteControlEnabled: false,
 					}}
 				/>,
 			);
@@ -386,6 +388,7 @@ describe("BoardCard", () => {
 						},
 						latestTurnCheckpoint: null,
 						previousTurnCheckpoint: null,
+						remoteControlEnabled: false,
 					}}
 				/>,
 			);

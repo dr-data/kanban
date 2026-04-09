@@ -28,6 +28,7 @@ function createRuntimeConfigState(overrides: Partial<RuntimeConfigState> = {}): 
 		openPrPromptTemplate: "pr",
 		commitPromptTemplateDefault: "commit",
 		openPrPromptTemplateDefault: "pr",
+		recurringMaxTurnsPerExecution: 200,
 		...overrides,
 	};
 }

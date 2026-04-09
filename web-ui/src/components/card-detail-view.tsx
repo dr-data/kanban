@@ -1,5 +1,5 @@
 import type { DropResult } from "@hello-pangea/dnd";
-import { GitCompareArrows, Maximize2, Minimize2, X } from "lucide-react";
+import { GitCompareArrows, Maximize2, Minimize2, Terminal, X } from "lucide-react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
@@ -9,6 +9,7 @@ import { ColumnContextPanel } from "@/components/detail-panels/column-context-pa
 import { type DiffLineComment, DiffViewerPanel } from "@/components/detail-panels/diff-viewer-panel";
 import { FileTreePanel } from "@/components/detail-panels/file-tree-panel";
 import { ResizableBottomPane } from "@/components/resizable-bottom-pane";
+import { TaskRecurringScheduleBar } from "@/components/task-recurring-schedule-bar";
 import { Button } from "@/components/ui/button";
 import type { ClineChatActionResult } from "@/hooks/use-cline-chat-runtime-actions";
 import type { ClineChatMessage } from "@/hooks/use-cline-chat-session";
@@ -254,6 +255,7 @@ export function CardDetailView({
 	isDocumentVisible = true,
 	onClineSettingsSaved,
 	isMobile = false,
+	onUpdateTask,
 }: {
 	selection: CardSelection;
 	currentProjectId: string | null;
@@ -315,6 +317,8 @@ export function CardDetailView({
 	onClineSettingsSaved?: () => void;
 	/** Whether the viewport is below the mobile breakpoint. */
 	isMobile?: boolean;
+	/** Callback to update recurring/schedule fields on the current task. */
+	onUpdateTask?: (taskId: string, updates: Record<string, unknown>) => void;
 }): React.ReactElement {
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
 	const [mobileDetailTab, setMobileDetailTab] = useState<"agent" | "changes">("agent");
@@ -440,7 +444,10 @@ export function CardDetailView({
 	const diffPanelPercent = `${((1 - agentPanelRatio) * 100).toFixed(1)}%`;
 	const fileTreePanelFlex = `0 0 ${isDiffExpanded ? EXPANDED_FILE_TREE_PANEL_BASIS : COLLAPSED_FILE_TREE_PANEL_BASIS}`;
 	const showMoveToTrashActions = selection.column.id === "review" || selection.column.id === "in_progress";
-	const isTaskTerminalEnabled = selection.column.id === "in_progress" || selection.column.id === "review";
+	const [disconnectedTerminalRequested, setDisconnectedTerminalRequested] = useState(false);
+	const isActiveTaskColumn = selection.column.id === "in_progress" || selection.column.id === "review";
+	const isTrashColumn = selection.column.id === "trash";
+	const isTaskTerminalEnabled = isActiveTaskColumn || isTrashColumn || disconnectedTerminalRequested;
 	const showClineAgentChatPanel = isNativeClineAgentSelected(sessionSummary?.agentId ?? selectedAgentId);
 	const availablePaths = useMemo(() => {
 		if (!runtimeFiles || runtimeFiles.length === 0) {
@@ -528,6 +535,10 @@ export function CardDetailView({
 		setDiffMode("working_copy");
 	}, [selection.card.id]);
 
+	useEffect(() => {
+		setDisconnectedTerminalRequested(false);
+	}, [selection.card.id]);
+
 	const handleToggleDiffExpand = useCallback(() => {
 		if (!isDiffExpanded && bottomTerminalOpen) {
 			onBottomTerminalClose();
@@ -564,270 +575,291 @@ export function CardDetailView({
 		<div
 			style={{
 				display: "flex",
+				flexDirection: "column",
 				flex: "1 1 0",
 				minHeight: 0,
 				overflow: "hidden",
 				background: "var(--color-surface-0)",
 			}}
 		>
-			{!isMobile && !isDiffExpanded ? (
-				<ColumnContextPanel
-					selection={selection}
-					workspacePath={workspacePath}
-					onCardSelect={onCardSelect}
-					taskSessions={taskSessions}
-					onTaskDragEnd={onTaskDragEnd}
-					onCreateTask={onCreateTask}
-					onStartTask={onStartTask}
-					onStartAllTasks={onStartAllTasks}
-					onClearTrash={onClearTrash}
-					editingTaskId={editingTaskId}
-					inlineTaskEditor={inlineTaskEditor}
-					onEditTask={onEditTask}
-					onCommitTask={onCommitTask}
-					onOpenPrTask={onOpenPrTask}
-					onMoveToTrashTask={onMoveReviewCardToTrash}
-					onRestoreFromTrashTask={onRestoreTaskFromTrash}
-					commitTaskLoadingById={commitTaskLoadingById}
-					openPrTaskLoadingById={openPrTaskLoadingById}
-					moveToTrashLoadingById={moveToTrashLoadingById}
-				/>
-			) : null}
-			<div
-				style={{
-					display: "flex",
-					flexDirection: "column",
-					width: isMobile ? "100%" : isDiffExpanded ? "100%" : "80%",
-					minWidth: 0,
-					minHeight: 0,
-					overflow: "hidden",
-				}}
-			>
-				{gitHistoryPanel ? (
-					<div style={{ display: "flex", flex: "1 1 0", minHeight: 0, overflow: "hidden" }}>{gitHistoryPanel}</div>
-				) : (
-					<>
-						{isMobile ? (
-							<div className="kb-mobile-detail-tabs">
-								<button
-									type="button"
-									className="kb-mobile-detail-tab"
-									data-active={mobileDetailTab === "agent"}
-									onClick={() => setMobileDetailTab("agent")}
-								>
-									Chat
-								</button>
-								<button
-									type="button"
-									className="kb-mobile-detail-tab"
-									data-active={mobileDetailTab === "changes"}
-									onClick={() => setMobileDetailTab("changes")}
-								>
-									Changes
-								</button>
-							</div>
-						) : null}
-						<div ref={mainRowRef} style={{ display: "flex", flex: "1 1 0", minHeight: 0, overflow: "hidden" }}>
-							<div
-								style={{
-									display: isMobile
-										? mobileDetailTab === "agent"
-											? "flex"
-											: "none"
-										: isDiffExpanded
-											? "none"
-											: "flex",
-									width: isMobile ? "100%" : agentPanelPercent,
-									minWidth: 0,
-									minHeight: 0,
-								}}
-							>
-								{showClineAgentChatPanel ? (
-									<ClineAgentChatPanel
-										ref={clineAgentChatPanelRef}
-										taskId={selection.card.id}
-										summary={sessionSummary}
-										taskColumnId={selection.column.id}
-										defaultMode={selection.card.startInPlanMode ? "plan" : "act"}
-										workspaceId={currentProjectId}
-										runtimeConfig={runtimeConfig}
-										onClineSettingsSaved={onClineSettingsSaved}
-										onSendMessage={onSendClineChatMessage}
-										onCancelTurn={onCancelClineChatTurn}
-										onLoadMessages={onLoadClineChatMessages}
-										incomingMessages={streamedClineChatMessages}
-										incomingMessage={latestClineChatMessage}
-										onCommit={onAgentCommitTask ? () => onAgentCommitTask(selection.card.id) : undefined}
-										onOpenPr={onAgentOpenPrTask ? () => onAgentOpenPrTask(selection.card.id) : undefined}
-										isCommitLoading={agentCommitTaskLoadingById?.[selection.card.id] ?? false}
-										isOpenPrLoading={agentOpenPrTaskLoadingById?.[selection.card.id] ?? false}
-										showMoveToTrash={showMoveToTrashActions}
-										onMoveToTrash={onMoveToTrash}
-										isMoveToTrashLoading={isMoveToTrashLoading}
-										onCancelAutomaticAction={
-											selection.card.autoReviewEnabled === true && onCancelAutomaticTaskAction
-												? () => onCancelAutomaticTaskAction(selection.card.id)
-												: undefined
-										}
-										cancelAutomaticActionLabel={
-											selection.card.autoReviewEnabled === true
-												? getTaskAutoReviewCancelButtonLabel(selection.card.autoReviewMode)
-												: null
-										}
-									/>
-								) : (
-									<AgentTerminalPanel
-										taskId={selection.card.id}
-										workspaceId={currentProjectId}
-										terminalEnabled={isTaskTerminalEnabled}
-										summary={sessionSummary}
-										onSummary={onSessionSummary}
-										onCommit={onAgentCommitTask ? () => onAgentCommitTask(selection.card.id) : undefined}
-										onOpenPr={onAgentOpenPrTask ? () => onAgentOpenPrTask(selection.card.id) : undefined}
-										isCommitLoading={agentCommitTaskLoadingById?.[selection.card.id] ?? false}
-										isOpenPrLoading={agentOpenPrTaskLoadingById?.[selection.card.id] ?? false}
-										showSessionToolbar={false}
-										autoFocus
-										showMoveToTrash={showMoveToTrashActions}
-										onMoveToTrash={onMoveToTrash}
-										isMoveToTrashLoading={isMoveToTrashLoading}
-										onCancelAutomaticAction={
-											selection.card.autoReviewEnabled === true && onCancelAutomaticTaskAction
-												? () => onCancelAutomaticTaskAction(selection.card.id)
-												: undefined
-										}
-										cancelAutomaticActionLabel={
-											selection.card.autoReviewEnabled === true
-												? getTaskAutoReviewCancelButtonLabel(selection.card.autoReviewMode)
-												: null
-										}
-										panelBackgroundColor={TERMINAL_THEME_COLORS.surfacePrimary}
-										terminalBackgroundColor={TERMINAL_THEME_COLORS.surfacePrimary}
-										showRightBorder={false}
-										taskColumnId={selection.column.id}
-									/>
-								)}
-							</div>
-							{!isMobile && !isDiffExpanded ? (
-								<div
-									role="separator"
-									aria-orientation="vertical"
-									aria-label="Resize agent and diff panels"
-									style={{
-										position: "relative",
-										flex: "0 0 1px",
-										background: "var(--color-divider)",
-										zIndex: 2,
-									}}
-								>
-									<div
-										onMouseDown={handleSeparatorMouseDown}
-										className="hover:bg-accent/30"
-										style={{
-											position: "absolute",
-											left: -2,
-											right: -2,
-											top: 0,
-											bottom: 0,
-											cursor: "ew-resize",
-										}}
-									/>
+			{onUpdateTask ? <TaskRecurringScheduleBar card={selection.card} onUpdate={onUpdateTask} /> : null}
+			<div style={{ display: "flex", flex: "1 1 0", minHeight: 0, overflow: "hidden" }}>
+				{!isMobile && !isDiffExpanded ? (
+					<ColumnContextPanel
+						selection={selection}
+						workspacePath={workspacePath}
+						onCardSelect={onCardSelect}
+						taskSessions={taskSessions}
+						onTaskDragEnd={onTaskDragEnd}
+						onCreateTask={onCreateTask}
+						onStartTask={onStartTask}
+						onStartAllTasks={onStartAllTasks}
+						onClearTrash={onClearTrash}
+						editingTaskId={editingTaskId}
+						inlineTaskEditor={inlineTaskEditor}
+						onEditTask={onEditTask}
+						onCommitTask={onCommitTask}
+						onOpenPrTask={onOpenPrTask}
+						onMoveToTrashTask={onMoveReviewCardToTrash}
+						onRestoreFromTrashTask={onRestoreTaskFromTrash}
+						commitTaskLoadingById={commitTaskLoadingById}
+						openPrTaskLoadingById={openPrTaskLoadingById}
+						moveToTrashLoadingById={moveToTrashLoadingById}
+					/>
+				) : null}
+				<div
+					style={{
+						display: "flex",
+						flexDirection: "column",
+						width: isMobile ? "100%" : isDiffExpanded ? "100%" : "80%",
+						minWidth: 0,
+						minHeight: 0,
+						overflow: "hidden",
+					}}
+				>
+					{gitHistoryPanel ? (
+						<div style={{ display: "flex", flex: "1 1 0", minHeight: 0, overflow: "hidden" }}>
+							{gitHistoryPanel}
+						</div>
+					) : (
+						<>
+							{isMobile ? (
+								<div className="kb-mobile-detail-tabs">
+									<button
+										type="button"
+										className="kb-mobile-detail-tab"
+										data-active={mobileDetailTab === "agent"}
+										onClick={() => setMobileDetailTab("agent")}
+									>
+										Chat
+									</button>
+									<button
+										type="button"
+										className="kb-mobile-detail-tab"
+										data-active={mobileDetailTab === "changes"}
+										onClick={() => setMobileDetailTab("changes")}
+									>
+										Changes
+									</button>
 								</div>
 							) : null}
-							<div
-								style={{
-									display: isMobile ? (mobileDetailTab === "changes" ? "flex" : "none") : "flex",
-									width: isMobile ? "100%" : isDiffExpanded ? "100%" : diffPanelPercent,
-									minWidth: 0,
-									minHeight: 0,
-									flexDirection: "column",
-								}}
-							>
-								{isRuntimeAvailable ? (
-									<DiffToolbar
-										mode={diffMode}
-										onModeChange={setDiffMode}
-										isExpanded={isDiffExpanded}
-										onToggleExpand={handleToggleDiffExpand}
-									/>
-								) : null}
-								<div style={{ display: "flex", flex: "1 1 0", minHeight: 0 }}>
-									{isWorkspaceChangesPending ? (
-										<WorkspaceChangesLoadingPanel panelFlex={fileTreePanelFlex} />
-									) : hasNoWorkspaceFileChanges ? (
-										<WorkspaceChangesEmptyPanel title={emptyDiffTitle} />
-									) : (
-										<>
-											<DiffViewerPanel
-												workspaceFiles={isRuntimeAvailable ? runtimeFiles : null}
-												selectedPath={selectedPath}
-												onSelectedPathChange={setSelectedPath}
-												viewMode={isDiffExpanded ? "split" : "unified"}
-												onAddToTerminal={
-													onAddReviewComments || showClineAgentChatPanel
-														? handleAddDiffComments
-														: undefined
-												}
-												onSendToTerminal={
-													onSendReviewComments || showClineAgentChatPanel
-														? handleSendDiffComments
-														: undefined
-												}
-												comments={diffComments}
-												onCommentsChange={setDiffComments}
-											/>
-											<FileTreePanel
-												workspaceFiles={isRuntimeAvailable ? runtimeFiles : null}
-												selectedPath={selectedPath}
-												onSelectPath={setSelectedPath}
-												panelFlex={fileTreePanelFlex}
-											/>
-										</>
-									)}
-								</div>
-							</div>
-						</div>
-						{bottomTerminalOpen && bottomTerminalTaskId ? (
-							<ResizableBottomPane
-								minHeight={200}
-								initialHeight={bottomTerminalPaneHeight}
-								onHeightChange={onBottomTerminalPaneHeightChange}
-							>
+							<div ref={mainRowRef} style={{ display: "flex", flex: "1 1 0", minHeight: 0, overflow: "hidden" }}>
 								<div
 									style={{
-										display: "flex",
-										flex: "1 1 0",
+										display: isMobile
+											? mobileDetailTab === "agent"
+												? "flex"
+												: "none"
+											: isDiffExpanded
+												? "none"
+												: "flex",
+										width: isMobile ? "100%" : agentPanelPercent,
 										minWidth: 0,
-										paddingLeft: 12,
-										paddingRight: 12,
+										minHeight: 0,
 									}}
 								>
-									<AgentTerminalPanel
-										key={`detail-shell-${bottomTerminalTaskId}`}
-										taskId={bottomTerminalTaskId}
-										workspaceId={currentProjectId}
-										summary={bottomTerminalSummary}
-										onSummary={onSessionSummary}
-										showSessionToolbar={false}
-										autoFocus
-										onClose={onBottomTerminalClose}
-										minimalHeaderTitle="Terminal"
-										minimalHeaderSubtitle={bottomTerminalSubtitle}
-										panelBackgroundColor={TERMINAL_THEME_COLORS.surfaceRaised}
-										terminalBackgroundColor={TERMINAL_THEME_COLORS.surfaceRaised}
-										cursorColor={TERMINAL_THEME_COLORS.textPrimary}
-										showRightBorder={false}
-										onConnectionReady={onBottomTerminalConnectionReady}
-										agentCommand={bottomTerminalAgentCommand}
-										onSendAgentCommand={onBottomTerminalSendAgentCommand}
-										isExpanded={isBottomTerminalExpanded}
-										onToggleExpand={onBottomTerminalToggleExpand}
-									/>
+									{showClineAgentChatPanel && isActiveTaskColumn ? (
+										<ClineAgentChatPanel
+											ref={clineAgentChatPanelRef}
+											taskId={selection.card.id}
+											summary={sessionSummary}
+											taskColumnId={selection.column.id}
+											defaultMode={selection.card.startInPlanMode ? "plan" : "act"}
+											workspaceId={currentProjectId}
+											runtimeConfig={runtimeConfig}
+											onClineSettingsSaved={onClineSettingsSaved}
+											onSendMessage={onSendClineChatMessage}
+											onCancelTurn={onCancelClineChatTurn}
+											onLoadMessages={onLoadClineChatMessages}
+											incomingMessages={streamedClineChatMessages}
+											incomingMessage={latestClineChatMessage}
+											onCommit={onAgentCommitTask ? () => onAgentCommitTask(selection.card.id) : undefined}
+											onOpenPr={onAgentOpenPrTask ? () => onAgentOpenPrTask(selection.card.id) : undefined}
+											isCommitLoading={agentCommitTaskLoadingById?.[selection.card.id] ?? false}
+											isOpenPrLoading={agentOpenPrTaskLoadingById?.[selection.card.id] ?? false}
+											showMoveToTrash={showMoveToTrashActions}
+											onMoveToTrash={onMoveToTrash}
+											isMoveToTrashLoading={isMoveToTrashLoading}
+											onCancelAutomaticAction={
+												selection.card.autoReviewEnabled === true && onCancelAutomaticTaskAction
+													? () => onCancelAutomaticTaskAction(selection.card.id)
+													: undefined
+											}
+											cancelAutomaticActionLabel={
+												selection.card.autoReviewEnabled === true
+													? getTaskAutoReviewCancelButtonLabel(selection.card.autoReviewMode)
+													: null
+											}
+										/>
+									) : !isActiveTaskColumn && !isTrashColumn && !disconnectedTerminalRequested ? (
+										<div
+											className="flex flex-1 flex-col items-center justify-center gap-3 text-text-tertiary"
+											style={{ background: TERMINAL_THEME_COLORS.surfacePrimary }}
+										>
+											<Terminal size={32} />
+											<p className="text-sm">Terminal is available after the task starts</p>
+											<Button
+												variant="default"
+												size="sm"
+												onClick={() => setDisconnectedTerminalRequested(true)}
+											>
+												Connect Terminal
+											</Button>
+										</div>
+									) : (
+										<AgentTerminalPanel
+											taskId={selection.card.id}
+											workspaceId={currentProjectId}
+											terminalEnabled={isTaskTerminalEnabled}
+											summary={sessionSummary}
+											onSummary={onSessionSummary}
+											onCommit={onAgentCommitTask ? () => onAgentCommitTask(selection.card.id) : undefined}
+											onOpenPr={onAgentOpenPrTask ? () => onAgentOpenPrTask(selection.card.id) : undefined}
+											isCommitLoading={agentCommitTaskLoadingById?.[selection.card.id] ?? false}
+											isOpenPrLoading={agentOpenPrTaskLoadingById?.[selection.card.id] ?? false}
+											showSessionToolbar={false}
+											autoFocus
+											showMoveToTrash={showMoveToTrashActions}
+											onMoveToTrash={onMoveToTrash}
+											isMoveToTrashLoading={isMoveToTrashLoading}
+											onCancelAutomaticAction={
+												selection.card.autoReviewEnabled === true && onCancelAutomaticTaskAction
+													? () => onCancelAutomaticTaskAction(selection.card.id)
+													: undefined
+											}
+											cancelAutomaticActionLabel={
+												selection.card.autoReviewEnabled === true
+													? getTaskAutoReviewCancelButtonLabel(selection.card.autoReviewMode)
+													: null
+											}
+											panelBackgroundColor={TERMINAL_THEME_COLORS.surfacePrimary}
+											terminalBackgroundColor={TERMINAL_THEME_COLORS.surfacePrimary}
+											showRightBorder={false}
+											taskColumnId={selection.column.id}
+										/>
+									)}
 								</div>
-							</ResizableBottomPane>
-						) : null}
-					</>
-				)}
+								{!isMobile && !isDiffExpanded ? (
+									<div
+										role="separator"
+										aria-orientation="vertical"
+										aria-label="Resize agent and diff panels"
+										style={{
+											position: "relative",
+											flex: "0 0 1px",
+											background: "var(--color-divider)",
+											zIndex: 2,
+										}}
+									>
+										<div
+											onMouseDown={handleSeparatorMouseDown}
+											className="hover:bg-accent/30"
+											style={{
+												position: "absolute",
+												left: -2,
+												right: -2,
+												top: 0,
+												bottom: 0,
+												cursor: "ew-resize",
+											}}
+										/>
+									</div>
+								) : null}
+								<div
+									style={{
+										display: isMobile ? (mobileDetailTab === "changes" ? "flex" : "none") : "flex",
+										width: isMobile ? "100%" : isDiffExpanded ? "100%" : diffPanelPercent,
+										minWidth: 0,
+										minHeight: 0,
+										flexDirection: "column",
+									}}
+								>
+									{isRuntimeAvailable ? (
+										<DiffToolbar
+											mode={diffMode}
+											onModeChange={setDiffMode}
+											isExpanded={isDiffExpanded}
+											onToggleExpand={handleToggleDiffExpand}
+										/>
+									) : null}
+									<div style={{ display: "flex", flex: "1 1 0", minHeight: 0 }}>
+										{isWorkspaceChangesPending ? (
+											<WorkspaceChangesLoadingPanel panelFlex={fileTreePanelFlex} />
+										) : hasNoWorkspaceFileChanges ? (
+											<WorkspaceChangesEmptyPanel title={emptyDiffTitle} />
+										) : (
+											<>
+												<DiffViewerPanel
+													workspaceFiles={isRuntimeAvailable ? runtimeFiles : null}
+													selectedPath={selectedPath}
+													onSelectedPathChange={setSelectedPath}
+													viewMode={isDiffExpanded ? "split" : "unified"}
+													onAddToTerminal={
+														onAddReviewComments || showClineAgentChatPanel
+															? handleAddDiffComments
+															: undefined
+													}
+													onSendToTerminal={
+														onSendReviewComments || showClineAgentChatPanel
+															? handleSendDiffComments
+															: undefined
+													}
+													comments={diffComments}
+													onCommentsChange={setDiffComments}
+												/>
+												<FileTreePanel
+													workspaceFiles={isRuntimeAvailable ? runtimeFiles : null}
+													selectedPath={selectedPath}
+													onSelectPath={setSelectedPath}
+													panelFlex={fileTreePanelFlex}
+												/>
+											</>
+										)}
+									</div>
+								</div>
+							</div>
+							{bottomTerminalOpen && bottomTerminalTaskId ? (
+								<ResizableBottomPane
+									minHeight={200}
+									initialHeight={bottomTerminalPaneHeight}
+									onHeightChange={onBottomTerminalPaneHeightChange}
+								>
+									<div
+										style={{
+											display: "flex",
+											flex: "1 1 0",
+											minWidth: 0,
+											paddingLeft: 12,
+											paddingRight: 12,
+										}}
+									>
+										<AgentTerminalPanel
+											key={`detail-shell-${bottomTerminalTaskId}`}
+											taskId={bottomTerminalTaskId}
+											workspaceId={currentProjectId}
+											summary={bottomTerminalSummary}
+											onSummary={onSessionSummary}
+											showSessionToolbar={false}
+											autoFocus
+											onClose={onBottomTerminalClose}
+											minimalHeaderTitle="Terminal"
+											minimalHeaderSubtitle={bottomTerminalSubtitle}
+											panelBackgroundColor={TERMINAL_THEME_COLORS.surfaceRaised}
+											terminalBackgroundColor={TERMINAL_THEME_COLORS.surfaceRaised}
+											cursorColor={TERMINAL_THEME_COLORS.textPrimary}
+											showRightBorder={false}
+											onConnectionReady={onBottomTerminalConnectionReady}
+											agentCommand={bottomTerminalAgentCommand}
+											onSendAgentCommand={onBottomTerminalSendAgentCommand}
+											isExpanded={isBottomTerminalExpanded}
+											onToggleExpand={onBottomTerminalToggleExpand}
+										/>
+									</div>
+								</ResizableBottomPane>
+							) : null}
+						</>
+					)}
+				</div>
 			</div>
 		</div>
 	);

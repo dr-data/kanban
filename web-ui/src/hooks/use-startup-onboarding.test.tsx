@@ -51,6 +51,7 @@ function createRuntimeConfigResponse(selectedAgentId: RuntimeConfigResponse["sel
 		openPrPromptTemplate: "",
 		commitPromptTemplateDefault: "",
 		openPrPromptTemplateDefault: "",
+		recurringMaxTurnsPerExecution: 200,
 	};
 }
 

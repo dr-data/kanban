@@ -304,6 +304,7 @@ export function RuntimeSettingsDialog({
 	const [commitPromptTemplate, setCommitPromptTemplate] = useState("");
 	const [openPrPromptTemplate, setOpenPrPromptTemplate] = useState("");
 	const [selectedPromptVariant, setSelectedPromptVariant] = useState<TaskGitAction>("commit");
+	const [recurringMaxTurnsPerExecution, setRecurringMaxTurnsPerExecution] = useState(200);
 	const [copiedVariableToken, setCopiedVariableToken] = useState<string | null>(null);
 	const [saveError, setSaveError] = useState<string | null>(null);
 	const [pendingShortcutScrollIndex, setPendingShortcutScrollIndex] = useState<number | null>(null);
@@ -368,6 +369,7 @@ export function RuntimeSettingsDialog({
 	const initialShortcuts = config?.shortcuts ?? [];
 	const initialCommitPromptTemplate = config?.commitPromptTemplate ?? "";
 	const initialOpenPrPromptTemplate = config?.openPrPromptTemplate ?? "";
+	const initialRecurringMaxTurnsPerExecution = config?.recurringMaxTurnsPerExecution ?? 200;
 	const clineSettings = useRuntimeSettingsClineController({
 		open,
 		workspaceId,
@@ -408,10 +410,13 @@ export function RuntimeSettingsDialog({
 		) {
 			return true;
 		}
-		return (
+		if (
 			normalizeTemplateForComparison(openPrPromptTemplate) !==
 			normalizeTemplateForComparison(initialOpenPrPromptTemplate)
-		);
+		) {
+			return true;
+		}
+		return recurringMaxTurnsPerExecution !== initialRecurringMaxTurnsPerExecution;
 	}, [
 		agentAutonomousModeEnabled,
 		clineMcpSettings.hasUnsavedChanges,
@@ -422,10 +427,12 @@ export function RuntimeSettingsDialog({
 		initialCommitPromptTemplate,
 		initialOpenPrPromptTemplate,
 		initialReadyForReviewNotificationsEnabled,
+		initialRecurringMaxTurnsPerExecution,
 		initialSelectedAgentId,
 		initialShortcuts,
 		openPrPromptTemplate,
 		readyForReviewNotificationsEnabled,
+		recurringMaxTurnsPerExecution,
 		selectedAgentId,
 		shortcuts,
 	]);
@@ -440,12 +447,14 @@ export function RuntimeSettingsDialog({
 		setShortcuts(config?.shortcuts ?? []);
 		setCommitPromptTemplate(config?.commitPromptTemplate ?? "");
 		setOpenPrPromptTemplate(config?.openPrPromptTemplate ?? "");
+		setRecurringMaxTurnsPerExecution(config?.recurringMaxTurnsPerExecution ?? 200);
 		setSaveError(null);
 	}, [
 		config?.agentAutonomousModeEnabled,
 		config?.commitPromptTemplate,
 		config?.openPrPromptTemplate,
 		config?.readyForReviewNotificationsEnabled,
+		config?.recurringMaxTurnsPerExecution,
 		config?.selectedAgentId,
 		config?.shortcuts,
 		fallbackAgentId,
@@ -569,6 +578,7 @@ export function RuntimeSettingsDialog({
 			shortcuts,
 			commitPromptTemplate,
 			openPrPromptTemplate,
+			recurringMaxTurnsPerExecution,
 		});
 		if (!saved) {
 			setSaveError("Could not save runtime settings. Check runtime logs and try again.");
@@ -739,6 +749,22 @@ export function RuntimeSettingsDialog({
 						/>
 					) : null}
 				</div>
+
+				<h6 className="font-semibold text-text-primary mt-4 mb-2">Safety limits</h6>
+				<div className="flex items-center gap-2">
+					<span className="text-[13px] text-text-primary shrink-0">Max turns per task execution</span>
+					<input
+						type="number"
+						min={1}
+						value={recurringMaxTurnsPerExecution}
+						onChange={(e) => setRecurringMaxTurnsPerExecution(Math.max(1, parseInt(e.target.value, 10) || 200))}
+						disabled={controlsDisabled}
+						className="h-8 w-20 rounded-md border border-border bg-surface-2 px-2 text-[13px] text-text-primary focus:border-border-focus focus:outline-none disabled:opacity-40"
+					/>
+				</div>
+				<p className="text-text-secondary text-[13px] mt-1 mb-0">
+					Maximum number of agent turns before a task is forcefully stopped. Prevents runaway tasks.
+				</p>
 
 				<h5 className="font-semibold text-text-primary mt-4 mb-0">Project</h5>
 				<p

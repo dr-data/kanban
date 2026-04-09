@@ -2,7 +2,18 @@ import { Draggable } from "@hello-pangea/dnd";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { formatClineToolCallLabel } from "@runtime-cline-tool-call-display";
 import { buildTaskWorktreeDisplayPath } from "@runtime-task-worktree-path";
-import { AlertCircle, GitBranch, Link2, MoveHorizontal, Play, RotateCcw, Trash2 } from "lucide-react";
+import {
+	AlertCircle,
+	Clock,
+	GitBranch,
+	Link2,
+	MoveHorizontal,
+	Play,
+	Repeat,
+	RotateCcw,
+	Settings,
+	Trash2,
+} from "lucide-react";
 import { type MouseEvent, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
@@ -55,6 +66,49 @@ const COLUMN_LABELS: Record<BoardColumnId, string> = {
 
 /** All column IDs in board order, used to compute mobile move targets. */
 const ALL_COLUMN_IDS: BoardColumnId[] = ["backlog", "in_progress", "review", "trash"];
+
+/**
+ * Formats a future unix timestamp into a human-readable relative string,
+ * e.g. "Starts in 2h 15m" or "Starts in 30s".
+ */
+function formatRelativeTime(targetMs: number): string {
+	const diffMs = targetMs - Date.now();
+	if (diffMs <= 0) {
+		return "Starting now";
+	}
+	const totalSeconds = Math.floor(diffMs / 1000);
+	const hours = Math.floor(totalSeconds / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
+	const seconds = totalSeconds % 60;
+	if (hours > 0) {
+		return minutes > 0 ? `Starts in ${hours}h ${minutes}m` : `Starts in ${hours}h`;
+	}
+	if (minutes > 0) {
+		return `Starts in ${minutes}m`;
+	}
+	return `Starts in ${seconds}s`;
+}
+
+/**
+ * Formats a period in milliseconds into a human-readable string,
+ * e.g. "3m", "1h", "2d", "1w".
+ */
+function formatPeriod(ms: number): string {
+	const minutes = Math.round(ms / 60_000);
+	if (minutes < 60) {
+		return `${minutes}m`;
+	}
+	const hours = Math.round(ms / 3_600_000);
+	if (hours < 24) {
+		return `${hours}h`;
+	}
+	const days = Math.round(ms / 86_400_000);
+	if (days < 7) {
+		return `${days}d`;
+	}
+	const weeks = Math.round(ms / 604_800_000);
+	return `${weeks}w`;
+}
 
 function reconstructTaskWorktreeDisplayPath(taskId: string, workspacePath: string | null | undefined): string | null {
 	if (!workspacePath) {
@@ -135,10 +189,33 @@ function resolveToolCallLabel(
 	return formatClineToolCallLabel(parsed.toolName, parsed.toolInputSummary);
 }
 
+/**
+ * Detects whether a "running" session is actually stale — the process has
+ * exited (pid is null) but the state machine never transitioned out of
+ * "running". This can happen when process exit events are missed.
+ */
+function isStaleRunningSession(summary: RuntimeTaskSessionSummary): boolean {
+	if (summary.state !== "running") {
+		return false;
+	}
+	return summary.pid === null;
+}
+
 function getCardSessionActivity(summary: RuntimeTaskSessionSummary | undefined): CardSessionActivity | null {
 	if (!summary) {
 		return null;
 	}
+
+	/* If state is "running" but the process is gone, show a stale indicator
+	   instead of an endlessly spinning "Thinking..." label. */
+	if (isStaleRunningSession(summary)) {
+		const lastActivity = summary.latestHookActivity?.finalMessage?.trim();
+		return {
+			dotColor: SESSION_ACTIVITY_COLOR.muted,
+			text: lastActivity || "Session ended",
+		};
+	}
+
 	const hookActivity = summary.latestHookActivity;
 	const activityText = hookActivity?.activityText?.trim();
 	const toolName = hookActivity?.toolName?.trim() ?? null;
@@ -287,6 +364,10 @@ export const BoardCard = memo(function BoardCard({
 	onMoveToColumn,
 	isDragDisabled = false,
 	dependencyCount = 0,
+	onEnterMobileLinkMode,
+	onShowMobileDependencies,
+	onUpdateTask: _onUpdateTask,
+	onEditTask,
 }: {
 	card: BoardCardModel;
 	index: number;
@@ -319,6 +400,14 @@ export const BoardCard = memo(function BoardCard({
 	isDragDisabled?: boolean;
 	/** Number of dependencies this card has (for badge display on mobile). */
 	dependencyCount?: number;
+	/** Callback to activate mobile tap-based dependency link mode with this card as source. */
+	onEnterMobileLinkMode?: (taskId: string) => void;
+	/** Callback to open the mobile dependency sheet for a given task. */
+	onShowMobileDependencies?: (taskId: string) => void;
+	/** Callback to update recurring/schedule fields on a task. */
+	onUpdateTask?: (taskId: string, updates: Record<string, unknown>) => void;
+	/** Callback to open the task editor for this card. */
+	onEditTask?: (card: BoardCardModel) => void;
 }): React.ReactElement {
 	const [isHovered, setIsHovered] = useState(false);
 	const [titleContainerRef, titleRect] = useMeasure<HTMLDivElement>();
@@ -338,6 +427,17 @@ export const BoardCard = memo(function BoardCard({
 	const reviewWorkspaceSnapshot = useTaskWorkspaceSnapshotValue(card.id);
 	const isTrashCard = columnId === "trash";
 	const isMobile = useIsMobile();
+
+	/* Re-render every 30s to keep the schedule countdown badge fresh. */
+	const [, setScheduleTick] = useState(0);
+	const hasSchedule = card.scheduledStartAt != null && columnId === "backlog";
+	useEffect(() => {
+		if (!hasSchedule) {
+			return;
+		}
+		const id = window.setInterval(() => setScheduleTick((n) => n + 1), 30_000);
+		return () => window.clearInterval(id);
+	}, [hasSchedule]);
 
 	/** Valid destination columns for the mobile "Move to" dropdown. */
 	const mobileMoveTargets = useMemo(
@@ -493,6 +593,10 @@ export const BoardCard = memo(function BoardCard({
 			if (sessionSummary?.state === "failed") {
 				return <AlertCircle size={12} className="text-status-red" />;
 			}
+			/* Stop the spinner for stale sessions where the process is gone. */
+			if (sessionSummary && isStaleRunningSession(sessionSummary)) {
+				return <AlertCircle size={12} className="text-text-tertiary" />;
+			}
 			return <Spinner size={12} />;
 		}
 		return null;
@@ -597,6 +701,7 @@ export const BoardCard = memo(function BoardCard({
 								isDragging && "shadow-lg",
 								isHovered && isCardInteractive && "bg-surface-3 border-border-bright",
 								isDependencySource && "kb-board-card-dependency-source",
+								isMobileLinkMode && isDependencySource && "kb-board-card-dependency-source-touch",
 								isDependencyTarget && "kb-board-card-dependency-target",
 							)}
 						>
@@ -662,6 +767,19 @@ export const BoardCard = memo(function BoardCard({
 										/>
 									</Tooltip>
 								) : null}
+								{columnId !== "backlog" && onEditTask ? (
+									<Button
+										icon={<Settings size={14} />}
+										variant="ghost"
+										size="sm"
+										aria-label="Edit task settings"
+										onMouseDown={stopEvent}
+										onClick={(e) => {
+											stopEvent(e);
+											onEditTask(card);
+										}}
+									/>
+								) : null}
 								{isMobile && mobileMoveTargets.length > 0 && onMoveToColumn ? (
 									<MobileMoveToMenu
 										cardId={card.id}
@@ -670,11 +788,35 @@ export const BoardCard = memo(function BoardCard({
 										stopEvent={stopEvent}
 									/>
 								) : null}
-								{isMobile && dependencyCount > 0 ? (
-									<span className="inline-flex items-center gap-0.5 text-[11px] text-text-tertiary">
+								{isMobile && columnId !== "trash" && onEnterMobileLinkMode ? (
+									<Tooltip content="Link tasks">
+										<Button
+											icon={<Link2 size={14} />}
+											variant="ghost"
+											size="sm"
+											aria-label="Link to another task"
+											onMouseDown={stopEvent}
+											onClick={(e) => {
+												stopEvent(e);
+												onEnterMobileLinkMode(card.id);
+											}}
+										/>
+									</Tooltip>
+								) : null}
+								{isMobile && dependencyCount > 0 && onShowMobileDependencies ? (
+									<button
+										type="button"
+										className="inline-flex items-center gap-0.5 text-[11px] text-text-tertiary"
+										aria-label={`View ${dependencyCount} dependencies`}
+										onMouseDown={stopEvent}
+										onClick={(e) => {
+											stopEvent(e);
+											onShowMobileDependencies(card.id);
+										}}
+									>
 										<Link2 size={10} />
 										{dependencyCount}
-									</span>
+									</button>
 								) : null}
 							</div>
 							{displayPromptSplit.description ? (
@@ -854,6 +996,32 @@ export const BoardCard = memo(function BoardCard({
 										</>
 									) : null}
 								</p>
+							) : null}
+							{card.recurringEnabled ? (
+								<span className="text-[10px] text-text-secondary inline-flex items-center gap-0.5 flex-wrap mt-1">
+									<Repeat size={11} />
+									<span>
+										Recurring{" "}
+										{(card.recurringMaxIterations ?? 0) === 0
+											? `${card.recurringCurrentIteration ?? 0}/\u221E`
+											: `${card.recurringCurrentIteration ?? 0}/${card.recurringMaxIterations}`}
+									</span>
+									{card.recurringPeriodMs ? (
+										<span className="text-text-tertiary">every {formatPeriod(card.recurringPeriodMs)}</span>
+									) : null}
+								</span>
+							) : null}
+							{card.scheduledStartAt != null && columnId === "backlog" ? (
+								<span className="text-[10px] text-status-gold inline-flex items-center gap-1 mt-1">
+									<Clock size={11} />
+									{formatRelativeTime(card.scheduledStartAt)}
+									{card.scheduledEndAt != null ? (
+										<span className="text-text-tertiary">
+											{" "}
+											until {formatRelativeTime(card.scheduledEndAt)}
+										</span>
+									) : null}
+								</span>
 							) : null}
 							{showReviewGitActions ? (
 								<div className="flex gap-1.5 mt-1.5">

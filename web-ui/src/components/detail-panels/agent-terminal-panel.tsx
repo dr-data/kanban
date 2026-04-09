@@ -1,16 +1,20 @@
 import "@xterm/xterm/css/xterm.css";
 
-import { Command, Maximize2, MessageSquare, Minimize2, X } from "lucide-react";
+import { Command, Maximize2, MessageSquare, Minimize2, Radio, X } from "lucide-react";
 import type { MutableRefObject, ReactElement } from "react";
 import { useMemo } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip } from "@/components/ui/tooltip";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import type { RuntimeTaskSessionSummary } from "@/runtime/types";
 import { useTaskWorkspaceSnapshotValue } from "@/stores/workspace-metadata-store";
+import { getTerminalController } from "@/terminal/terminal-controller-registry";
 import { usePersistentTerminalSession } from "@/terminal/use-persistent-terminal-session";
 import { isMacPlatform } from "@/utils/platform";
+
+import { MobileTerminalShortcutBar } from "./mobile-terminal-shortcut-bar";
 
 interface AgentTerminalSessionControls {
 	clearTerminal: () => void;
@@ -175,6 +179,7 @@ function AgentTerminalPanelLayout({
 	sessionControls,
 }: AgentTerminalPanelProps & { sessionControls: AgentTerminalSessionControls }): ReactElement {
 	const { containerRef, lastError, isStopping, clearTerminal, stopTerminal } = sessionControls;
+	const isMobile = useIsMobile();
 	const canStop = summary?.state === "running" || summary?.state === "awaiting_review";
 	const statusLabel = useMemo(() => describeState(summary), [summary]);
 	const statusTagStyle = useMemo(() => getStateTagStyle(summary), [summary]);
@@ -270,6 +275,20 @@ function AgentTerminalPanelLayout({
 								/>
 							</Tooltip>
 						) : null}
+						<Tooltip content="Teleport to claude.ai">
+							<Button
+								variant="ghost"
+								size="sm"
+								icon={<Radio size={12} />}
+								onClick={() => {
+									const controller = getTerminalController(taskId);
+									if (controller) {
+										controller.input("/remote-control\r");
+									}
+								}}
+								aria-label="Send remote control command"
+							/>
+						</Tooltip>
 						{onToggleExpand ? (
 							<Tooltip
 								side="top"
@@ -305,6 +324,7 @@ function AgentTerminalPanelLayout({
 					</div>
 				</div>
 			) : null}
+			{isMobile ? <MobileTerminalShortcutBar taskId={taskId} /> : null}
 			<div style={{ flex: "1 1 0", minHeight: 0, overflow: "hidden", padding: "3px 1.5px 3px 3px" }}>
 				<div
 					ref={containerRef}

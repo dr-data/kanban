@@ -6,16 +6,18 @@ import {
 	Bug,
 	Check,
 	ChevronDown,
+	ChevronUp,
 	CircleArrowDown,
 	Command,
 	GitBranch,
 	Menu,
 	Play,
 	Plus,
+	Radio,
 	Settings,
 	Terminal,
 } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { OpenWorkspaceButton } from "@/components/open-workspace-button";
 import {
 	getRuntimeShortcutIconComponent,
@@ -29,6 +31,7 @@ import { Dialog, DialogBody, DialogFooter, DialogHeader } from "@/components/ui/
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip } from "@/components/ui/tooltip";
 import type { RuntimeGitSyncAction, RuntimeProjectShortcut } from "@/runtime/types";
+import { LocalStorageKey, readLocalStorageItem, writeLocalStorageItem } from "@/storage/local-storage-store";
 import {
 	useHomeGitSummaryValue,
 	useTaskWorkspaceInfoValue,
@@ -114,6 +117,7 @@ function GitBranchStatusControl({
 	deletions,
 	onToggleGitHistory,
 	isGitHistoryOpen,
+	isMobile,
 }: {
 	branchLabel: string;
 	changedFiles: number;
@@ -121,7 +125,9 @@ function GitBranchStatusControl({
 	deletions: number;
 	onToggleGitHistory?: () => void;
 	isGitHistoryOpen?: boolean;
+	isMobile?: boolean;
 }): React.ReactElement {
+	const [isExpanded, setIsExpanded] = useState(false);
 	if (onToggleGitHistory) {
 		return (
 			<div className="flex items-center min-w-0 overflow-hidden">
@@ -136,7 +142,19 @@ function GitBranchStatusControl({
 					)}
 					title={branchLabel}
 				>
-					<span className="truncate w-full text-left">{branchLabel}</span>
+					<span
+						className={cn("w-full text-left", isExpanded ? "whitespace-normal break-all" : "truncate")}
+						onClick={
+							isMobile
+								? (e) => {
+										e.stopPropagation();
+										setIsExpanded((prev) => !prev);
+									}
+								: undefined
+						}
+					>
+						{branchLabel}
+					</span>
 				</Button>
 				<span className="font-mono text-xs text-text-tertiary ml-1.5 shrink-0 whitespace-nowrap">
 					({changedFiles} {changedFiles === 1 ? "file" : "files"}
@@ -173,6 +191,7 @@ function TopBarGitStatusSection({
 	onGitFetch,
 	onGitPull,
 	onGitPush,
+	isMobile,
 }: {
 	showHomeGitSummary: boolean;
 	selectedTaskId: string | null;
@@ -183,6 +202,7 @@ function TopBarGitStatusSection({
 	onGitFetch?: () => void;
 	onGitPull?: () => void;
 	onGitPush?: () => void;
+	isMobile?: boolean;
 }): React.ReactElement | null {
 	const homeGitSummary = useHomeGitSummaryValue();
 	const taskWorkspaceInfo = useTaskWorkspaceInfoValue(selectedTaskId, selectedTaskBaseRef);
@@ -210,6 +230,7 @@ function TopBarGitStatusSection({
 					deletions={homeGitSummary.deletions ?? 0}
 					onToggleGitHistory={onToggleGitHistory}
 					isGitHistoryOpen={isGitHistoryOpen}
+					isMobile={isMobile}
 				/>
 				<div className="flex gap-0 ml-1">
 					<Tooltip
@@ -267,6 +288,7 @@ function TopBarGitStatusSection({
 					deletions={taskWorkspaceSnapshot?.deletions ?? 0}
 					onToggleGitHistory={onToggleGitHistory}
 					isGitHistoryOpen={isGitHistoryOpen}
+					isMobile={isMobile}
 				/>
 			</>
 		);
@@ -311,6 +333,9 @@ export function TopBar({
 	hideProjectDependentActions = false,
 	isMobile = false,
 	onToggleSidebar,
+	onTeleport,
+	isTeleportActive = false,
+	isTeleportDisabled = false,
 }: {
 	onBack?: () => void;
 	workspacePath?: string;
@@ -349,6 +374,12 @@ export function TopBar({
 	isMobile?: boolean;
 	/** Callback to toggle the mobile sidebar drawer. */
 	onToggleSidebar?: () => void;
+	/** Callback to initiate teleport (remote control) to claude.ai. */
+	onTeleport?: () => void;
+	/** Whether remote control is currently active for the selected session. */
+	isTeleportActive?: boolean;
+	/** Whether the teleport button is disabled (no eligible Claude session). */
+	isTeleportDisabled?: boolean;
 }): React.ReactElement {
 	const displayWorkspacePath = workspacePath ? formatPathForDisplay(workspacePath) : null;
 	const workspaceSegments = displayWorkspacePath ? getWorkspacePathSegments(displayWorkspacePath) : [];
@@ -396,241 +427,298 @@ export function TopBar({
 		setIsCreateShortcutDialogOpen(false);
 	};
 
+	const [isMobileGitCollapsed, setIsMobileGitCollapsed] = useState(
+		() => readLocalStorageItem(LocalStorageKey.MobileGitStatusCollapsed) === "true",
+	);
+
+	/** Toggles the mobile git status section collapsed state and persists it. */
+	const toggleMobileGitCollapsed = useCallback(() => {
+		setIsMobileGitCollapsed((prev) => {
+			const next = !prev;
+			writeLocalStorageItem(LocalStorageKey.MobileGitStatusCollapsed, String(next));
+			return next;
+		});
+	}, []);
+
+	/** Git status JSX — rendered in Row 1 on desktop, Row 2 on mobile. */
+	const gitStatusElement = !hideProjectDependentActions ? (
+		<TopBarGitStatusSection
+			showHomeGitSummary={showHomeGitSummary === true}
+			selectedTaskId={selectedTaskId ?? null}
+			selectedTaskBaseRef={selectedTaskBaseRef ?? null}
+			onToggleGitHistory={onToggleGitHistory}
+			isGitHistoryOpen={isGitHistoryOpen}
+			runningGitAction={runningGitAction}
+			onGitFetch={onGitFetch}
+			onGitPull={onGitPull}
+			onGitPush={onGitPush}
+			isMobile={isMobile}
+		/>
+	) : null;
+
+	/** Run-shortcut controls JSX — rendered in Row 1 on desktop, Row 2 on mobile. */
+	const runShortcutElement =
+		!hideProjectDependentActions && onRunShortcut ? (
+			selectedShortcut ? (
+				<div className="flex">
+					<Button
+						variant="default"
+						size="sm"
+						icon={runningShortcutLabel ? <Spinner size={12} /> : <SelectedShortcutIcon size={14} />}
+						disabled={Boolean(runningShortcutLabel)}
+						onClick={() => onRunShortcut(selectedShortcut.label)}
+						className="text-xs rounded-r-none kb-navbar-btn"
+					>
+						{selectedShortcut.label}
+					</Button>
+					<RadixPopover.Root>
+						<RadixPopover.Trigger asChild>
+							<Button
+								size="sm"
+								variant="default"
+								icon={<ChevronDown size={12} />}
+								aria-label="Select shortcut"
+								disabled={Boolean(runningShortcutLabel)}
+								className="rounded-l-none border-l-0 kb-navbar-btn"
+								style={{ width: 24, paddingLeft: 0, paddingRight: 0 }}
+							/>
+						</RadixPopover.Trigger>
+						<RadixPopover.Portal>
+							<RadixPopover.Content
+								className="z-50 rounded-lg border border-border bg-surface-2 p-1 shadow-xl"
+								style={{ animation: "kb-tooltip-show 100ms ease" }}
+								sideOffset={5}
+								align="end"
+							>
+								<div className="min-w-[180px]">
+									{shortcutItems.map((shortcut, shortcutIndex) => {
+										const ShortcutIcon = getRuntimeShortcutIconComponent(shortcut.icon);
+										const isActive =
+											shortcutIndex === (selectedShortcutIndex >= 0 ? selectedShortcutIndex : 0);
+										return (
+											<button
+												type="button"
+												key={`${shortcut.label}:${shortcut.command}:${shortcutIndex}`}
+												className={cn(
+													"flex w-full items-center gap-2 px-2.5 py-1.5 text-[13px] text-text-primary rounded-md hover:bg-surface-3 text-left",
+													isActive && "bg-surface-3",
+												)}
+												onClick={() => onSelectShortcutLabel?.(shortcut.label)}
+											>
+												<ShortcutIcon size={14} />
+												<span className="flex-1">{shortcut.label}</span>
+												{isActive ? <Check size={14} className="text-text-secondary" /> : null}
+											</button>
+										);
+									})}
+									<div className="h-px bg-border my-1" />
+									<button
+										type="button"
+										className="flex w-full items-center gap-2 px-2.5 py-1.5 text-[13px] text-text-primary rounded-md hover:bg-surface-3 text-left"
+										onClick={handleAddShortcut}
+									>
+										<Plus size={14} />
+										<span>Add shortcut</span>
+									</button>
+								</div>
+							</RadixPopover.Content>
+						</RadixPopover.Portal>
+					</RadixPopover.Root>
+				</div>
+			) : onCreateFirstShortcut ? (
+				<Button
+					variant="default"
+					size="sm"
+					icon={<Play size={14} />}
+					onClick={handleOpenCreateShortcutDialog}
+					className="text-xs kb-navbar-btn"
+				>
+					Run
+				</Button>
+			) : null
+		) : null;
+
 	return (
 		<>
 			<nav
-				className="kb-top-bar flex flex-nowrap items-center h-10 min-h-[40px] max-[767.98px]:min-h-[44px] min-w-0 bg-surface-1"
+				className="kb-top-bar flex flex-col min-[768px]:flex-row min-[768px]:flex-nowrap min-[768px]:items-center min-[768px]:h-10 min-w-0 bg-surface-1"
 				style={{
 					paddingLeft: onBack ? 6 : 12,
 					paddingRight: 8,
 					borderBottom: "1px solid var(--color-divider)",
 				}}
 			>
-				<div className="flex flex-nowrap items-center h-10 flex-1 min-w-0 overflow-hidden gap-1.5">
-					{isMobile && onToggleSidebar ? (
-						<Button
-							variant="ghost"
-							size="sm"
-							icon={<Menu size={16} />}
-							onClick={onToggleSidebar}
-							aria-label="Toggle sidebar"
-							className="shrink-0"
-						/>
-					) : null}
-					{onBack ? (
-						<div className="flex items-center shrink-0 overflow-visible">
+				{/* Row 1: primary controls — always visible */}
+				<div className="flex flex-nowrap items-center h-10 max-[767.98px]:min-h-[44px] w-full min-w-0">
+					<div className="flex flex-nowrap items-center h-10 flex-1 min-w-0 overflow-hidden gap-1.5">
+						{isMobile && onToggleSidebar ? (
 							<Button
 								variant="ghost"
 								size="sm"
-								icon={<ArrowLeft size={16} />}
-								onClick={onBack}
-								aria-label="Back to board"
-								className="mr-1 shrink-0"
+								icon={<Menu size={16} />}
+								onClick={onToggleSidebar}
+								aria-label="Toggle sidebar"
+								className="shrink-0"
 							/>
-						</div>
-					) : null}
-					{isMobile && displayWorkspacePath ? (
-						<span className="text-xs font-medium text-text-primary truncate min-w-0">
-							{workspaceSegments[workspaceSegments.length - 1] ?? ""}
-						</span>
-					) : isWorkspacePathLoading ? (
-						<span
-							className="kb-skeleton inline-block"
-							style={{ height: 14, width: 320, borderRadius: 3 }}
-							aria-hidden
-						/>
-					) : displayWorkspacePath ? (
-						<div className="shrink min-w-0 max-w-[640px] overflow-hidden">
-							<span
-								className="font-mono truncate block w-full min-w-0 text-xs max-w-full text-text-secondary"
-								title={workspacePath}
-								data-testid="workspace-path"
-							>
-								{hasAbsoluteLeadingSlash ? "/" : ""}
-								{workspaceSegments.map((segment, index) => {
-									const isLast = index === workspaceSegments.length - 1;
-									return (
-										<span key={`${segment}-${index}`}>
-											{index === 0 ? "" : "/"}
-											<span className={isLast ? "text-text-primary" : undefined}>{segment}</span>
-										</span>
-									);
-								})}
-							</span>
-						</div>
-					) : null}
-					{!isMobile && displayWorkspacePath && !isWorkspacePathLoading ? (
-						<div className="ml-2 shrink-0">
-							<OpenWorkspaceButton
-								options={openTargetOptions}
-								selectedOptionId={selectedOpenTargetId}
-								disabled={!canOpenWorkspace || isOpeningWorkspace}
-								loading={isOpeningWorkspace}
-								onOpen={onOpenWorkspace}
-								onSelectOption={onSelectOpenTarget}
-							/>
-						</div>
-					) : null}
-					{!isMobile && !hideProjectDependentActions && workspaceHint ? (
-						<span className="kb-navbar-tag inline-flex items-center rounded border border-border bg-surface-2 px-1.5 py-0.5 text-xs text-text-secondary">
-							{workspaceHint}
-						</span>
-					) : null}
-					{!isMobile && !hideProjectDependentActions && runtimeHint ? (
-						onOpenSettings ? (
-							<button
-								type="button"
-								onClick={() => onOpenSettings()}
-								className="kb-navbar-tag inline-flex items-center rounded border border-status-orange/30 bg-status-orange/10 px-1.5 py-0.5 text-xs text-status-orange transition-colors hover:bg-status-orange/15 focus:outline-none focus:ring-2 focus:ring-border-focus focus:ring-offset-0"
-							>
-								{runtimeHint}
-							</button>
-						) : (
-							<span className="kb-navbar-tag inline-flex items-center rounded border border-status-orange/30 bg-status-orange/10 px-1.5 py-0.5 text-xs text-status-orange">
-								{runtimeHint}
-							</span>
-						)
-					) : null}
-					{!isMobile && !hideProjectDependentActions ? (
-						<TopBarGitStatusSection
-							showHomeGitSummary={showHomeGitSummary === true}
-							selectedTaskId={selectedTaskId ?? null}
-							selectedTaskBaseRef={selectedTaskBaseRef ?? null}
-							onToggleGitHistory={onToggleGitHistory}
-							isGitHistoryOpen={isGitHistoryOpen}
-							runningGitAction={runningGitAction}
-							onGitFetch={onGitFetch}
-							onGitPull={onGitPull}
-							onGitPush={onGitPush}
-						/>
-					) : null}
-				</div>
-				<div className="flex flex-nowrap items-center h-10 pr-0.5 shrink-0">
-					{!isMobile && !hideProjectDependentActions && onRunShortcut ? (
-						selectedShortcut ? (
-							<div className="flex">
+						) : null}
+						{onBack ? (
+							<div className="flex items-center shrink-0 overflow-visible">
 								<Button
-									variant="default"
+									variant="ghost"
 									size="sm"
-									icon={runningShortcutLabel ? <Spinner size={12} /> : <SelectedShortcutIcon size={14} />}
-									disabled={Boolean(runningShortcutLabel)}
-									onClick={() => onRunShortcut(selectedShortcut.label)}
-									className="text-xs rounded-r-none kb-navbar-btn"
-								>
-									{selectedShortcut.label}
-								</Button>
-								<RadixPopover.Root>
-									<RadixPopover.Trigger asChild>
-										<Button
-											size="sm"
-											variant="default"
-											icon={<ChevronDown size={12} />}
-											aria-label="Select shortcut"
-											disabled={Boolean(runningShortcutLabel)}
-											className="rounded-l-none border-l-0 kb-navbar-btn"
-											style={{ width: 24, paddingLeft: 0, paddingRight: 0 }}
-										/>
-									</RadixPopover.Trigger>
-									<RadixPopover.Portal>
-										<RadixPopover.Content
-											className="z-50 rounded-lg border border-border bg-surface-2 p-1 shadow-xl"
-											style={{ animation: "kb-tooltip-show 100ms ease" }}
-											sideOffset={5}
-											align="end"
-										>
-											<div className="min-w-[180px]">
-												{shortcutItems.map((shortcut, shortcutIndex) => {
-													const ShortcutIcon = getRuntimeShortcutIconComponent(shortcut.icon);
-													const isActive =
-														shortcutIndex === (selectedShortcutIndex >= 0 ? selectedShortcutIndex : 0);
-													return (
-														<button
-															type="button"
-															key={`${shortcut.label}:${shortcut.command}:${shortcutIndex}`}
-															className={cn(
-																"flex w-full items-center gap-2 px-2.5 py-1.5 text-[13px] text-text-primary rounded-md hover:bg-surface-3 text-left",
-																isActive && "bg-surface-3",
-															)}
-															onClick={() => onSelectShortcutLabel?.(shortcut.label)}
-														>
-															<ShortcutIcon size={14} />
-															<span className="flex-1">{shortcut.label}</span>
-															{isActive ? <Check size={14} className="text-text-secondary" /> : null}
-														</button>
-													);
-												})}
-												<div className="h-px bg-border my-1" />
-												<button
-													type="button"
-													className="flex w-full items-center gap-2 px-2.5 py-1.5 text-[13px] text-text-primary rounded-md hover:bg-surface-3 text-left"
-													onClick={handleAddShortcut}
-												>
-													<Plus size={14} />
-													<span>Add shortcut</span>
-												</button>
-											</div>
-										</RadixPopover.Content>
-									</RadixPopover.Portal>
-								</RadixPopover.Root>
+									icon={<ArrowLeft size={16} />}
+									onClick={onBack}
+									aria-label="Back to board"
+									className="mr-1 shrink-0"
+								/>
 							</div>
-						) : onCreateFirstShortcut ? (
-							<Button
-								variant="default"
-								size="sm"
-								icon={<Play size={14} />}
-								onClick={handleOpenCreateShortcutDialog}
-								className="text-xs kb-navbar-btn"
+						) : null}
+						{isMobile && displayWorkspacePath ? (
+							<span className="text-xs font-medium text-text-primary truncate min-w-0">
+								{workspaceSegments[workspaceSegments.length - 1] ?? ""}
+							</span>
+						) : isWorkspacePathLoading ? (
+							<span
+								className="kb-skeleton inline-block"
+								style={{ height: 14, width: 320, borderRadius: 3 }}
+								aria-hidden
+							/>
+						) : displayWorkspacePath ? (
+							<div className="shrink min-w-0 max-w-[640px] overflow-hidden">
+								<span
+									className="font-mono truncate block w-full min-w-0 text-xs max-w-full text-text-secondary"
+									title={workspacePath}
+									data-testid="workspace-path"
+								>
+									{hasAbsoluteLeadingSlash ? "/" : ""}
+									{workspaceSegments.map((segment, index) => {
+										const isLast = index === workspaceSegments.length - 1;
+										return (
+											<span key={`${segment}-${index}`}>
+												{index === 0 ? "" : "/"}
+												<span className={isLast ? "text-text-primary" : undefined}>{segment}</span>
+											</span>
+										);
+									})}
+								</span>
+							</div>
+						) : null}
+						{!isMobile && displayWorkspacePath && !isWorkspacePathLoading ? (
+							<div className="ml-2 shrink-0">
+								<OpenWorkspaceButton
+									options={openTargetOptions}
+									selectedOptionId={selectedOpenTargetId}
+									disabled={!canOpenWorkspace || isOpeningWorkspace}
+									loading={isOpeningWorkspace}
+									onOpen={onOpenWorkspace}
+									onSelectOption={onSelectOpenTarget}
+								/>
+							</div>
+						) : null}
+						{!isMobile && !hideProjectDependentActions && workspaceHint ? (
+							<span className="kb-navbar-tag inline-flex items-center rounded border border-border bg-surface-2 px-1.5 py-0.5 text-xs text-text-secondary">
+								{workspaceHint}
+							</span>
+						) : null}
+						{!isMobile && !hideProjectDependentActions && runtimeHint ? (
+							onOpenSettings ? (
+								<button
+									type="button"
+									onClick={() => onOpenSettings()}
+									className="kb-navbar-tag inline-flex items-center rounded border border-status-orange/30 bg-status-orange/10 px-1.5 py-0.5 text-xs text-status-orange transition-colors hover:bg-status-orange/15 focus:outline-none focus:ring-2 focus:ring-border-focus focus:ring-offset-0"
+								>
+									{runtimeHint}
+								</button>
+							) : (
+								<span className="kb-navbar-tag inline-flex items-center rounded border border-status-orange/30 bg-status-orange/10 px-1.5 py-0.5 text-xs text-status-orange">
+									{runtimeHint}
+								</span>
+							)
+						) : null}
+						{!isMobile ? gitStatusElement : null}
+					</div>
+					<div className="flex flex-nowrap items-center h-10 pr-0.5 shrink-0">
+						{runShortcutElement}
+						{onToggleTerminal ? (
+							<Tooltip
+								side="bottom"
+								content={
+									<span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+										<span>Toggle terminal</span>
+										<span className="inline-flex items-center gap-0.5 whitespace-nowrap">
+											<span>(</span>
+											{isMacPlatform ? <Command size={11} /> : <span>Ctrl</span>}
+											<span>+ J)</span>
+										</span>
+									</span>
+								}
 							>
-								Run
-							</Button>
-						) : null
-					) : null}
-					{onToggleTerminal ? (
+								<Button
+									variant="ghost"
+									size="sm"
+									icon={<Terminal size={16} />}
+									onClick={onToggleTerminal}
+									disabled={Boolean(isTerminalLoading)}
+									aria-label={isTerminalOpen ? "Close terminal" : "Open terminal"}
+									className="ml-2"
+								/>
+							</Tooltip>
+						) : null}
 						<Tooltip
 							side="bottom"
-							content={
-								<span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-									<span>Toggle terminal</span>
-									<span className="inline-flex items-center gap-0.5 whitespace-nowrap">
-										<span>(</span>
-										{isMacPlatform ? <Command size={11} /> : <span>Ctrl</span>}
-										<span>+ J)</span>
-									</span>
-								</span>
-							}
+							content={isTeleportActive ? "Connected to claude.ai" : "Teleport to claude.ai"}
 						>
+							<Button
+								variant={isTeleportActive ? "primary" : "ghost"}
+								size="sm"
+								icon={<Radio size={16} />}
+								onClick={onTeleport}
+								disabled={isTeleportDisabled}
+								aria-label={isTeleportActive ? "Connected to claude.ai" : "Teleport to claude.ai"}
+								className={cn("ml-0.5", isTeleportDisabled && "opacity-40")}
+							/>
+						</Tooltip>
+						{showDebugButton && onOpenDebugDialog ? (
 							<Button
 								variant="ghost"
 								size="sm"
-								icon={<Terminal size={16} />}
-								onClick={onToggleTerminal}
-								disabled={Boolean(isTerminalLoading)}
-								aria-label={isTerminalOpen ? "Close terminal" : "Open terminal"}
-								className="ml-2"
+								icon={<Bug size={16} />}
+								onClick={onOpenDebugDialog}
+								aria-label="Debug"
+								data-testid="open-debug-dialog-button"
+								className="ml-0.5 mr-0.5"
 							/>
-						</Tooltip>
-					) : null}
-					{showDebugButton && onOpenDebugDialog ? (
+						) : null}
 						<Button
 							variant="ghost"
 							size="sm"
-							icon={<Bug size={16} />}
-							onClick={onOpenDebugDialog}
-							aria-label="Debug"
-							data-testid="open-debug-dialog-button"
+							icon={<Settings size={16} />}
+							onClick={() => onOpenSettings?.()}
+							aria-label="Settings"
+							data-testid="open-settings-button"
 							className="ml-0.5 mr-0.5"
 						/>
-					) : null}
-					<Button
-						variant="ghost"
-						size="sm"
-						icon={<Settings size={16} />}
-						onClick={() => onOpenSettings?.()}
-						aria-label="Settings"
-						data-testid="open-settings-button"
-						className="ml-0.5 mr-0.5"
-					/>
+					</div>
 				</div>
+				{/* Row 2: collapsible git status — mobile only */}
+				{isMobile && !hideProjectDependentActions && gitStatusElement ? (
+					<div className="border-t border-border/50 bg-surface-1">
+						<button
+							type="button"
+							className="flex items-center gap-1 w-full px-3 py-1 text-xs text-text-secondary hover:text-text-primary"
+							onClick={toggleMobileGitCollapsed}
+						>
+							<GitBranch size={10} />
+							<span>Git</span>
+							{isMobileGitCollapsed ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
+						</button>
+						{!isMobileGitCollapsed ? (
+							<div className="flex items-center flex-wrap min-h-10 w-full px-3 gap-1.5 pb-1.5">
+								<div className="flex items-center flex-1 min-w-0">{gitStatusElement}</div>
+							</div>
+						) : null}
+					</div>
+				) : null}
 			</nav>
 			<Dialog
 				open={isCreateShortcutDialogOpen}

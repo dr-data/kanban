@@ -52,6 +52,7 @@ function createSummary(taskId: string): RuntimeTaskSessionSummary {
 		latestHookActivity: null,
 		latestTurnCheckpoint: null,
 		previousTurnCheckpoint: null,
+		remoteControlEnabled: false,
 	};
 }
 

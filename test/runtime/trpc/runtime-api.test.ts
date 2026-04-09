@@ -116,6 +116,7 @@ function createSummary(overrides: Partial<RuntimeTaskSessionSummary> = {}): Runt
 		latestHookActivity: null,
 		latestTurnCheckpoint: null,
 		previousTurnCheckpoint: null,
+		remoteControlEnabled: false,
 		...overrides,
 	};
 }
@@ -133,6 +134,7 @@ function createRuntimeConfigState(): RuntimeConfigState {
 		openPrPromptTemplateDefault: "pr",
 		globalConfigPath: "/tmp/global-config.json",
 		projectConfigPath: "/tmp/project-config.json",
+		recurringMaxTurnsPerExecution: 200,
 	};
 }
 

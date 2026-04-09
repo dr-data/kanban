@@ -23,6 +23,7 @@ import {
 	parseClineProviderModelsRequest,
 	parseClineProviderSettingsSaveRequest,
 	parseCommandRunRequest,
+	parseEnableRemoteControlRequest,
 	parseRuntimeConfigSaveRequest,
 	parseShellSessionStartRequest,
 	parseTaskChatAbortRequest,
@@ -617,6 +618,27 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 				ok: true,
 				clearedPaths: [...debugResetTargetPaths],
 			};
+		},
+		enableRemoteControl: async (workspaceScope, input) => {
+			const body = parseEnableRemoteControlRequest(input);
+			const terminalManager = await deps.getScopedTerminalManager(workspaceScope);
+			const summary = terminalManager.getSummary(body.taskId);
+			if (!summary) {
+				return { ok: false, error: "No session found for this task." };
+			}
+			if (summary.agentId !== "claude") {
+				return { ok: false, error: "Remote control is only supported for Claude Code sessions." };
+			}
+			const isActive = summary.state === "running" || summary.state === "awaiting_review";
+			if (isActive) {
+				return {
+					ok: false,
+					error: "Session is currently running. Stop the session and restart to apply remote control changes.",
+					requiresRestart: true,
+				};
+			}
+			terminalManager.setRemoteControlEnabled(body.taskId, body.enabled);
+			return { ok: true };
 		},
 		openFile: async (input) => {
 			const filePath = input.filePath.trim();

@@ -6,6 +6,7 @@ import { basename, join, resolve } from "node:path";
 import { z } from "zod";
 
 import {
+	type RuntimeBoardCard,
 	type RuntimeBoardColumnId,
 	type RuntimeBoardData,
 	type RuntimeGitRepositoryInfo,
@@ -641,6 +642,13 @@ export async function loadWorkspaceState(cwd: string): Promise<RuntimeWorkspaceS
 	return toWorkspaceStateResponse(context, board, sessions, meta.revision);
 }
 
+/**
+ * Persists workspace state. The server is authoritative for dependencies:
+ * the incoming `board.dependencies` is merged with the existing server state
+ * instead of replacing it. Explicit removals must go through
+ * `removedDependencyIds`. This prevents the frontend from accidentally erasing
+ * server-added dependencies (e.g. recurring task links).
+ */
 export async function saveWorkspaceState(
 	cwd: string,
 	payload: RuntimeWorkspaceStateSaveRequest,
@@ -659,7 +667,54 @@ export async function saveWorkspaceState(
 		) {
 			throw new WorkspaceStateConflictError(expectedRevision, currentMeta.revision);
 		}
-		const board = parsedPayload.board;
+
+		/* Merge dependencies with the current server state for tasks that are
+		   recurring. This prevents the frontend from silently dropping deps that
+		   the recurring monitor has added. Non-recurring deps remain client-driven
+		   (normal delete via setBoard still works). Explicit deletes for recurring
+		   deps must include the dep ID in `removedDependencyIds`. */
+		const currentBoard = await readWorkspaceBoard(context.workspaceId);
+		const removedIds = new Set(parsedPayload.removedDependencyIds ?? []);
+		const incomingDepsById = new Map(parsedPayload.board.dependencies.map((dep) => [dep.id, dep]));
+
+		/* Build a card lookup that covers both the incoming board and the on-disk
+		   board, so we can check `recurringEnabled` even if the frontend cached a
+		   stale copy without the flag. */
+		const cardsById = new Map<string, RuntimeBoardCard>();
+		for (const col of currentBoard.columns) {
+			for (const card of col.cards) cardsById.set(card.id, card);
+		}
+		for (const col of parsedPayload.board.columns) {
+			for (const card of col.cards) cardsById.set(card.id, card);
+		}
+		const isRecurringDep = (dep: { fromTaskId: string; toTaskId: string }): boolean => {
+			const a = cardsById.get(dep.fromTaskId);
+			const b = cardsById.get(dep.toTaskId);
+			return a?.recurringEnabled === true || b?.recurringEnabled === true;
+		};
+
+		const mergedDepsById = new Map<string, (typeof parsedPayload.board.dependencies)[number]>();
+		/* Start with the incoming client state (authoritative for non-recurring deps). */
+		for (const [id, dep] of incomingDepsById) {
+			if (!removedIds.has(id)) {
+				mergedDepsById.set(id, dep);
+			}
+		}
+		/* Re-add server deps that the client dropped, but ONLY for recurring tasks.
+		   This is the self-healing mechanism for recurring task links. */
+		for (const dep of currentBoard.dependencies) {
+			if (removedIds.has(dep.id) || mergedDepsById.has(dep.id)) {
+				continue;
+			}
+			if (isRecurringDep(dep)) {
+				mergedDepsById.set(dep.id, dep);
+			}
+		}
+		const mergedBoard = updateTaskDependencies({
+			...parsedPayload.board,
+			dependencies: Array.from(mergedDepsById.values()),
+		});
+
 		const sessions = parsedPayload.sessions;
 		const nextRevision = currentMeta.revision + 1;
 		const nextMeta: WorkspaceStateMeta = {
@@ -667,7 +722,7 @@ export async function saveWorkspaceState(
 			updatedAt: Date.now(),
 		};
 
-		await lockedFileSystem.writeJsonFileAtomic(getWorkspaceBoardPath(context.workspaceId), board, {
+		await lockedFileSystem.writeJsonFileAtomic(getWorkspaceBoardPath(context.workspaceId), mergedBoard, {
 			lock: null,
 		});
 		await lockedFileSystem.writeJsonFileAtomic(getWorkspaceSessionsPath(context.workspaceId), sessions, {
@@ -677,7 +732,7 @@ export async function saveWorkspaceState(
 			lock: null,
 		});
 
-		return toWorkspaceStateResponse(context, board, sessions, nextRevision);
+		return toWorkspaceStateResponse(context, mergedBoard, sessions, nextRevision);
 	});
 }
 

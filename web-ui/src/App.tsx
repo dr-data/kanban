@@ -37,6 +37,7 @@ import { KanbanAccessBlockedFallback } from "@/hooks/kanban-access-blocked-fallb
 import { RuntimeDisconnectedFallback } from "@/hooks/runtime-disconnected-fallback";
 import { useAppHotkeys } from "@/hooks/use-app-hotkeys";
 import { useBoardInteractions } from "@/hooks/use-board-interactions";
+import { useCcrBridge } from "@/hooks/use-ccr-bridge";
 import { useDebugTools } from "@/hooks/use-debug-tools";
 import { useDocumentVisibility } from "@/hooks/use-document-visibility";
 import { useGitActions } from "@/hooks/use-git-actions";
@@ -66,7 +67,7 @@ import { useRuntimeProjectConfig } from "@/runtime/use-runtime-project-config";
 import { useTerminalConnectionReady } from "@/runtime/use-terminal-connection-ready";
 import { useWorkspacePersistence } from "@/runtime/use-workspace-persistence";
 import { saveWorkspaceState } from "@/runtime/workspace-state-query";
-import { findCardSelection } from "@/state/board-state";
+import { findCardSelection, updateTask } from "@/state/board-state";
 import {
 	getTaskWorkspaceInfo,
 	getTaskWorkspaceSnapshot,
@@ -216,6 +217,28 @@ export default function App(): ReactElement {
 		}
 		return findCardSelection(board, selectedTaskId);
 	}, [board, selectedTaskId]);
+
+	/** Updates recurring/schedule fields on a task from the detail view. */
+	const handleUpdateTaskFields = useCallback(
+		(taskId: string, updates: Record<string, unknown>) => {
+			setBoard((prev) => {
+				const selection = findCardSelection(prev, taskId);
+				if (!selection) return prev;
+				const result = updateTask(prev, taskId, {
+					prompt: selection.card.prompt,
+					startInPlanMode: selection.card.startInPlanMode,
+					autoReviewEnabled: selection.card.autoReviewEnabled,
+					autoReviewMode: selection.card.autoReviewMode,
+					images: selection.card.images,
+					baseRef: selection.card.baseRef,
+					...updates,
+				});
+				return result.updated ? result.board : prev;
+			});
+		},
+		[setBoard],
+	);
+
 	const {
 		workspacePath,
 		workspaceGit,
@@ -299,6 +322,16 @@ export default function App(): ReactElement {
 		isNewTaskStartInPlanModeDisabled,
 		newTaskBranchRef,
 		setNewTaskBranchRef,
+		newTaskRecurringEnabled,
+		setNewTaskRecurringEnabled,
+		newTaskRecurringMaxIterations,
+		setNewTaskRecurringMaxIterations,
+		newTaskRecurringPeriodMs,
+		setNewTaskRecurringPeriodMs,
+		newTaskScheduledStartAt,
+		setNewTaskScheduledStartAt,
+		newTaskScheduledEndAt,
+		setNewTaskScheduledEndAt,
 		editingTaskId,
 		editTaskPrompt,
 		setEditTaskPrompt,
@@ -313,6 +346,16 @@ export default function App(): ReactElement {
 		isEditTaskStartInPlanModeDisabled,
 		editTaskBranchRef,
 		setEditTaskBranchRef,
+		editTaskRecurringEnabled,
+		setEditTaskRecurringEnabled,
+		editTaskRecurringMaxIterations,
+		setEditTaskRecurringMaxIterations,
+		editTaskRecurringPeriodMs,
+		setEditTaskRecurringPeriodMs,
+		editTaskScheduledStartAt,
+		setEditTaskScheduledStartAt,
+		editTaskScheduledEndAt,
+		setEditTaskScheduledEndAt,
 		handleOpenCreateTask,
 		handleCancelCreateTask,
 		handleOpenEditTask,
@@ -645,6 +688,17 @@ export default function App(): ReactElement {
 	const detailSession = selectedCard
 		? (sessions[selectedCard.card.id] ?? createIdleTaskSession(selectedCard.card.id))
 		: null;
+	const {
+		isTeleportDisabled,
+		isTeleportActive,
+		teleport: handleTeleport,
+	} = useCcrBridge({
+		selectedTaskId: selectedCard?.card.id ?? null,
+		selectedAgentId: runtimeProjectConfig?.selectedAgentId ?? null,
+		sessionState: detailSession?.state ?? null,
+		remoteControlEnabled: detailSession?.remoteControlEnabled ?? false,
+		currentProjectId,
+	});
 	const detailTerminalSummary = detailTerminalTaskId ? (sessions[detailTerminalTaskId] ?? null) : null;
 	const detailTerminalSubtitle = useMemo(() => {
 		if (!selectedCard) {
@@ -737,6 +791,16 @@ export default function App(): ReactElement {
 			branchRef={editTaskBranchRef}
 			branchOptions={createTaskBranchOptions}
 			onBranchRefChange={setEditTaskBranchRef}
+			recurringEnabled={editTaskRecurringEnabled}
+			onRecurringEnabledChange={setEditTaskRecurringEnabled}
+			recurringMaxIterations={editTaskRecurringMaxIterations}
+			onRecurringMaxIterationsChange={setEditTaskRecurringMaxIterations}
+			recurringPeriodMs={editTaskRecurringPeriodMs}
+			onRecurringPeriodMsChange={setEditTaskRecurringPeriodMs}
+			scheduledStartAt={editTaskScheduledStartAt}
+			onScheduledStartAtChange={setEditTaskScheduledStartAt}
+			scheduledEndAt={editTaskScheduledEndAt}
+			onScheduledEndAtChange={setEditTaskScheduledEndAt}
 			mode="edit"
 			idPrefix={`inline-edit-task-${editingTaskId}`}
 		/>
@@ -829,6 +893,9 @@ export default function App(): ReactElement {
 					onToggleGitHistory={hasNoProjects ? undefined : handleToggleGitHistory}
 					isGitHistoryOpen={isGitHistoryOpen}
 					hideProjectDependentActions={shouldHideProjectDependentTopBarActions}
+					onTeleport={handleTeleport}
+					isTeleportActive={isTeleportActive}
+					isTeleportDisabled={isTeleportDisabled}
 				/>
 				<div className="relative flex flex-1 min-h-0 min-w-0 overflow-hidden">
 					<div
@@ -872,10 +939,10 @@ export default function App(): ReactElement {
 												void discardHomeWorkingChanges();
 											}}
 											isDiscardWorkingChangesPending={isDiscardingHomeWorkingChanges}
+											isMobile={isMobile}
 										/>
 									) : (
 										<KanbanBoard
-											isMobile={isMobile}
 											data={board}
 											taskSessions={sessions}
 											workspacePath={workspacePath}
@@ -902,6 +969,7 @@ export default function App(): ReactElement {
 												selectedCard ? undefined : handleProgrammaticCardMoveReady
 											}
 											onDragEnd={handleDragEnd}
+											onUpdateTask={handleUpdateTaskFields}
 										/>
 									)}
 								</div>
@@ -993,11 +1061,16 @@ export default function App(): ReactElement {
 								onLoadClineChatMessages={fetchTaskChatMessages}
 								latestClineChatMessage={latestSelectedTaskChatMessage}
 								streamedClineChatMessages={selectedTaskChatMessages}
+								onUpdateTask={handleUpdateTaskFields}
 								onMoveToTrash={handleMoveToTrash}
 								isMoveToTrashLoading={moveToTrashLoadingById[selectedCard.card.id] ?? false}
 								gitHistoryPanel={
 									isGitHistoryOpen ? (
-										<GitHistoryView workspaceId={currentProjectId} gitHistory={gitHistory} />
+										<GitHistoryView
+											workspaceId={currentProjectId}
+											gitHistory={gitHistory}
+											isMobile={isMobile}
+										/>
 									) : undefined
 								}
 								onCloseGitHistory={handleCloseGitHistory}
@@ -1067,6 +1140,16 @@ export default function App(): ReactElement {
 				branchRef={newTaskBranchRef}
 				branchOptions={createTaskBranchOptions}
 				onBranchRefChange={setNewTaskBranchRef}
+				recurringEnabled={newTaskRecurringEnabled}
+				onRecurringEnabledChange={setNewTaskRecurringEnabled}
+				recurringMaxIterations={newTaskRecurringMaxIterations}
+				onRecurringMaxIterationsChange={setNewTaskRecurringMaxIterations}
+				recurringPeriodMs={newTaskRecurringPeriodMs}
+				onRecurringPeriodMsChange={setNewTaskRecurringPeriodMs}
+				scheduledStartAt={newTaskScheduledStartAt}
+				onScheduledStartAtChange={setNewTaskScheduledStartAt}
+				scheduledEndAt={newTaskScheduledEndAt}
+				onScheduledEndAtChange={setNewTaskScheduledEndAt}
 			/>
 			<ClearTrashDialog
 				open={isClearTrashDialogOpen}
