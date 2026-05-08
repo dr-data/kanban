@@ -1,3 +1,4 @@
+import cmuxIcon from "@/assets/open-targets/cmux.svg";
 import cursorIcon from "@/assets/open-targets/cursor.svg";
 import finderIcon from "@/assets/open-targets/finder.svg";
 import ghosttyIcon from "@/assets/open-targets/ghostty.svg";
@@ -19,6 +20,7 @@ export type OpenTargetId =
 	| "vscode"
 	| "vscode-insiders"
 	| "cursor"
+	| "cmux"
 	| "windsurf"
 	| "finder"
 	| "terminal"
@@ -98,6 +100,11 @@ const OPEN_TARGET_OPTIONS: readonly OpenTargetOption[] = [
 		label: "Zed",
 		iconSrc: zedIcon,
 	},
+	{
+		id: "cmux",
+		label: "cmux",
+		iconSrc: cmuxIcon,
+	},
 ];
 
 const OPEN_TARGET_IDS_BY_PLATFORM: Record<OpenTargetPlatform, readonly OpenTargetId[]> = {
@@ -112,6 +119,7 @@ const OPEN_TARGET_IDS_BY_PLATFORM: Record<OpenTargetPlatform, readonly OpenTarge
 		"warp",
 		"xcode",
 		"intellijidea",
+		"cmux",
 		"vscode-insiders",
 		"zed",
 	],
@@ -335,6 +343,9 @@ export function buildOpenCommand(targetId: OpenTargetId, path: string, platform:
 	}
 	if (targetId === "intellijidea") {
 		return buildOpenAppCommand(path, "IntelliJ IDEA", "IntelliJ IDEA CE");
+	}
+	if (targetId === "cmux") {
+		return buildOpenAppCommand(path, "cmux");
 	}
 	return buildOpenAppCommand(path, "Zed");
 }

@@ -49,4 +49,15 @@ describe("open-targets", () => {
 	it("falls back to default command when target is unsupported on windows", () => {
 		expect(buildOpenCommand("iterm2", "C:\\Users\\dev\\my repo", "windows")).toBe('code "C:\\Users\\dev\\my repo"');
 	});
+
+	it("builds a macOS cmux command", () => {
+		expect(buildOpenCommand("cmux", "/tmp/repo", "mac")).toBe("open -a 'cmux' '/tmp/repo'");
+	});
+
+	it("filters cmux on non-mac platforms", () => {
+		const windowsOptions = getOpenTargetOptions("windows");
+		expect(windowsOptions.some((option) => option.id === "cmux")).toBe(false);
+		const linuxOptions = getOpenTargetOptions("linux");
+		expect(linuxOptions.some((option) => option.id === "cmux")).toBe(false);
+	});
 });
