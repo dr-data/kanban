@@ -124,6 +124,7 @@ function normalizeAgentId(agentId: RuntimeAgentId | string | null | undefined): 
 			agentId === "claude-kiro" ||
 			agentId === "codex" ||
 			agentId === "gemini" ||
+			agentId === "kiro" ||
 			agentId === "opencode" ||
 			agentId === "droid" ||
 			agentId === "cline") &&

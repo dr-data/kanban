@@ -1341,6 +1341,7 @@ const ADAPTERS: Record<RuntimeAgentId, AgentSessionAdapter> = {
 	gemini: geminiAdapter,
 	opencode: opencodeAdapter,
 	droid: droidAdapter,
+	kiro: clineAdapter,
 	cline: clineAdapter,
 };
 

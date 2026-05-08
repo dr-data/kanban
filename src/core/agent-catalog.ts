@@ -43,6 +43,14 @@ export const RUNTIME_AGENT_CATALOG: RuntimeAgentCatalogEntry[] = [
 		installUrl: "https://github.com/cline/cline",
 	},
 	{
+		id: "kiro",
+		label: "Kiro CLI",
+		binary: "kiro-cli",
+		baseArgs: [],
+		autonomousArgs: ["--trust-all-tools"],
+		installUrl: "https://kiro.dev/docs/cli/installation/",
+	},
+	{
 		id: "opencode",
 		label: "OpenCode",
 		binary: "opencode",
@@ -76,6 +84,7 @@ export const RUNTIME_LAUNCH_SUPPORTED_AGENT_IDS: readonly RuntimeAgentId[] = [
 	"claude-kiro",
 	"codex",
 	"droid",
+	"kiro",
 	// "opencode",
 	// "gemini",
 ];
