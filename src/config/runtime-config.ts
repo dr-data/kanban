@@ -121,6 +121,7 @@ function getRuntimeHomePath(): string {
 function normalizeAgentId(agentId: RuntimeAgentId | string | null | undefined): RuntimeAgentId {
 	if (
 		(agentId === "claude" ||
+			agentId === "claude-kiro" ||
 			agentId === "codex" ||
 			agentId === "gemini" ||
 			agentId === "opencode" ||

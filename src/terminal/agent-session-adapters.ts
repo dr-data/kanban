@@ -1336,6 +1336,7 @@ const clineAdapter: AgentSessionAdapter = {
 
 const ADAPTERS: Record<RuntimeAgentId, AgentSessionAdapter> = {
 	claude: claudeAdapter,
+	"claude-kiro": claudeAdapter,
 	codex: codexAdapter,
 	gemini: geminiAdapter,
 	opencode: opencodeAdapter,

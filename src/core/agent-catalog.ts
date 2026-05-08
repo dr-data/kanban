@@ -19,6 +19,14 @@ export const RUNTIME_AGENT_CATALOG: RuntimeAgentCatalogEntry[] = [
 		installUrl: "https://docs.anthropic.com/en/docs/claude-code/quickstart",
 	},
 	{
+		id: "claude-kiro",
+		label: "Claude Code (Kiro)",
+		binary: "claude-kiro",
+		baseArgs: [],
+		autonomousArgs: ["--dangerously-skip-permissions"],
+		installUrl: "https://docs.anthropic.com/en/docs/claude-code/quickstart",
+	},
+	{
 		id: "codex",
 		label: "OpenAI Codex",
 		binary: "codex",
@@ -65,6 +73,7 @@ export const RUNTIME_AGENT_CATALOG: RuntimeAgentCatalogEntry[] = [
 export const RUNTIME_LAUNCH_SUPPORTED_AGENT_IDS: readonly RuntimeAgentId[] = [
 	"cline",
 	"claude",
+	"claude-kiro",
 	"codex",
 	"droid",
 	// "opencode",
