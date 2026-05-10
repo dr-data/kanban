@@ -4,10 +4,8 @@ import { stat } from "node:fs/promises";
 import { createServer as createNetServer } from "node:net";
 import { resolve } from "node:path";
 import { Command, Option } from "commander";
-import ora, { type Ora } from "ora";
+import type { Ora } from "ora";
 import packageJson from "../package.json" with { type: "json" };
-import { registerHooksCommand } from "./commands/hooks";
-import { registerTaskCommand } from "./commands/task";
 import { loadGlobalRuntimeConfig, loadRuntimeConfig } from "./config/runtime-config";
 import type { RuntimeCommandRunResponse } from "./core/api-contract";
 import { createGitProcessEnv } from "./core/git-process-env";
@@ -34,18 +32,19 @@ import { terminateProcessForTimeout } from "./server/process-termination";
 import type { RuntimeStateHub } from "./server/runtime-state-hub";
 import type { TerminalSessionManager } from "./terminal/session-manager";
 import type { RuntimeAppRouter } from "./trpc/app-router";
-import { runOnDemandUpdate } from "./update/update";
 
 /*
-	Telemetry modules (@sentry/node + Cline SDK telemetry) are loaded lazily
-	because their import graphs are very heavy (~10 seconds of cold-start tsx
-	compilation). They are only needed for error reporting, shutdown cleanup,
-	and non-critical lifecycle hooks — never on the hot path to
-	`console.log("Cline Kanban running at ...")`.
+	Heavy command modules (`./commands/task`, `./commands/hooks`) and Sentry/
+	Cline SDK telemetry are loaded lazily because their import graphs are very
+	heavy (~3-4 seconds of cold-start tsx compilation each). They are only
+	needed for specific subcommands or for error reporting/shutdown cleanup —
+	never on the hot path to `console.log("Cline Kanban running at ...")`.
 
-	Keeping them top-level caused the source CLI to take 20-30 seconds before
-	the server could print its ready message, which broke integration tests
-	that wait for that output.
+	Keeping them top-level caused the source CLI to take 12+ seconds even for
+	`kanban --version` because tsx eagerly transpiles the full graph (trpc
+	client, terminal stack, workspace state, telemetry) regardless of which
+	subcommand is invoked. Route-level lazy loading mirrors how a web app would
+	code-split per route — each subcommand is its own "route" through the CLI.
 */
 
 /** Lazily import and dispose the Cline telemetry singleton. */
@@ -65,6 +64,29 @@ function lazyCaptureNodeException(error: unknown, options?: { area?: string }): 
 async function lazyFlushNodeTelemetry(): Promise<void> {
 	const { flushNodeTelemetry } = await import("./telemetry/sentry-node.js");
 	await flushNodeTelemetry();
+}
+
+/**
+ * Returns the subcommand name that the user is invoking, or null for the
+ * default GUI launch path. Used to skip importing heavy command modules that
+ * the user is not asking for.
+ */
+function detectInvokedSubcommand(argv: string[]): string | null {
+	for (const arg of argv) {
+		if (!arg) {
+			continue;
+		}
+		// Stop scanning at the first non-flag positional argument.
+		if (!arg.startsWith("-")) {
+			return arg;
+		}
+	}
+	return null;
+}
+
+/** Returns true when the help flag is present anywhere in argv. */
+function argvContainsHelpFlag(argv: string[]): boolean {
+	return argv.some((arg) => arg === "--help" || arg === "-h" || arg === "help");
 }
 
 interface CliOptions {
@@ -153,7 +175,15 @@ function shouldAutoOpenBrowserTabForInvocation(argv: string[]): boolean {
 	return true;
 }
 
-function createShutdownIndicator(stream: NodeJS.WriteStream = process.stderr): ShutdownIndicator {
+/**
+ * Build the shutdown spinner. Takes the `ora` factory as an argument so that
+ * the caller can lazy-import the module — keeping `ora` (a ~700ms cold-start
+ * dependency) off the top-level import graph for non-runtime subcommands.
+ */
+function createShutdownIndicator(
+	oraFactory: typeof import("ora").default,
+	stream: NodeJS.WriteStream = process.stderr,
+): ShutdownIndicator {
 	let spinner: Ora | null = null;
 	let running = false;
 
@@ -167,7 +197,7 @@ function createShutdownIndicator(stream: NodeJS.WriteStream = process.stderr): S
 				stream.write("Cleaning up...\n");
 				return;
 			}
-			spinner = ora({
+			spinner = oraFactory({
 				text: "Cleaning up...",
 				stream,
 			}).start();
@@ -429,7 +459,7 @@ async function startServer(): Promise<{
 		{ createTRPCProxyClient, httpBatchLink },
 		{ createTaskScheduleMonitor },
 		{ createTaskRecurringMonitor },
-		{ clearPendingUpdateNotification, getPendingUpdateNotification },
+		{ clearPendingUpdateNotification, getPendingUpdateNotification, runOnDemandUpdate },
 	] = await Promise.all([
 		import("./projects/project-path.js"),
 		import("./server/directory-picker.js"),
@@ -624,10 +654,8 @@ async function runMainCommand(options: CliOptions, shouldAutoOpenBrowser: boolea
 		console.log(`Binding to host ${options.host}.`);
 	}
 
-	const [{ openInBrowser }, { autoUpdateOnStartup, runPendingAutoUpdateOnShutdown }] = await Promise.all([
-		import("./server/browser.js"),
-		import("./update/update.js"),
-	]);
+	const [{ openInBrowser }, { autoUpdateOnStartup, runPendingAutoUpdateOnShutdown }, { default: oraFactory }] =
+		await Promise.all([import("./server/browser.js"), import("./update/update.js"), import("ora")]);
 
 	const selectedPort = await applyRuntimePortOption(options.port);
 	if (selectedPort !== null) {
@@ -687,7 +715,7 @@ async function runMainCommand(options: CliOptions, shouldAutoOpenBrowser: boolea
 	console.log("Press Ctrl+C to stop.");
 
 	let isShuttingDown = false;
-	const shutdownIndicator = createShutdownIndicator();
+	const shutdownIndicator = createShutdownIndicator(oraFactory);
 	const shutdown = async () => {
 		if (isShuttingDown) {
 			return;
@@ -741,6 +769,9 @@ async function runMainCommand(options: CliOptions, shouldAutoOpenBrowser: boolea
 }
 
 async function runUpdateCommand(): Promise<void> {
+	// Lazy-import the update module so `kanban update` doesn't pay for it
+	// being on the top-level import graph of every other subcommand.
+	const { runOnDemandUpdate } = await import("./update/update.js");
 	const result = await runOnDemandUpdate({
 		currentVersion: KANBAN_VERSION,
 	});
@@ -753,7 +784,12 @@ async function runUpdateCommand(): Promise<void> {
 	throw new Error(result.message);
 }
 
-function createProgram(invocationArgs: string[]): Command {
+/**
+ * Build the commander program. Heavy subcommands (`task`, `hooks`) are
+ * registered conditionally based on the invocation argv to avoid loading
+ * their import graphs (~2.4s combined) for the default GUI launch path.
+ */
+async function createProgram(invocationArgs: string[]): Promise<Command> {
 	const shouldAutoOpenBrowser = shouldAutoOpenBrowserTabForInvocation(invocationArgs);
 	const program = new Command();
 	program
@@ -777,8 +813,26 @@ function createProgram(invocationArgs: string[]): Command {
 
 	program.addOption(new Option("--agent <id>", "Deprecated compatibility flag. Ignored.").hideHelp());
 
-	registerTaskCommand(program);
-	registerHooksCommand(program);
+	const subcommand = detectInvokedSubcommand(invocationArgs);
+	const wantsTopLevelHelp = subcommand === null && argvContainsHelpFlag(invocationArgs);
+	const needsTaskCommand = subcommand === "task" || subcommand === "tasks" || wantsTopLevelHelp;
+	const needsHooksCommand = subcommand === "hooks" || wantsTopLevelHelp;
+	const lazyImports: Promise<void>[] = [];
+	if (needsTaskCommand) {
+		lazyImports.push(
+			import("./commands/task.js").then(({ registerTaskCommand }) => {
+				registerTaskCommand(program);
+			}),
+		);
+	}
+	if (needsHooksCommand) {
+		lazyImports.push(
+			import("./commands/hooks.js").then(({ registerHooksCommand }) => {
+				registerHooksCommand(program);
+			}),
+		);
+	}
+	await Promise.all(lazyImports);
 
 	program
 		.command("mcp")
@@ -819,7 +873,7 @@ function createProgram(invocationArgs: string[]): Command {
 
 async function run(): Promise<void> {
 	const argv = process.argv.slice(2);
-	const program = createProgram(argv);
+	const program = await createProgram(argv);
 	await program.parseAsync(argv, { from: "user" });
 	if (!shouldAutoOpenBrowserTabForInvocation(argv)) {
 		await Promise.allSettled([lazyDisposeCliTelemetryService(), lazyFlushNodeTelemetry()]);
