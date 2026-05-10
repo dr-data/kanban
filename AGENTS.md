@@ -27,12 +27,6 @@ Code quality
 - In `web-ui`, prefer `react-use` hooks (via `@/kanban/utils/react-use`) whenever possible
 - Before adding custom utility code, evaluate whether a well-maintained third-party package can reduce complexity and long-term maintenance cost.
 
-Comments
-- Every function you add or edit must have a JSDoc-style comment (`/** ... */`) above it explaining what it does at a high level. Write it for someone jumping into the project for the first time. In a large codebase, good comments are essential for understanding how a component fits into the system holistically.
-- Use `/** ... */` block comments, not `//` line-by-line comments, for function descriptions.
-- When a line of code does something non-obvious (workarounds, browser quirks, edge cases, lint suppression), add an inline comment explaining why.
-- If you encounter an existing uncommented function, class, or statement that is related to your current task and you traced through it or edited logic around it, proactively add a comment if it would help future sessions understand that code. Keep this scoped to code relevant to the task at hand.
-
 Architecture opinions
 - Avoid thin shell wrappers that only forward props or relocate JSX for a single call site.
 - Prefer extracting domain logic (state, effects, async orchestration) over presentation-only pass-through layers.
@@ -93,7 +87,7 @@ Dark theme
 - Do NOT use Blueprint, Tailwind's light-mode defaults, or any `dark:` prefix. The theme is always dark.
 
 Misc. tribal knowledge
-- Kanban's native Cline agent is powered by the installed `@clinebot/core`, `@clinebot/agents`, and `@clinebot/llms` packages plus the local `src/cline-sdk/` boundary layer, so when Cline behavior is unclear, inspect those packages and `src/cline-sdk/` for the real implementation details.
+- Kanban's native Cline agent is powered by the installed `@clinebot/core` and `@clinebot/llms` packages plus the local `src/cline-sdk/` boundary layer, so when Cline behavior is unclear, inspect those packages and `src/cline-sdk/` for the real implementation details.
 - Kanban is launched from the user's shell and inherits its environment. For agent detection and task-agent startup, prefer direct PATH checks and direct process launches over spawning an interactive shell. Avoid `zsh -i`, shell fallback command discovery, or "launch shell then type command into it" on hot paths. On setups with heavy shell init like `conda` or `nvm`, doing that per task can freeze the runtime and even make new Terminal.app windows feel hung when several tasks start at once. It's fine to use an actual interactive shell for explicit shell terminals, not for normal agent session work.
 - If CI hangs on Node 22 after tests seem to finish, suspect a live subprocess or SDK-host startup path before assuming a slow test body. Read `.plan/docs/node22-ci-hanging-tests-investigation.md` before repeating that investigation. `test/runtime/cline-sdk/cline-task-session-service.test.ts` was the big prior culprit because a unit-style suite was still booting the real Cline SDK host.
 - When Kanban runs on a headless remote Linux instance (for example over SSH+tunnel), native folder picker commands may be unavailable (`zenity`/`kdialog`). Treat this as a normal remote-runtime limitation and use manual path entry fallback instead of requiring desktop packages.

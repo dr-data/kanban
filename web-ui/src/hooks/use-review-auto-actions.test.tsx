@@ -17,6 +17,7 @@ function createBoard(autoReviewEnabled: boolean): BoardData {
 				cards: [
 					{
 						id: "task-1",
+						title: "Test task",
 						prompt: "Test task",
 						startInPlanMode: false,
 						autoReviewEnabled,
@@ -27,7 +28,7 @@ function createBoard(autoReviewEnabled: boolean): BoardData {
 					},
 				],
 			},
-			{ id: "trash", title: "Trash", cards: [] },
+			{ id: "trash", title: "Done", cards: [] },
 		],
 		dependencies: [],
 	};

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolveTaskTitle } from "./task-title.js";
 
 export const runtimeWorkspaceFileStatusSchema = z.enum([
 	"modified",
@@ -39,6 +40,13 @@ export const runtimeWorkspaceChangesResponseSchema = z.object({
 });
 export type RuntimeWorkspaceChangesResponse = z.infer<typeof runtimeWorkspaceChangesResponseSchema>;
 
+export const runtimeWorkspaceFileContentRequestSchema = z.object({
+	taskId: z.string(),
+	baseRef: z.string(),
+	path: z.string(),
+});
+export type RuntimeWorkspaceFileContentRequest = z.infer<typeof runtimeWorkspaceFileContentRequestSchema>;
+
 export const runtimeWorkspaceFileSearchRequestSchema = z.object({
 	query: z.string(),
 	limit: z.number().int().positive().optional(),
@@ -70,15 +78,40 @@ export const runtimeSlashCommandsResponseSchema = z.object({
 });
 export type RuntimeSlashCommandsResponse = z.infer<typeof runtimeSlashCommandsResponseSchema>;
 
-export const runtimeAgentIdSchema = z.enum(["claude", "codex", "gemini", "opencode", "droid", "cline"]);
+export const runtimeAgentIdSchema = z.enum([
+	"claude",
+	"claude-kiro",
+	"codex",
+	"gemini",
+	"kiro",
+	"opencode",
+	"droid",
+	"cline",
+]);
 export type RuntimeAgentId = z.infer<typeof runtimeAgentIdSchema>;
 
-export const runtimeBoardColumnIdSchema = z.enum(["backlog", "in_progress", "review", "trash"]);
-export type RuntimeBoardColumnId = z.infer<typeof runtimeBoardColumnIdSchema>;
+const runtimeBoardColumnIdEnum = z.enum(["backlog", "in_progress", "review", "trash"]);
+export const runtimeBoardColumnIdSchema = z.preprocess(
+	(val) => (val === "done" ? "trash" : val),
+	runtimeBoardColumnIdEnum,
+);
+export type RuntimeBoardColumnId = z.infer<typeof runtimeBoardColumnIdEnum>;
 
-export const runtimeTaskAutoReviewModeSchema = z.enum(["commit", "pr", "move_to_trash"]);
-export type RuntimeTaskAutoReviewMode = z.infer<typeof runtimeTaskAutoReviewModeSchema>;
+const runtimeTaskAutoReviewModeEnum = z.enum(["commit", "pr"]);
+export const runtimeTaskAutoReviewModeSchema = z.preprocess(
+	(val) => (val === "move_to_trash" || val === "move_to_done" ? "commit" : val),
+	runtimeTaskAutoReviewModeEnum,
+);
+export type RuntimeTaskAutoReviewMode = z.infer<typeof runtimeTaskAutoReviewModeEnum>;
 
+export const runtimeClineReasoningEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
+export type RuntimeClineReasoningEffort = z.infer<typeof runtimeClineReasoningEffortSchema>;
+export const runtimeTaskClineSettingsSchema = z.object({
+	providerId: z.string().optional(),
+	modelId: z.string().optional(),
+	reasoningEffort: runtimeClineReasoningEffortSchema.optional(),
+});
+export type RuntimeTaskClineSettings = z.infer<typeof runtimeTaskClineSettingsSchema>;
 export const runtimeTaskImageSchema = z.object({
 	id: z.string(),
 	data: z.string(),
@@ -87,17 +120,83 @@ export const runtimeTaskImageSchema = z.object({
 });
 export type RuntimeTaskImage = z.infer<typeof runtimeTaskImageSchema>;
 
-export const runtimeBoardCardSchema = z.object({
-	id: z.string(),
-	prompt: z.string(),
-	startInPlanMode: z.boolean(),
-	autoReviewEnabled: z.boolean().optional(),
-	autoReviewMode: runtimeTaskAutoReviewModeSchema.optional(),
-	images: z.array(runtimeTaskImageSchema).optional(),
-	baseRef: z.string(),
-	createdAt: z.number(),
-	updatedAt: z.number(),
-});
+const runtimeLegacyTaskClineReasoningEffortSchema = z.enum(["default", "low", "medium", "high", "xhigh"]);
+
+/**
+ * Normalize legacy flat Cline settings fields (`clineProviderId`, `clineModelId`,
+ * `clineReasoningEffort`) into the structured `clineSettings` shape, returning
+ * `undefined` when no values are present.
+ */
+function normalizeRuntimeTaskClineSettings(input: {
+	clineSettings?: RuntimeTaskClineSettings;
+	clineProviderId?: string;
+	clineModelId?: string;
+	clineReasoningEffort?: z.infer<typeof runtimeLegacyTaskClineReasoningEffortSchema>;
+}): RuntimeTaskClineSettings | undefined {
+	if (input.clineSettings !== undefined) {
+		return input.clineSettings;
+	}
+	const providerId = input.clineProviderId?.trim();
+	const modelId = input.clineModelId?.trim();
+	if (!providerId && !modelId && input.clineReasoningEffort === undefined) {
+		return undefined;
+	}
+	return {
+		...(providerId ? { providerId } : {}),
+		...(modelId ? { modelId } : {}),
+		...(input.clineReasoningEffort && input.clineReasoningEffort !== "default"
+			? { reasoningEffort: input.clineReasoningEffort }
+			: {}),
+	};
+}
+
+export const runtimeBoardCardSchema = z
+	.object({
+		id: z.string(),
+		title: z.string().optional(),
+		prompt: z.string(),
+		startInPlanMode: z.boolean(),
+		autoReviewEnabled: z.boolean().optional(),
+		autoReviewMode: runtimeTaskAutoReviewModeSchema.optional(),
+		images: z.array(runtimeTaskImageSchema).optional(),
+		agentId: runtimeAgentIdSchema.optional(),
+		clineSettings: runtimeTaskClineSettingsSchema.optional(),
+		clineProviderId: z.string().optional(),
+		clineModelId: z.string().optional(),
+		clineReasoningEffort: runtimeLegacyTaskClineReasoningEffortSchema.optional(),
+		baseRef: z.string(),
+		createdAt: z.number(),
+		updatedAt: z.number(),
+		recurringEnabled: z.boolean().optional(),
+		recurringMaxIterations: z.number().int().min(0).optional(),
+		recurringPeriodMs: z.number().int().min(0).optional(),
+		recurringCurrentIteration: z.number().int().min(0).optional(),
+		scheduledStartAt: z.number().nullable().optional(),
+		scheduledEndAt: z.number().nullable().optional(),
+		/** Durable record of linked task IDs for recurring dependencies. Survives
+		 *  dependency pruning so the recurring monitor can restore links on restart. */
+		recurringLinkedTaskIds: z.array(z.string()).optional(),
+	})
+	.transform(
+		({
+			clineProviderId: _legacyProviderId,
+			clineModelId: _legacyModelId,
+			clineReasoningEffort: _legacyReasoningEffort,
+			...card
+		}) => {
+			const clineSettings = normalizeRuntimeTaskClineSettings({
+				clineSettings: card.clineSettings,
+				clineProviderId: _legacyProviderId,
+				clineModelId: _legacyModelId,
+				clineReasoningEffort: _legacyReasoningEffort,
+			});
+			return {
+				...card,
+				...(clineSettings !== undefined ? { clineSettings } : {}),
+				title: resolveTaskTitle(card.title, card.prompt),
+			};
+		},
+	);
 export type RuntimeBoardCard = z.infer<typeof runtimeBoardCardSchema>;
 
 export const runtimeBoardColumnSchema = z.object({
@@ -227,6 +326,7 @@ export const runtimeTaskSessionSummarySchema = z.object({
 	warningMessage: z.string().nullable().optional(),
 	latestTurnCheckpoint: runtimeTaskTurnCheckpointSchema.nullable().optional(),
 	previousTurnCheckpoint: runtimeTaskTurnCheckpointSchema.nullable().optional(),
+	remoteControlEnabled: z.boolean().default(false),
 });
 export type RuntimeTaskSessionSummary = z.infer<typeof runtimeTaskSessionSummarySchema>;
 
@@ -244,6 +344,11 @@ export const runtimeWorkspaceStateSaveRequestSchema = z.object({
 	board: runtimeBoardDataSchema,
 	sessions: z.record(z.string(), runtimeTaskSessionSummarySchema),
 	expectedRevision: z.number().int().nonnegative().optional(),
+	/** Explicit dependency removals. When present, the server removes these
+	 *  dependencies before merging the remaining ones. Required for client-driven
+	 *  dependency deletes because the server is authoritative and otherwise
+	 *  re-adds any dep missing from `board.dependencies`. */
+	removedDependencyIds: z.array(z.string()).optional(),
 });
 export type RuntimeWorkspaceStateSaveRequest = z.infer<typeof runtimeWorkspaceStateSaveRequestSchema>;
 
@@ -411,10 +516,13 @@ export const runtimeProjectsResponseSchema = z.object({
 });
 export type RuntimeProjectsResponse = z.infer<typeof runtimeProjectsResponseSchema>;
 
-export const runtimeProjectAddRequestSchema = z.object({
-	path: z.string(),
-	initializeGit: z.boolean().optional(),
-});
+export const runtimeProjectAddRequestSchema = z
+	.object({
+		path: z.string().optional(),
+		gitUrl: z.string().optional(),
+		initializeGit: z.boolean().optional(),
+	})
+	.refine((data) => data.path || data.gitUrl, { message: "Either path or gitUrl is required" });
 export type RuntimeProjectAddRequest = z.infer<typeof runtimeProjectAddRequestSchema>;
 
 export const runtimeProjectAddResponseSchema = z.object({
@@ -431,6 +539,28 @@ export const runtimeProjectDirectoryPickerResponseSchema = z.object({
 	error: z.string().optional(),
 });
 export type RuntimeProjectDirectoryPickerResponse = z.infer<typeof runtimeProjectDirectoryPickerResponseSchema>;
+
+export const runtimeDirectoryListEntrySchema = z.object({
+	name: z.string(),
+	path: z.string(),
+	isGitRepository: z.boolean(),
+});
+export type RuntimeDirectoryListEntry = z.infer<typeof runtimeDirectoryListEntrySchema>;
+
+export const runtimeDirectoryListRequestSchema = z.object({
+	path: z.string().optional(),
+});
+export type RuntimeDirectoryListRequest = z.infer<typeof runtimeDirectoryListRequestSchema>;
+
+export const runtimeDirectoryListResponseSchema = z.object({
+	ok: z.boolean(),
+	currentPath: z.string(),
+	parentPath: z.string().nullable(),
+	rootPath: z.string(),
+	entries: z.array(runtimeDirectoryListEntrySchema),
+	error: z.string().optional(),
+});
+export type RuntimeDirectoryListResponse = z.infer<typeof runtimeDirectoryListResponseSchema>;
 
 export const runtimeProjectRemoveRequestSchema = z.object({
 	projectId: z.string(),
@@ -507,9 +637,6 @@ export type RuntimeProjectShortcut = z.infer<typeof runtimeProjectShortcutSchema
 export const runtimeClineOauthProviderSchema = z.enum(["cline", "oca", "openai-codex"]);
 export type RuntimeClineOauthProvider = z.infer<typeof runtimeClineOauthProviderSchema>;
 
-export const runtimeClineReasoningEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
-export type RuntimeClineReasoningEffort = z.infer<typeof runtimeClineReasoningEffortSchema>;
-
 export const runtimeClineProviderSettingsSchema = z.object({
 	providerId: z.string().nullable(),
 	modelId: z.string().nullable(),
@@ -542,6 +669,44 @@ export const runtimeClineKanbanAccessResponseSchema = z.object({
 	error: z.string().optional(),
 });
 export type RuntimeClineKanbanAccessResponse = z.infer<typeof runtimeClineKanbanAccessResponseSchema>;
+
+export const runtimeClineAccountOrganizationSchema = z.object({
+	organizationId: z.string(),
+	name: z.string(),
+	active: z.boolean(),
+	roles: z.array(z.string()),
+});
+export type RuntimeClineAccountOrganization = z.infer<typeof runtimeClineAccountOrganizationSchema>;
+
+export const runtimeClineAccountOrganizationsResponseSchema = z.object({
+	organizations: z.array(runtimeClineAccountOrganizationSchema),
+	error: z.string().optional(),
+});
+export type RuntimeClineAccountOrganizationsResponse = z.infer<typeof runtimeClineAccountOrganizationsResponseSchema>;
+
+export const runtimeClineAccountBalanceResponseSchema = z.object({
+	balance: z.number().nullable(),
+	activeAccountLabel: z.string().nullable(),
+	activeOrganizationId: z.string().nullable(),
+	error: z.string().optional(),
+});
+export type RuntimeClineAccountBalanceResponse = z.infer<typeof runtimeClineAccountBalanceResponseSchema>;
+
+export const runtimeClineAccountSwitchRequestSchema = z.object({
+	organizationId: z.string().nullable(),
+});
+export type RuntimeClineAccountSwitchRequest = z.infer<typeof runtimeClineAccountSwitchRequestSchema>;
+
+export const runtimeClineAccountSwitchResponseSchema = z.object({
+	ok: z.boolean(),
+	error: z.string().optional(),
+});
+export type RuntimeClineAccountSwitchResponse = z.infer<typeof runtimeClineAccountSwitchResponseSchema>;
+
+export const runtimeFeaturebaseTokenResponseSchema = z.object({
+	featurebaseJwt: z.string(),
+});
+export type RuntimeFeaturebaseTokenResponse = z.infer<typeof runtimeFeaturebaseTokenResponseSchema>;
 
 export const runtimeClineProviderCatalogItemSchema = z.object({
 	id: z.string(),
@@ -606,6 +771,23 @@ export type RuntimeClineAddProviderRequest = z.infer<typeof runtimeClineAddProvi
 export const runtimeClineAddProviderResponseSchema = runtimeClineProviderSettingsSchema;
 export type RuntimeClineAddProviderResponse = z.infer<typeof runtimeClineAddProviderResponseSchema>;
 
+export const runtimeClineUpdateProviderRequestSchema = z.object({
+	providerId: z.string(),
+	name: z.string().optional(),
+	baseUrl: z.string().optional(),
+	apiKey: z.string().nullable().optional(),
+	headers: z.record(z.string(), z.string()).nullable().optional(),
+	timeoutMs: z.number().int().positive().nullable().optional(),
+	models: z.array(z.string()).optional(),
+	defaultModelId: z.string().nullable().optional(),
+	modelsSourceUrl: z.string().nullable().optional(),
+	capabilities: z.array(runtimeClineProviderCapabilitySchema).optional(),
+});
+export type RuntimeClineUpdateProviderRequest = z.infer<typeof runtimeClineUpdateProviderRequestSchema>;
+
+export const runtimeClineUpdateProviderResponseSchema = runtimeClineProviderSettingsSchema;
+export type RuntimeClineUpdateProviderResponse = z.infer<typeof runtimeClineUpdateProviderResponseSchema>;
+
 export const runtimeClineOauthLoginRequestSchema = z.object({
 	provider: runtimeClineOauthProviderSchema,
 	baseUrl: z.string().nullable().optional(),
@@ -620,12 +802,50 @@ export const runtimeClineOauthLoginResponseSchema = z.object({
 });
 export type RuntimeClineOauthLoginResponse = z.infer<typeof runtimeClineOauthLoginResponseSchema>;
 
+export const runtimeClineDeviceAuthStartResponseSchema = z.object({
+	deviceCode: z.string(),
+	userCode: z.string(),
+	verificationUrl: z.string(),
+	expiresInSeconds: z.number(),
+	pollIntervalSeconds: z.number(),
+});
+export type RuntimeClineDeviceAuthStartResponse = z.infer<typeof runtimeClineDeviceAuthStartResponseSchema>;
+
+export const runtimeClineDeviceAuthCompleteRequestSchema = z.object({
+	deviceCode: z.string(),
+	expiresInSeconds: z.number(),
+	pollIntervalSeconds: z.number(),
+	baseUrl: z.string().nullable().optional(),
+});
+export type RuntimeClineDeviceAuthCompleteRequest = z.infer<typeof runtimeClineDeviceAuthCompleteRequestSchema>;
+
+export const runtimeClineDeviceAuthCompleteResponseSchema = runtimeClineOauthLoginResponseSchema;
+export type RuntimeClineDeviceAuthCompleteResponse = z.infer<typeof runtimeClineDeviceAuthCompleteResponseSchema>;
+
 export const runtimeClineProviderSettingsSaveRequestSchema = z.object({
 	providerId: z.string(),
 	modelId: z.string().nullable().optional(),
 	apiKey: z.string().nullable().optional(),
 	baseUrl: z.string().nullable().optional(),
 	reasoningEffort: runtimeClineReasoningEffortSchema.nullable().optional(),
+	region: z.string().nullable().optional(),
+	aws: z
+		.object({
+			accessKey: z.string().nullable().optional(),
+			secretKey: z.string().nullable().optional(),
+			sessionToken: z.string().nullable().optional(),
+			region: z.string().nullable().optional(),
+			profile: z.string().nullable().optional(),
+			authentication: z.enum(["iam", "api-key", "profile"]).nullable().optional(),
+			endpoint: z.string().nullable().optional(),
+		})
+		.optional(),
+	gcp: z
+		.object({
+			projectId: z.string().nullable().optional(),
+			region: z.string().nullable().optional(),
+		})
+		.optional(),
 });
 export type RuntimeClineProviderSettingsSaveRequest = z.infer<typeof runtimeClineProviderSettingsSaveRequestSchema>;
 
@@ -719,6 +939,30 @@ export const runtimeDebugResetAllStateResponseSchema = z.object({
 });
 export type RuntimeDebugResetAllStateResponse = z.infer<typeof runtimeDebugResetAllStateResponseSchema>;
 
+export const runtimeUpdateStatusResponseSchema = z.object({
+	currentVersion: z.string(),
+	latestVersion: z.string().nullable(),
+	updateAvailable: z.boolean(),
+	updateTiming: z.enum(["startup", "shutdown"]).nullable(),
+	installCommand: z.string().nullable(),
+});
+export type RuntimeUpdateStatusResponse = z.infer<typeof runtimeUpdateStatusResponseSchema>;
+
+export const runtimeRunUpdateResponseSchema = z.object({
+	status: z.enum([
+		"updated",
+		"already_up_to_date",
+		"cache_refreshed",
+		"unsupported_installation",
+		"check_failed",
+		"update_failed",
+	]),
+	currentVersion: z.string(),
+	latestVersion: z.string().nullable(),
+	message: z.string(),
+});
+export type RuntimeRunUpdateResponse = z.infer<typeof runtimeRunUpdateResponseSchema>;
+
 export const runtimeAgentDefinitionSchema = z.object({
 	id: runtimeAgentIdSchema,
 	label: z.string(),
@@ -747,6 +991,7 @@ export const runtimeConfigResponseSchema = z.object({
 	openPrPromptTemplate: z.string(),
 	commitPromptTemplateDefault: z.string(),
 	openPrPromptTemplateDefault: z.string(),
+	recurringMaxTurnsPerExecution: z.number().int().min(1),
 });
 export type RuntimeConfigResponse = z.infer<typeof runtimeConfigResponseSchema>;
 
@@ -758,12 +1003,15 @@ export const runtimeConfigSaveRequestSchema = z.object({
 	readyForReviewNotificationsEnabled: z.boolean().optional(),
 	commitPromptTemplate: z.string().optional(),
 	openPrPromptTemplate: z.string().optional(),
+	recurringMaxTurnsPerExecution: z.number().int().min(1).optional(),
 });
 export type RuntimeConfigSaveRequest = z.infer<typeof runtimeConfigSaveRequestSchema>;
 
 export const runtimeTaskSessionStartRequestSchema = z.object({
 	taskId: z.string(),
 	prompt: z.string(),
+	/** Display title from the Kanban task card. Propagated to SDK session metadata as a convenience copy. */
+	taskTitle: z.string().optional(),
 	images: z.array(runtimeTaskImageSchema).optional(),
 	startInPlanMode: z.boolean().optional(),
 	mode: runtimeTaskSessionModeSchema.optional(),
@@ -771,6 +1019,8 @@ export const runtimeTaskSessionStartRequestSchema = z.object({
 	baseRef: z.string(),
 	cols: z.number().int().positive().optional(),
 	rows: z.number().int().positive().optional(),
+	agentId: runtimeAgentIdSchema.optional(),
+	clineSettings: runtimeTaskClineSettingsSchema.optional(),
 });
 export type RuntimeTaskSessionStartRequest = z.infer<typeof runtimeTaskSessionStartRequestSchema>;
 
@@ -1063,3 +1313,16 @@ export const runtimeHookIngestResponseSchema = z.object({
 	error: z.string().optional(),
 });
 export type RuntimeHookIngestResponse = z.infer<typeof runtimeHookIngestResponseSchema>;
+
+export const runtimeEnableRemoteControlRequestSchema = z.object({
+	taskId: z.string(),
+	enabled: z.boolean(),
+});
+export type RuntimeEnableRemoteControlRequest = z.infer<typeof runtimeEnableRemoteControlRequestSchema>;
+
+export const runtimeEnableRemoteControlResponseSchema = z.object({
+	ok: z.boolean(),
+	error: z.string().optional(),
+	requiresRestart: z.boolean().optional(),
+});
+export type RuntimeEnableRemoteControlResponse = z.infer<typeof runtimeEnableRemoteControlResponseSchema>;

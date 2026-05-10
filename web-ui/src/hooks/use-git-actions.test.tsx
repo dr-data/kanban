@@ -60,6 +60,7 @@ function createBoard(): BoardData {
 				cards: [
 					{
 						id: "task-1",
+						title: "Ship it",
 						prompt: "Ship it",
 						startInPlanMode: false,
 						autoReviewEnabled: false,
@@ -112,6 +113,7 @@ function createRuntimeConfig(selectedAgentId: RuntimeConfigResponse["selectedAge
 		openPrPromptTemplate: "pr",
 		commitPromptTemplateDefault: "commit",
 		openPrPromptTemplateDefault: "pr",
+		recurringMaxTurnsPerExecution: 200,
 	};
 }
 

@@ -5,7 +5,7 @@ import { createTRPCProxyClient, httpBatchLink, TRPCClientError } from "@trpc/cli
 import type { Command } from "commander";
 import type { RuntimeHookEvent, RuntimeTaskHookActivity } from "../core/api-contract";
 import { buildKanbanCommandParts } from "../core/kanban-command";
-import { buildKanbanRuntimeUrl } from "../core/runtime-endpoint";
+import { buildKanbanRuntimeUrl, getRuntimeFetch } from "../core/runtime-endpoint";
 import { buildWindowsCmdArgsArray, resolveWindowsComSpec, shouldUseWindowsCmdLaunch } from "../core/windows-cmd-launch";
 import { parseHookRuntimeContextFromEnv } from "../terminal/hook-runtime-context";
 import type { RuntimeAppRouter } from "../trpc/app-router";
@@ -13,15 +13,17 @@ import {
 	type CodexMappedHookEvent,
 	resolveCodexRolloutFinalMessageForCwd,
 	startCodexSessionWatcher,
-} from "./codex-hook-events";
-import { enrichDroidReviewMetadata } from "./droid-hook-events";
+} from "./hook-events/codex-hook-events";
+import { enrichDroidReviewMetadata } from "./hook-events/droid-hook-events";
+import { asRecord, normalizeWhitespace, readNestedString, readStringField } from "./hook-events/hook-utils";
+import { normalizeKiroHookMetadata } from "./hook-events/kiro-hook-events";
 
 export {
 	createCodexWatcherState,
 	parseCodexEventLine,
 	resolveCodexRolloutFinalMessageForCwd,
 	startCodexSessionWatcher,
-} from "./codex-hook-events";
+} from "./hook-events/codex-hook-events";
 
 const VALID_EVENTS = new Set<RuntimeHookEvent>(["to_review", "to_in_progress", "activity"]);
 
@@ -79,42 +81,6 @@ function parseHookEvent(value: string): RuntimeHookEvent {
 		throw new Error(`Invalid event "${value}". Must be one of: ${[...VALID_EVENTS].join(", ")}`);
 	}
 	return value as RuntimeHookEvent;
-}
-
-function normalizeWhitespace(value: string): string {
-	return value.replace(/\s+/g, " ").trim();
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return null;
-	}
-	return value as Record<string, unknown>;
-}
-
-function readStringField(record: Record<string, unknown>, key: string): string | null {
-	const value = record[key];
-	if (typeof value !== "string") {
-		return null;
-	}
-	const normalized = normalizeWhitespace(value);
-	return normalized.length > 0 ? normalized : null;
-}
-
-function readNestedString(record: Record<string, unknown>, path: string[]): string | null {
-	let current: unknown = record;
-	for (const key of path) {
-		const candidate = asRecord(current);
-		if (!candidate || !(key in candidate)) {
-			return null;
-		}
-		current = candidate[key];
-	}
-	if (typeof current !== "string") {
-		return null;
-	}
-	const normalized = normalizeWhitespace(current);
-	return normalized.length > 0 ? normalized : null;
 }
 
 function parseJsonObject(value: string): Record<string, unknown> | null {
@@ -309,6 +275,9 @@ export function inferHookSourceFromPayload(payload: Record<string, unknown> | nu
 	if (normalizedTranscriptPath?.includes("/.claude/")) {
 		return "claude";
 	}
+	if (normalizedTranscriptPath?.includes("/.kiro/")) {
+		return "kiro";
+	}
 	if (normalizedTranscriptPath?.includes("/.factory/")) {
 		return "droid";
 	}
@@ -323,6 +292,20 @@ function normalizeHookMetadata(
 	payload: Record<string, unknown> | null,
 	flagMetadata: Partial<RuntimeTaskHookActivity>,
 ): Partial<RuntimeTaskHookActivity> | undefined {
+	const inferredSource = inferHookSourceFromPayload(payload);
+	const sourceHint = flagMetadata.source ?? inferredSource;
+	if (sourceHint?.toLowerCase() === "kiro") {
+		const kiroMetadata = normalizeKiroHookMetadata({
+			event,
+			payload,
+			flagMetadata,
+			sourceHint,
+		});
+		if (kiroMetadata) {
+			return kiroMetadata;
+		}
+	}
+
 	const hookEventName = payload
 		? (readStringField(payload, "hook_event_name") ??
 			readStringField(payload, "hookEventName") ??
@@ -351,8 +334,6 @@ function normalizeHookMetadata(
 			readNestedString(payload, ["taskComplete", "taskMetadata", "result"]) ??
 			readNestedString(payload, ["taskComplete", "result"]))
 		: null;
-
-	const inferredSource = inferHookSourceFromPayload(payload);
 
 	const activityText = inferActivityText(event, payload, toolName, finalMessage, notificationType);
 	const merged: Partial<RuntimeTaskHookActivity> = {
@@ -400,6 +381,10 @@ async function ingestHookEvent(args: HooksIngestArgs): Promise<void> {
 			httpBatchLink({
 				url: buildKanbanRuntimeUrl("/api/trpc"),
 				maxItems: 1,
+				fetch: async (url, options) => {
+					const runtimeFetch = await getRuntimeFetch();
+					return runtimeFetch(url, options);
+				},
 			}),
 		],
 	});
@@ -418,11 +403,11 @@ async function ingestHookEvent(args: HooksIngestArgs): Promise<void> {
 	}
 }
 
-function spawnDetachedKanban(args: string[]): void {
+function spawnBackgroundKanban(args: string[]): void {
 	try {
 		const commandParts = buildKanbanCommandParts(args);
 		const child = spawn(commandParts[0], commandParts.slice(1), {
-			detached: true,
+			detached: false,
 			stdio: "ignore",
 			env: process.env,
 		});
@@ -458,7 +443,7 @@ function appendMetadataFlags(args: string[], metadata?: Partial<RuntimeTaskHookA
 }
 
 function notifyCodexSessionWatcherEvent(mapped: CodexMappedHookEvent): void {
-	spawnDetachedKanban(appendMetadataFlags(["hooks", "notify", "--event", mapped.event], mapped.metadata));
+	spawnBackgroundKanban(appendMetadataFlags(["hooks", "notify", "--event", mapped.event], mapped.metadata));
 }
 
 async function enrichCodexReviewMetadata(args: HooksIngestArgs, cwd: string): Promise<HooksIngestArgs> {
@@ -546,6 +531,29 @@ function mapGeminiHookEvent(eventName: string): RuntimeHookEvent | null {
 	return null;
 }
 
+async function runCodexHookSubcommand(
+	event: RuntimeHookEvent,
+	options: HookCommandMetadataOptionValues,
+	payloadArg: string | undefined,
+): Promise<void> {
+	let payload = "";
+	try {
+		payload = await readStdinText();
+	} catch {
+		payload = "";
+	}
+
+	process.stdout.write("{}\n");
+
+	try {
+		const parsedArgs = parseHooksIngestArgs(event, options, payloadArg, payload);
+		const codexEnrichedArgs = await enrichCodexReviewMetadata(parsedArgs, process.cwd());
+		await ingestHookEvent(codexEnrichedArgs);
+	} catch {
+		// Best effort only.
+	}
+}
+
 async function runGeminiHookSubcommand(): Promise<void> {
 	let payload = "";
 	try {
@@ -580,35 +588,11 @@ async function runGeminiHookSubcommand(): Promise<void> {
 		source: "gemini",
 		hookEventName: hookEventName || undefined,
 	});
-	spawnDetachedKanban(appendMetadataFlags(["hooks", "notify", "--event", mappedEvent], metadata));
+	spawnBackgroundKanban(appendMetadataFlags(["hooks", "notify", "--event", mappedEvent], metadata));
 }
 
 export function buildCodexWrapperChildArgs(agentArgs: string[]): string[] {
-	const childArgs = [...agentArgs];
-	const hasNotifyOverride = childArgs.some((arg, index) => {
-		if (arg === "-c" || arg === "--config") {
-			const next = childArgs[index + 1];
-			return typeof next === "string" && next.startsWith("notify=");
-		}
-		return arg.startsWith("-cnotify=") || arg.startsWith("--config=notify=");
-	});
-	if (hasNotifyOverride) {
-		return childArgs;
-	}
-	// Session log formats can change across Codex versions. Always wire legacy notify
-	// so task completion still transitions to review when watcher parsing misses events.
-	const reviewNotifyCommandParts = buildKanbanCommandParts([
-		"hooks",
-		"notify",
-		"--event",
-		"to_review",
-		"--source",
-		"codex",
-	]);
-	const notifyConfig = `notify=${JSON.stringify(reviewNotifyCommandParts)}`;
-	childArgs.unshift(notifyConfig);
-	childArgs.unshift("-c");
-	return childArgs;
+	return [...agentArgs];
 }
 
 export function buildCodexWrapperSpawn(
@@ -801,6 +785,26 @@ export function registerHooksCommand(program: Command): void {
 		.action(async () => {
 			await runGeminiHookSubcommand();
 		});
+
+	hooks
+		.command("codex-hook [payload]")
+		.description("Codex hook entrypoint.")
+		.requiredOption("--event <event>", "Event: to_review | to_in_progress | activity.", parseHookEvent)
+		.option("--source <source>", "Hook source.")
+		.option("--activity-text <text>", "Activity summary text.")
+		.option("--tool-name <name>", "Tool name.")
+		.option("--final-message <message>", "Final message.")
+		.option("--hook-event-name <name>", "Original hook event name.")
+		.option("--notification-type <type>", "Notification type.")
+		.option("--metadata-base64 <base64>", "Base64-encoded JSON metadata payload.")
+		.action(
+			async (
+				payload: string | undefined,
+				options: HookCommandMetadataOptionValues & { event: RuntimeHookEvent },
+			) => {
+				await runCodexHookSubcommand(options.event, options, payload);
+			},
+		);
 
 	hooks
 		.command("codex-wrapper [agentArgs...]")

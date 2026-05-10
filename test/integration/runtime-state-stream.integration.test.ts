@@ -51,6 +51,7 @@ function createBoard(title: string): RuntimeBoardData {
 				cards: [
 					{
 						id: "task-1",
+						title: title,
 						prompt: title,
 						startInPlanMode: false,
 						baseRef: "main",
@@ -61,7 +62,7 @@ function createBoard(title: string): RuntimeBoardData {
 			},
 			{ id: "in_progress", title: "In Progress", cards: [] },
 			{ id: "review", title: "Review", cards: [] },
-			{ id: "trash", title: "Trash", cards: [] },
+			{ id: "trash", title: "Done", cards: [] },
 		],
 		dependencies: [],
 	};
@@ -73,6 +74,7 @@ function createReviewBoard(taskId: string, title: string, existingTrashTaskId?: 
 		? [
 				{
 					id: existingTrashTaskId,
+					title: "Already trashed task",
 					prompt: "Already trashed task",
 					startInPlanMode: false,
 					baseRef: "main",
@@ -91,6 +93,7 @@ function createReviewBoard(taskId: string, title: string, existingTrashTaskId?: 
 				cards: [
 					{
 						id: taskId,
+						title: title,
 						prompt: title,
 						startInPlanMode: false,
 						baseRef: "main",
@@ -99,7 +102,7 @@ function createReviewBoard(taskId: string, title: string, existingTrashTaskId?: 
 					},
 				],
 			},
-			{ id: "trash", title: "Trash", cards: trashCards },
+			{ id: "trash", title: "Done", cards: trashCards },
 		],
 		dependencies: [],
 	};
@@ -1125,104 +1128,6 @@ describe.sequential("runtime state stream integration", () => {
 			expect(taskContext.payload.headCommit).toBe(taskWorktreeCommit);
 		} finally {
 			await server.stop();
-			cleanupProject();
-			cleanupHome();
-		}
-	}, 45_000);
-
-	it("moves stale hook-review cards to trash on shutdown", async () => {
-		const { path: tempHome, cleanup: cleanupHome } = createTempDir("kanban-home-stale-review-");
-		const { path: projectPath, cleanup: cleanupProject } = createTempDir("kanban-project-stale-review-");
-
-		mkdirSync(projectPath, { recursive: true });
-		initGitRepository(projectPath);
-
-		const taskId = "stale-review-task";
-		const taskTitle = "Stale Review Task";
-		const existingTrashTaskId = "existing-trash-task";
-		const now = Date.now();
-
-		const firstPort = await getAvailablePort();
-		const firstServer = await startKanbanServer({
-			cwd: projectPath,
-			homeDir: tempHome,
-			port: firstPort,
-		});
-
-		try {
-			const firstRuntimeUrl = new URL(firstServer.runtimeUrl);
-			const workspaceId = decodeURIComponent(firstRuntimeUrl.pathname.slice(1));
-			expect(workspaceId).not.toBe("");
-
-			const currentState = await requestJson<RuntimeWorkspaceStateResponse>({
-				baseUrl: `http://127.0.0.1:${firstPort}`,
-				procedure: "workspace.getState",
-				type: "query",
-				workspaceId,
-			});
-			expect(currentState.status).toBe(200);
-
-			const seedResponse = await requestJson<RuntimeWorkspaceStateResponse>({
-				baseUrl: `http://127.0.0.1:${firstPort}`,
-				procedure: "workspace.saveState",
-				type: "mutation",
-				workspaceId,
-				payload: {
-					board: createReviewBoard(taskId, taskTitle, existingTrashTaskId),
-					sessions: {
-						[taskId]: {
-							taskId,
-							state: "awaiting_review",
-							agentId: "codex",
-							workspacePath: projectPath,
-							pid: null,
-							startedAt: now - 2_000,
-							updatedAt: now,
-							lastOutputAt: now,
-							reviewReason: "hook",
-							exitCode: null,
-							lastHookAt: null,
-							latestHookActivity: null,
-						},
-					},
-					expectedRevision: currentState.payload.revision,
-				},
-			});
-			expect(seedResponse.status).toBe(200);
-		} finally {
-			await firstServer.stop();
-		}
-
-		const secondPort = await getAvailablePort();
-		const secondServer = await startKanbanServer({
-			cwd: projectPath,
-			homeDir: tempHome,
-			port: secondPort,
-		});
-
-		try {
-			const secondRuntimeUrl = new URL(secondServer.runtimeUrl);
-			const workspaceId = decodeURIComponent(secondRuntimeUrl.pathname.slice(1));
-			expect(workspaceId).not.toBe("");
-
-			const finalState = await requestJson<RuntimeWorkspaceStateResponse>({
-				baseUrl: `http://127.0.0.1:${secondPort}`,
-				procedure: "workspace.getState",
-				type: "query",
-				workspaceId,
-			});
-			expect(finalState.status).toBe(200);
-
-			const reviewCards = finalState.payload.board.columns.find((column) => column.id === "review")?.cards ?? [];
-			const trashCards = finalState.payload.board.columns.find((column) => column.id === "trash")?.cards ?? [];
-			expect(reviewCards.some((card) => card.id === taskId)).toBe(false);
-			expect(trashCards.some((card) => card.id === taskId)).toBe(true);
-			expect(trashCards[0]?.id).toBe(taskId);
-			expect(trashCards.some((card) => card.id === existingTrashTaskId)).toBe(true);
-			expect(finalState.payload.sessions[taskId]?.state).toBe("interrupted");
-			expect(finalState.payload.sessions[taskId]?.reviewReason).toBe("interrupted");
-		} finally {
-			await secondServer.stop();
 			cleanupProject();
 			cleanupHome();
 		}

@@ -2,8 +2,13 @@
 // The rest of Kanban should talk to the SDK through local service modules so
 // auth, catalog, and provider-settings behavior stay behind one boundary.
 
+import { readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import * as ClineCore from "@clinebot/core";
 import {
 	addLocalProvider,
+	type ClineAccountBalance,
+	type ClineAccountOrganizationBalance,
 	ClineAccountService,
 	type ClineAccountUser,
 	type ClineOrganization,
@@ -16,24 +21,32 @@ import {
 	DEFAULT_INTERNAL_IDCS_SCOPES,
 	DEFAULT_INTERNAL_IDCS_URL,
 	ensureCustomProvidersLoaded,
+	getLocalProviderModels,
 	getValidClineCredentials,
 	getValidOcaCredentials,
 	getValidOpenAICodexCredentials,
 	InMemoryMcpManager,
-	LlmsModels,
-	LlmsProviders,
 	loginClineOAuth,
 	loginOcaOAuth,
 	loginOpenAICodex,
 	type OcaOAuthProviderOptions,
+	type ProviderSettings,
 	ProviderSettingsManager,
-	type Tool,
-} from "@clinebot/core/node";
+	resolveProviderConfig,
+	completeClineDeviceAuth as sdkCompleteClineDeviceAuth,
+	startClineDeviceAuth as sdkStartClineDeviceAuth,
+} from "@clinebot/core";
+import type { AgentTool } from "@clinebot/shared";
 
 export type ManagedClineOauthProviderId = "cline" | "oca" | "openai-codex";
-export type SdkReasoningEffort = NonNullable<NonNullable<LlmsProviders.ProviderSettings["reasoning"]>["effort"]>;
+export type SdkReasoningEffort = NonNullable<NonNullable<ProviderSettings["reasoning"]>["effort"]>;
 export const SDK_DEFAULT_PROVIDER_ID = "cline";
-export const SDK_DEFAULT_MODEL_ID = LlmsModels.CLINE_DEFAULT_MODEL;
+export const SDK_DEFAULT_MODEL_ID = "anthropic/claude-sonnet-4.6";
+export const CLINE_MODEL_CATALOG_DEFAULTS = {
+	loadLatestOnInit: true,
+	loadPrivateOnAuth: true,
+	failOnError: false,
+} as const;
 
 export interface ManagedOauthCredentials {
 	access: string;
@@ -57,15 +70,21 @@ export interface SdkProviderCatalogItem {
 	capabilities?: string[];
 }
 
+export interface SdkProviderModel {
+	id: string;
+	name: string;
+	supportsVision?: boolean;
+	supportsAttachments?: boolean;
+	supportsReasoningEffort?: boolean;
+}
+
 export interface SdkUserRemoteConfigResponse {
 	organizationId: string;
 	value: string;
 	enabled: boolean;
 }
 
-export type SdkProviderModelRecord = Record<string, LlmsProviders.ModelInfo>;
-
-export type SdkProviderSettings = LlmsProviders.ProviderSettings;
+export type SdkProviderSettings = ProviderSettings;
 export type SdkCustomProviderCapability = "streaming" | "tools" | "reasoning" | "vision" | "prompt-cache";
 
 export interface SaveSdkProviderSettingsInput {
@@ -87,7 +106,37 @@ export interface AddSdkCustomProviderInput {
 	capabilities?: SdkCustomProviderCapability[];
 }
 
-export type SdkMcpTool = Tool;
+export interface UpdateSdkCustomProviderInput {
+	providerId: string;
+	name?: string;
+	baseUrl?: string;
+	apiKey?: string | null;
+	headers?: Record<string, string> | null;
+	timeoutMs?: number | null;
+	models?: string[];
+	defaultModelId?: string | null;
+	modelsSourceUrl?: string | null;
+	capabilities?: SdkCustomProviderCapability[];
+}
+
+type LocalModelsFile = {
+	version: 1;
+	providers: Record<
+		string,
+		{
+			provider: {
+				name: string;
+				baseUrl: string;
+				defaultModelId?: string;
+				capabilities?: SdkCustomProviderCapability[];
+				modelsSourceUrl?: string;
+			};
+			models: Record<string, { id: string; name: string }>;
+		}
+	>;
+};
+
+export type SdkMcpTool = AgentTool;
 
 export interface SdkMcpServerRegistration {
 	name: string;
@@ -151,6 +200,10 @@ export interface SdkMcpManager {
 }
 
 export type SdkCreateMcpToolsOptions = CreateMcpToolsOptions;
+type SdkLocalProviderModel = Awaited<ReturnType<typeof getLocalProviderModels>>["models"][number];
+type SdkResolvedProviderConfig = Awaited<ReturnType<typeof resolveProviderConfig>>;
+type SdkResolvedProviderModel = NonNullable<NonNullable<SdkResolvedProviderConfig>["knownModels"]>[string];
+type SdkProviderConfig = ReturnType<ProviderSettingsManager["getProviderConfig"]>;
 
 function buildOcaOauthConfig(baseUrl: string | null | undefined): OcaOAuthProviderOptions | undefined {
 	const normalizedBaseUrl = baseUrl?.trim() ?? "";
@@ -230,19 +283,128 @@ export async function loginManagedOauthProvider(input: {
 	});
 }
 
+export async function startClineDeviceAuth(): Promise<{
+	deviceCode: string;
+	userCode: string;
+	verificationUri: string;
+	verificationUriComplete?: string;
+	expiresInSeconds: number;
+	pollIntervalSeconds: number;
+}> {
+	return await sdkStartClineDeviceAuth();
+}
+
+export async function completeClineDeviceAuth(input: {
+	deviceCode: string;
+	expiresInSeconds: number;
+	pollIntervalSeconds: number;
+	apiBaseUrl: string;
+}): Promise<ManagedOauthCredentials> {
+	const credentials = await sdkCompleteClineDeviceAuth({
+		deviceCode: input.deviceCode,
+		expiresInSeconds: input.expiresInSeconds,
+		pollIntervalSeconds: input.pollIntervalSeconds,
+		apiBaseUrl: input.apiBaseUrl,
+	});
+	return {
+		access: credentials.access,
+		refresh: credentials.refresh,
+		expires: credentials.expires,
+		accountId: credentials.accountId,
+	};
+}
+
 export async function listSdkProviderCatalog(): Promise<SdkProviderCatalogItem[]> {
-	return await LlmsModels.getAllProviders();
+	return await ClineCore.Llms.getAllProviders();
 }
 
-export async function listSdkProviderModels(providerId: string): Promise<SdkProviderModelRecord> {
-	return await LlmsModels.getModelsForProvider(providerId);
+function toSdkProviderModel(model: SdkLocalProviderModel): SdkProviderModel {
+	return {
+		id: model.id,
+		name: model.name,
+		supportsVision: model.supportsVision,
+		supportsAttachments: model.supportsAttachments,
+		supportsReasoningEffort: model.supportsReasoning,
+	};
 }
 
-export function supportsSdkModelThinking(modelInfo: LlmsProviders.ModelInfo): boolean {
-	return LlmsProviders.supportsModelThinking(modelInfo);
+function toSdkProviderModelFromCatalog(modelId: string, model: SdkResolvedProviderModel): SdkProviderModel {
+	const capabilities = model.capabilities ?? [];
+	return {
+		id: modelId,
+		name: model.name?.trim() || modelId,
+		supportsVision: capabilities.includes("images") || undefined,
+		supportsAttachments: capabilities.includes("files") || undefined,
+		supportsReasoningEffort: capabilities.includes("reasoning") || model.thinkingConfig !== undefined || undefined,
+	};
+}
+
+function mergeSdkProviderModels(models: SdkProviderModel[]): SdkProviderModel[] {
+	const modelById = new Map<string, SdkProviderModel>();
+	for (const model of models) {
+		modelById.set(model.id, model);
+	}
+	return [...modelById.values()];
+}
+
+// Temporary compatibility path for @clinebot/core 0.0.36. Once the SDK makes
+// getLocalProviderModels honor loadLatestOnInit and applies live catalog lookups
+// through resolveProviderModelCatalogKeys, replace this with a single SDK call
+// using CLINE_MODEL_CATALOG_DEFAULTS.
+async function listRefreshedCatalogProviderModels(
+	providerId: string,
+	config: SdkProviderConfig,
+): Promise<SdkProviderModel[]> {
+	const catalogProviderIds = ClineCore.Llms.resolveProviderModelCatalogKeys(providerId);
+	const resolvedCatalogs = await Promise.all(
+		catalogProviderIds.map((catalogProviderId) =>
+			resolveProviderConfig(
+				catalogProviderId,
+				CLINE_MODEL_CATALOG_DEFAULTS,
+				catalogProviderId === providerId ? config : undefined,
+			).catch(() => undefined),
+		),
+	);
+	return resolvedCatalogs.flatMap((resolvedCatalog) =>
+		Object.entries(resolvedCatalog?.knownModels ?? {}).map(([modelId, model]) =>
+			toSdkProviderModelFromCatalog(modelId, model),
+		),
+	);
+}
+
+export async function listSdkProviderModels(providerId: string): Promise<SdkProviderModel[]> {
+	const config = providerManager.getProviderConfig(providerId);
+	const [localModels, refreshedModels] = await Promise.all([
+		getLocalProviderModels(providerId, config)
+			.then((response) => response.models.map(toSdkProviderModel))
+			.catch(() => []),
+		listRefreshedCatalogProviderModels(providerId, config).catch(() => []),
+	]);
+	return mergeSdkProviderModels([...localModels, ...refreshedModels]);
 }
 
 const providerManager = new ProviderSettingsManager();
+
+function resolveModelsPath(): string {
+	return join(dirname(providerManager.getFilePath()), "models.json");
+}
+
+async function readModelsRegistry(): Promise<LocalModelsFile> {
+	try {
+		const raw = await readFile(resolveModelsPath(), "utf8");
+		const parsed = JSON.parse(raw) as Partial<LocalModelsFile>;
+		if (parsed.version === 1 && parsed.providers && typeof parsed.providers === "object") {
+			return { version: 1, providers: parsed.providers };
+		}
+	} catch {
+		// Fall through.
+	}
+	return { version: 1, providers: {} };
+}
+
+async function writeModelsRegistry(state: LocalModelsFile): Promise<void> {
+	await writeFile(resolveModelsPath(), `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
 
 export async function addSdkCustomProvider(input: AddSdkCustomProviderInput): Promise<void> {
 	await addLocalProvider(providerManager, {
@@ -259,6 +421,135 @@ export async function addSdkCustomProvider(input: AddSdkCustomProviderInput): Pr
 	});
 	await ensureCustomProvidersLoaded(providerManager);
 }
+
+export async function updateSdkCustomProvider(input: UpdateSdkCustomProviderInput): Promise<void> {
+	const updateLocalProvider = (
+		ClineCore as {
+			updateLocalProvider?: (
+				manager: ProviderSettingsManager,
+				request: {
+					providerId: string;
+					name?: string;
+					baseUrl?: string;
+					apiKey?: string | null;
+					headers?: Record<string, string> | null;
+					timeoutMs?: number | null;
+					models?: string[];
+					defaultModelId?: string | null;
+					modelsSourceUrl?: string | null;
+					capabilities?: SdkCustomProviderCapability[];
+				},
+			) => Promise<unknown>;
+		}
+	).updateLocalProvider;
+	if (updateLocalProvider) {
+		await updateLocalProvider(providerManager, input);
+		return;
+	}
+
+	const providerId = input.providerId.trim().toLowerCase();
+	const state = await readModelsRegistry();
+	const existing = state.providers[providerId];
+	if (!existing) {
+		throw new Error(`provider "${providerId}" does not exist`);
+	}
+	const existingSettings = providerManager.getProviderSettings(providerId);
+	const existingTokenSource = providerManager.read().providers[providerId]?.tokenSource;
+	const wasLastUsed = providerManager.read().lastUsedProvider === providerId;
+
+	const models =
+		input.models?.map((model) => model.trim()).filter((model) => model.length > 0) ??
+		Object.keys(existing.models)
+			.map((model) => model.trim())
+			.filter((model) => model.length > 0);
+	if (models.length === 0) {
+		throw new Error("at least one model is required");
+	}
+
+	const nextName = input.name?.trim() || existing.provider.name;
+	const nextBaseUrl = input.baseUrl?.trim() || existing.provider.baseUrl;
+	const nextDefaultModelId =
+		(input.defaultModelId === undefined
+			? existing.provider.defaultModelId
+			: input.defaultModelId?.trim() || undefined) ?? models[0];
+	const nextModelsSourceUrl =
+		input.modelsSourceUrl === undefined
+			? existing.provider.modelsSourceUrl
+			: input.modelsSourceUrl?.trim() || undefined;
+
+	await deleteSdkCustomProvider(providerId);
+	await addSdkCustomProvider({
+		providerId,
+		name: nextName,
+		baseUrl: nextBaseUrl,
+		apiKey: input.apiKey === undefined ? (existingSettings?.apiKey ?? null) : input.apiKey,
+		headers:
+			input.headers === undefined
+				? ((existingSettings?.headers as Record<string, string> | undefined) ?? undefined)
+				: (input.headers ?? undefined),
+		timeoutMs:
+			input.timeoutMs === undefined
+				? typeof existingSettings?.timeout === "number"
+					? existingSettings.timeout
+					: undefined
+				: (input.timeoutMs ?? undefined),
+		models,
+		defaultModelId: nextDefaultModelId,
+		modelsSourceUrl: nextModelsSourceUrl,
+		capabilities: input.capabilities ?? existing.provider.capabilities,
+	});
+
+	if (existingSettings) {
+		providerManager.saveProviderSettings(
+			{
+				...existingSettings,
+				provider: providerId,
+				baseUrl: nextBaseUrl,
+				model: nextDefaultModelId,
+				...(input.apiKey !== undefined ? { apiKey: input.apiKey ?? undefined } : {}),
+				...(input.headers !== undefined ? { headers: input.headers ?? undefined } : {}),
+				...(input.timeoutMs !== undefined ? { timeout: input.timeoutMs ?? undefined } : {}),
+			},
+			{
+				setLastUsed: wasLastUsed,
+				tokenSource: existingTokenSource,
+			},
+		);
+	}
+}
+
+export async function deleteSdkCustomProvider(providerId: string): Promise<void> {
+	const deleteLocalProvider = (
+		ClineCore as {
+			deleteLocalProvider?: (manager: ProviderSettingsManager, request: { providerId: string }) => Promise<unknown>;
+		}
+	).deleteLocalProvider;
+	if (deleteLocalProvider) {
+		await deleteLocalProvider(providerManager, { providerId });
+		return;
+	}
+
+	const normalizedProviderId = providerId.trim().toLowerCase();
+	if (!normalizedProviderId) {
+		throw new Error("providerId is required");
+	}
+
+	const state = await readModelsRegistry();
+	if (!state.providers[normalizedProviderId]) {
+		throw new Error(`provider "${normalizedProviderId}" does not exist`);
+	}
+	delete state.providers[normalizedProviderId];
+	await writeModelsRegistry(state);
+	ClineCore.Llms.unregisterProvider(normalizedProviderId);
+
+	const settingsState = providerManager.read();
+	delete settingsState.providers[normalizedProviderId];
+	if (settingsState.lastUsedProvider === normalizedProviderId) {
+		delete settingsState.lastUsedProvider;
+	}
+	providerManager.write(settingsState);
+}
+
 export function getSdkProviderSettings(providerId: string): SdkProviderSettings | null {
 	return (providerManager.getProviderSettings(providerId) as SdkProviderSettings | undefined) ?? null;
 }
@@ -358,15 +649,31 @@ export async function fetchSdkClineAccountProfile(input: ApiRequestParams): Prom
 	return me;
 }
 
-export async function fetchSdkOrgData(input: ApiRequestParams & { organizatinId: string }): Promise<ClineOrganization> {
+export async function fetchSdkOrgData(
+	input: ApiRequestParams & { organizationId: string },
+): Promise<ClineOrganization> {
 	const accountService = new ClineAccountService({
 		apiBaseUrl: input.apiBaseUrl,
 		getAuthToken: async () => input.accessToken,
 	});
-	return await accountService.fetchOrganization(input.organizatinId);
+	return await accountService.fetchOrganization(input.organizationId);
 }
 
-export async function fetchSdkClineUserRemoteConfig(input: ApiRequestParams): Promise<SdkUserRemoteConfigResponse> {
+export async function fetchSdkFeaturebaseToken(input: ApiRequestParams): Promise<{ featurebaseJwt: string }> {
+	const accountService = new ClineAccountService({
+		apiBaseUrl: input.apiBaseUrl,
+		getAuthToken: async () => input.accessToken,
+	});
+	const response = await accountService.fetchFeaturebaseToken();
+	if (!response) {
+		throw new Error("Failed to fetch Featurebase token from SDK");
+	}
+	return { featurebaseJwt: response.featurebaseJwt };
+}
+
+export async function fetchSdkClineUserRemoteConfig(
+	input: ApiRequestParams,
+): Promise<SdkUserRemoteConfigResponse | null> {
 	const accountServiceConstructor = ClineAccountService;
 	if (!accountServiceConstructor) {
 		throw new Error("ClineAccountService is not available from @clinebot/core/node.");
@@ -376,4 +683,32 @@ export async function fetchSdkClineUserRemoteConfig(input: ApiRequestParams): Pr
 		getAuthToken: async () => input.accessToken,
 	});
 	return await accountService.fetchRemoteConfig();
+}
+
+export async function fetchSdkClineAccountBalance(input: ApiRequestParams): Promise<ClineAccountBalance> {
+	const accountService = new ClineAccountService({
+		apiBaseUrl: input.apiBaseUrl,
+		getAuthToken: async () => input.accessToken,
+	});
+	return await accountService.fetchBalance();
+}
+
+export async function fetchSdkOrganizationBalance(
+	input: ApiRequestParams & { organizationId: string },
+): Promise<ClineAccountOrganizationBalance> {
+	const accountService = new ClineAccountService({
+		apiBaseUrl: input.apiBaseUrl,
+		getAuthToken: async () => input.accessToken,
+	});
+	return await accountService.fetchOrganizationBalance(input.organizationId);
+}
+
+export async function switchSdkClineAccount(
+	input: ApiRequestParams & { organizationId?: string | null },
+): Promise<void> {
+	const accountService = new ClineAccountService({
+		apiBaseUrl: input.apiBaseUrl,
+		getAuthToken: async () => input.accessToken,
+	});
+	await accountService.switchAccount(input.organizationId ?? undefined);
 }

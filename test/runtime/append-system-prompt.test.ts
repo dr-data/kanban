@@ -59,11 +59,11 @@ describe("renderAppendSystemPrompt", () => {
 		const rendered = renderAppendSystemPrompt("kanban");
 		expect(rendered).toContain("Kanban sidebar agent");
 		expect(rendered).toContain("kanban task create");
-		expect(rendered).toContain("kanban task trash");
+		expect(rendered).toContain("kanban task done");
 		expect(rendered).toContain("kanban task delete");
-		expect(rendered).toContain("--column backlog|in_progress|review|trash");
+		expect(rendered).toContain("--column backlog|in_progress|review|done");
 		expect(rendered).toContain("Provide exactly one of");
-		expect(rendered).toContain("task delete --column trash");
+		expect(rendered).toContain("task delete --column done");
 		expect(rendered).toContain("kanban task link");
 		expect(rendered).toContain("If a task command fails because the runtime is unavailable");
 		expect(rendered).toContain("If the user asks for GitHub work");
@@ -118,5 +118,19 @@ describe("resolveHomeAgentAppendSystemPrompt", () => {
 		});
 		expect(prompt).toContain("Current home agent: `droid`");
 		expect(prompt).toContain("droid mcp add linear https://mcp.linear.app/mcp --type http");
+	});
+
+	it("returns active-agent guidance for kiro home sidebar sessions", () => {
+		const prompt = resolveHomeAgentAppendSystemPrompt("__home_agent__:workspace-1:kiro", {
+			currentVersion: "0.1.10",
+			cwd: "/Users/example/repo",
+			execPath: "/usr/local/bin/node",
+			execArgv: [],
+			argv: ["node", "/Users/example/repo/dist/cli.js"],
+			resolveRealPath: (path) => path,
+		});
+		expect(prompt).toContain("Current home agent: `kiro`");
+		expect(prompt).toContain("kiro-cli mcp add --name linear --url https://mcp.linear.app/mcp --scope global");
+		expect(prompt).not.toContain("--scope user");
 	});
 });

@@ -33,6 +33,7 @@ interface HookSnapshot {
 function createTask(): BoardCard {
 	return {
 		id: "task-1",
+		title: "Resume me",
 		prompt: "Resume me",
 		startInPlanMode: false,
 		autoReviewEnabled: false,
@@ -81,6 +82,7 @@ describe("useTaskSessions", () => {
 				exitCode: null,
 				lastHookAt: null,
 				latestHookActivity: null,
+				remoteControlEnabled: false,
 			},
 		});
 		previousActEnvironment = (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -179,11 +181,15 @@ describe("useTaskSessions", () => {
 		expect(startTaskSessionMutateMock).toHaveBeenCalledWith({
 			taskId: "task-1",
 			prompt: "Resume me",
+			taskTitle: "Resume me",
+			images: undefined,
 			startInPlanMode: true,
 			resumeFromTrash: undefined,
 			baseRef: "main",
 			cols: 120,
 			rows: 40,
+			agentId: undefined,
+			clineSettings: undefined,
 		});
 	});
 
@@ -226,6 +232,81 @@ describe("useTaskSessions", () => {
 						mimeType: "image/png",
 					},
 				],
+			}),
+		);
+	});
+
+	it("forwards task-level Cline reasoning effort overrides when starting a task", async () => {
+		let latestSnapshot: HookSnapshot | null = null;
+
+		await act(async () => {
+			root.render(
+				<HookHarness
+					onSnapshot={(snapshot) => {
+						latestSnapshot = snapshot;
+					}}
+				/>,
+			);
+		});
+
+		if (latestSnapshot === null) {
+			throw new Error("Expected a hook snapshot.");
+		}
+
+		await act(async () => {
+			await latestSnapshot?.startTaskSession({
+				...createTask(),
+				agentId: "cline",
+				clineSettings: {
+					providerId: "openrouter",
+					modelId: "anthropic/claude-opus-4.6",
+					reasoningEffort: "low",
+				},
+			});
+		});
+
+		expect(startTaskSessionMutateMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				clineSettings: {
+					providerId: "openrouter",
+					modelId: "anthropic/claude-opus-4.6",
+					reasoningEffort: "low",
+				},
+			}),
+		);
+	});
+
+	it("forwards reasoning-only overrides even when provider/model remain inherited", async () => {
+		let latestSnapshot: HookSnapshot | null = null;
+
+		await act(async () => {
+			root.render(
+				<HookHarness
+					onSnapshot={(snapshot) => {
+						latestSnapshot = snapshot;
+					}}
+				/>,
+			);
+		});
+
+		if (latestSnapshot === null) {
+			throw new Error("Expected a hook snapshot.");
+		}
+
+		await act(async () => {
+			await latestSnapshot?.startTaskSession({
+				...createTask(),
+				clineSettings: {
+					reasoningEffort: "high",
+				},
+			});
+		});
+
+		expect(startTaskSessionMutateMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				clineSettings: {
+					reasoningEffort: "high",
+				},
 			}),
 		);
 	});

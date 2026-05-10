@@ -11,8 +11,8 @@ export interface DependencyLinkDraft {
 export interface MobileLinkMode {
 	/** Whether mobile link mode is currently active (tap-based dependency linking). */
 	isActive: boolean;
-	/** Activate mobile link mode so card taps create dependency links. */
-	enter: () => void;
+	/** Activate mobile link mode, optionally pre-setting a source card. */
+	enter: (sourceTaskId?: string) => void;
 	/** Deactivate mobile link mode and cancel any in-progress draft. */
 	exit: () => void;
 	/** Toggle mobile link mode on or off. */
@@ -299,10 +299,20 @@ export function useDependencyLinking({
 		mobileLinkModeActiveRef.current = mobileLinkModeActive;
 	}, [mobileLinkModeActive]);
 
-	/** Activate mobile link mode so taps on cards create dependency links. */
-	const enterMobileLinkMode = useCallback(() => {
+	/** Activate mobile link mode, optionally pre-setting the source card so the user only needs one more tap. */
+	const enterMobileLinkMode = useCallback((sourceTaskId?: string) => {
 		setMobileLinkModeActive(true);
 		mobileLinkModeActiveRef.current = true;
+		if (sourceTaskId) {
+			const nextDraft: DependencyLinkDraft = {
+				sourceTaskId,
+				targetTaskId: null,
+				pointerClientX: 0,
+				pointerClientY: 0,
+			};
+			draftRef.current = nextDraft;
+			setDraft(nextDraft);
+		}
 	}, []);
 
 	/** Deactivate mobile link mode and cancel any in-progress draft. */

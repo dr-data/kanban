@@ -11,6 +11,7 @@ import { createIdleTaskSession } from "@/hooks/app-utils";
 import { selectNewestTaskSessionSummary } from "@/hooks/home-sidebar-agent-panel-session-summary";
 import { useClineChatRuntimeActions } from "@/hooks/use-cline-chat-runtime-actions";
 import { useHomeAgentSession } from "@/hooks/use-home-agent-session";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import { selectLatestTaskChatMessageForTask } from "@/runtime/native-agent";
 import { getRuntimeTrpcClient } from "@/runtime/trpc-client";
 import type {
@@ -20,7 +21,7 @@ import type {
 	RuntimeTaskChatMessage,
 	RuntimeTaskSessionSummary,
 } from "@/runtime/types";
-import { TERMINAL_THEME_COLORS } from "@/terminal/theme-colors";
+import { useTerminalThemeColors } from "@/terminal/theme-colors";
 
 interface UseHomeSidebarAgentPanelInput {
 	currentProjectId: string | null;
@@ -53,6 +54,8 @@ export function useHomeSidebarAgentPanel({
 	latestTaskChatMessage,
 	taskChatMessagesByTaskId,
 }: UseHomeSidebarAgentPanelInput): ReactElement | null {
+	const isMobile = useIsMobile();
+	const terminalThemeColors = useTerminalThemeColors();
 	const [sessionSummaries, setSessionSummaries] = useState<Record<string, RuntimeTaskSessionSummary>>({});
 	const upsertSessionSummary = useCallback((summary: RuntimeTaskSessionSummary) => {
 		setSessionSummaries((currentSessions) => {
@@ -107,7 +110,7 @@ export function useHomeSidebarAgentPanel({
 	}, [runtimeProjectConfig]);
 
 	const homeAgentPanelSummary = taskId ? (effectiveSessionSummaries[taskId] ?? null) : null;
-	const homeTaskChatMessages = taskId ? (taskChatMessagesByTaskId[taskId] ?? []) : [];
+	const homeTaskChatMessages = taskId ? (taskChatMessagesByTaskId[taskId] ?? null) : null;
 	const latestHomeTaskChatMessage = selectLatestTaskChatMessageForTask(taskId, latestTaskChatMessage);
 
 	const handleSendHomeClineChatMessage = useCallback(
@@ -163,7 +166,6 @@ export function useHomeSidebarAgentPanel({
 				onLoadMessages={handleLoadHomeClineChatMessages}
 				incomingMessage={latestHomeTaskChatMessage}
 				incomingMessages={homeTaskChatMessages}
-				showRightBorder={false}
 				composerPlaceholder="Ask Cline to add, edit, start, or link tasks"
 			/>
 		);
@@ -178,11 +180,10 @@ export function useHomeSidebarAgentPanel({
 				summary={homeAgentPanelSummary}
 				onSummary={upsertSessionSummary}
 				showSessionToolbar={false}
-				autoFocus
-				panelBackgroundColor={TERMINAL_THEME_COLORS.surfaceRaised}
-				terminalBackgroundColor={TERMINAL_THEME_COLORS.surfaceRaised}
-				cursorColor={TERMINAL_THEME_COLORS.textPrimary}
-				showRightBorder={false}
+				autoFocus={!isMobile}
+				panelBackgroundColor="var(--color-surface-1)"
+				terminalBackgroundColor={terminalThemeColors.surfaceRaised}
+				cursorColor={terminalThemeColors.textPrimary}
 			/>
 		);
 	}

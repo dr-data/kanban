@@ -23,6 +23,7 @@ import {
 	getWorkspaceChanges,
 	getWorkspaceChangesBetweenRefs,
 	getWorkspaceChangesFromRef,
+	getWorkspaceFileContent,
 } from "../workspace/get-workspace-changes";
 import { getCommitDiff, getGitLog, getGitRefs } from "../workspace/git-history";
 import { discardGitChanges, getGitSyncSummary, runGitCheckoutAction, runGitSyncAction } from "../workspace/git-sync";
@@ -317,6 +318,15 @@ export function createWorkspaceApi(deps: CreateWorkspaceApiDependencies): Runtim
 				});
 			}
 			return await getWorkspaceChanges(taskCwd);
+		},
+		getFileContent: async (workspaceScope, input) => {
+			const taskCwd = await resolveTaskCwd({
+				cwd: workspaceScope.workspacePath,
+				taskId: input.taskId,
+				baseRef: input.baseRef,
+				ensure: false,
+			});
+			return await getWorkspaceFileContent(taskCwd, input.path);
 		},
 		ensureWorktree: async (workspaceScope, input) => {
 			const body = parseWorktreeEnsureRequest(input);

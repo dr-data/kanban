@@ -14,15 +14,23 @@ import { isClineClearSlashCommand } from "../cline-sdk/cline-slash-commands";
 import type { ClineTaskSessionService } from "../cline-sdk/cline-task-session-service";
 import type { RuntimeConfigState } from "../config/runtime-config";
 import { updateGlobalRuntimeConfig, updateRuntimeConfig } from "../config/runtime-config";
-import type { RuntimeCommandRunResponse } from "../core/api-contract";
+import type {
+	RuntimeCommandRunResponse,
+	RuntimeRunUpdateResponse,
+	RuntimeUpdateStatusResponse,
+} from "../core/api-contract";
 import {
+	parseClineAccountSwitchRequest,
 	parseClineAddProviderRequest,
+	parseClineDeviceAuthCompleteRequest,
 	parseClineMcpOAuthRequest,
 	parseClineMcpSettingsSaveRequest,
 	parseClineOauthLoginRequest,
 	parseClineProviderModelsRequest,
 	parseClineProviderSettingsSaveRequest,
+	parseClineUpdateProviderRequest,
 	parseCommandRunRequest,
+	parseEnableRemoteControlRequest,
 	parseRuntimeConfigSaveRequest,
 	parseShellSessionStartRequest,
 	parseTaskChatAbortRequest,
@@ -35,6 +43,7 @@ import {
 	parseTaskSessionStopRequest,
 } from "../core/api-validation";
 import { isHomeAgentSessionId } from "../core/home-agent-session";
+import { resolveTaskTitle } from "../core/task-title.js";
 import { openInBrowser } from "../server/browser";
 import { buildRuntimeConfigResponse, resolveAgentCommand } from "../terminal/agent-registry";
 import type { TerminalSessionManager } from "../terminal/session-manager";
@@ -57,6 +66,8 @@ export interface CreateRuntimeApiDependencies {
 	broadcastTaskChatCleared?: (workspaceId: string, taskId: string) => void;
 	bumpClineSessionContextVersion?: () => void;
 	prepareForStateReset?: () => Promise<void>;
+	getUpdateStatus: () => RuntimeUpdateStatusResponse;
+	runUpdateNow: () => Promise<RuntimeRunUpdateResponse>;
 }
 
 async function resolveExistingTaskCwdOrEnsure(options: {
@@ -139,16 +150,29 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 		},
 		saveClineProviderSettings: async (_workspaceScope, input) => {
 			const body = parseClineProviderSettingsSaveRequest(input);
-			return clineProviderService.saveProviderSettings(body);
+			const response = clineProviderService.saveProviderSettings(body);
+			deps.bumpClineSessionContextVersion?.();
+			return response;
 		},
 		addClineProvider: async (_workspaceScope, input) => {
 			const body = parseClineAddProviderRequest(input);
-			return await clineProviderService.addCustomProvider(body);
+			const response = await clineProviderService.addCustomProvider(body);
+			deps.bumpClineSessionContextVersion?.();
+			return response;
+		},
+		updateClineProvider: async (_workspaceScope, input) => {
+			const body = parseClineUpdateProviderRequest(input);
+			const response = await clineProviderService.updateCustomProvider(body);
+			deps.bumpClineSessionContextVersion?.();
+			return response;
 		},
 		startTaskSession: async (workspaceScope, input) => {
 			try {
 				const body = parseTaskSessionStartRequest(input);
-				const requestedTaskMode = body.mode ?? (body.startInPlanMode ? "plan" : "act");
+				if (body.resumeFromTrash) {
+					deps.broadcastTaskChatCleared?.(workspaceScope.workspaceId, body.taskId);
+				}
+				const requestedClineTaskMode = body.mode ?? "act";
 				const scopedRuntimeConfig = await deps.loadScopedRuntimeConfig(workspaceScope);
 				const taskCwd = isHomeAgentSessionId(body.taskId)
 					? workspaceScope.workspacePath
@@ -159,16 +183,31 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 						});
 				const shouldCaptureTurnCheckpoint = !body.resumeFromTrash && !isHomeAgentSessionId(body.taskId);
 
-				// When restoring from trash, resume with the original agent so conversation
-				// history is preserved. Terminal agents have their agentId preserved in the
-				// hydrated session summary; Cline tasks are detected via persisted SDK sessions.
+				// Per-task config source-of-truth precedence:
+				//
+				// agentId resolution (which agent runtime to use):
+				//   1. previousTerminalAgentId — persisted in the terminal session summary from
+				//      the last run; ensures trash-restore resumes with the same agent runtime.
+				//   2. body.agentId — the card's current per-task agent override.
+				//   3. scopedRuntimeConfig.selectedAgentId — the workspace-level default.
+				//
+				// clineSettings (which LLM model and reasoning profile the Cline agent uses):
+				//   Always taken from the card's current override object. There is no
+				//   session-level persistence for these;
+				//   if the user changes the model on the card, the next session launch
+				//   (including trash-restore) uses the updated values.
 				const terminalManager = await deps.getScopedTerminalManager(workspaceScope);
 				const previousTerminalAgentId = body.resumeFromTrash
 					? (terminalManager.getSummary(body.taskId)?.agentId ?? null)
 					: null;
-				const effectiveAgentId = previousTerminalAgentId ?? scopedRuntimeConfig.selectedAgentId;
+				const effectiveAgentId = previousTerminalAgentId ?? body.agentId ?? scopedRuntimeConfig.selectedAgentId;
 				let useClinePath = effectiveAgentId === "cline";
-				if (body.resumeFromTrash && !useClinePath) {
+				const shouldProbePersistedClineSession =
+					body.resumeFromTrash && !useClinePath && previousTerminalAgentId === null;
+				if (shouldProbePersistedClineSession) {
+					// If the terminal summary already has a concrete non-Cline agentId,
+					// skip Cline persisted-session probing. That probe can cold-start the
+					// Cline session host and adds multi-second latency to Codex restores.
 					const clineSessionService = await deps.getScopedClineTaskSessionService(workspaceScope);
 					const persistedSession = await clineSessionService
 						.rebindPersistedTaskSession(body.taskId)
@@ -179,17 +218,29 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 				}
 
 				if (useClinePath) {
-					const clineLaunchConfig = await clineProviderService.resolveLaunchConfig();
+					const hasTaskLevelClineSettingsOverride = body.clineSettings !== undefined;
+					const clineLaunchConfig = await clineProviderService.resolveLaunchConfig({
+						providerIdOverride: body.clineSettings?.providerId ?? undefined,
+						modelIdOverride: body.clineSettings?.modelId ?? undefined,
+						...(hasTaskLevelClineSettingsOverride
+							? {
+									reasoningEffortOverride: body.clineSettings?.reasoningEffort ?? null,
+								}
+							: {}),
+					});
 					const clineTaskSessionService = await deps.getScopedClineTaskSessionService(workspaceScope);
+					const resolvedClineTitle = resolveTaskTitle(body.taskTitle?.trim(), body.prompt);
 					const summary = await clineTaskSessionService.startTaskSession({
 						taskId: body.taskId,
 						cwd: taskCwd,
 						prompt: body.prompt,
+						taskTitle: resolvedClineTitle.length > 0 ? resolvedClineTitle : undefined,
 						images: body.images,
 						resumeFromTrash: body.resumeFromTrash,
 						providerId: clineLaunchConfig.providerId,
 						modelId: clineLaunchConfig.modelId,
-						mode: requestedTaskMode,
+						mode: requestedClineTaskMode,
+						startInPlanMode: body.startInPlanMode,
 						apiKey: clineLaunchConfig.apiKey,
 						baseUrl: clineLaunchConfig.baseUrl,
 						reasoningEffort: clineLaunchConfig.reasoningEffort,
@@ -372,7 +423,21 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 			try {
 				const body = parseTaskChatReloadRequest(input);
 				const clineTaskSessionService = await deps.getScopedClineTaskSessionService(workspaceScope);
-				const summary = await clineTaskSessionService.reloadTaskSession(body.taskId);
+				let summary = await clineTaskSessionService.reloadTaskSession(body.taskId);
+				if (!summary && isHomeAgentSessionId(body.taskId)) {
+					const clineLaunchConfig = await clineProviderService.resolveLaunchConfig();
+					summary = await clineTaskSessionService.startTaskSession({
+						taskId: body.taskId,
+						cwd: workspaceScope.workspacePath,
+						prompt: "",
+						resumeFromPersistence: true,
+						providerId: clineLaunchConfig.providerId,
+						modelId: clineLaunchConfig.modelId,
+						apiKey: clineLaunchConfig.apiKey,
+						baseUrl: clineLaunchConfig.baseUrl,
+						reasoningEffort: clineLaunchConfig.reasoningEffort,
+					});
+				}
 				if (!summary) {
 					return {
 						ok: false,
@@ -452,6 +517,19 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 		getClineKanbanAccess: async (_workspaceScope) => {
 			return await clineProviderService.getClineKanbanAccess();
 		},
+		getFeaturebaseToken: async (_workspaceScope) => {
+			return await clineProviderService.getFeaturebaseToken();
+		},
+		getClineAccountBalance: async (_workspaceScope) => {
+			return await clineProviderService.getClineAccountBalance();
+		},
+		getClineAccountOrganizations: async (_workspaceScope) => {
+			return await clineProviderService.getClineAccountOrganizations();
+		},
+		switchClineAccount: async (_workspaceScope, input) => {
+			const body = parseClineAccountSwitchRequest(input);
+			return await clineProviderService.switchClineAccount(body.organizationId);
+		},
 		getClineProviderModels: async (_workspaceScope, input) => {
 			const body = parseClineProviderModelsRequest(input);
 			return await clineProviderService.getProviderModels(body.providerId);
@@ -484,10 +562,30 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 		},
 		runClineProviderOAuthLogin: async (_workspaceScope, input) => {
 			const body = parseClineOauthLoginRequest(input);
-			return await clineProviderService.runOauthLogin({
+			const response = await clineProviderService.runOauthLogin({
 				providerId: body.provider,
 				baseUrl: body.baseUrl,
 			});
+			if (response.ok) {
+				deps.bumpClineSessionContextVersion?.();
+			}
+			return response;
+		},
+		startClineDeviceAuth: async () => {
+			return await clineProviderService.startDeviceAuth();
+		},
+		completeClineDeviceAuth: async (_workspaceScope, input) => {
+			const body = parseClineDeviceAuthCompleteRequest(input);
+			const response = await clineProviderService.completeDeviceAuth({
+				deviceCode: body.deviceCode,
+				expiresInSeconds: body.expiresInSeconds,
+				pollIntervalSeconds: body.pollIntervalSeconds,
+				baseUrl: body.baseUrl,
+			});
+			if (response.ok) {
+				deps.bumpClineSessionContextVersion?.();
+			}
+			return response;
 		},
 		sendTaskChatMessage: async (workspaceScope, input) => {
 			try {
@@ -534,6 +632,7 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 							cwd: workspaceScope.workspacePath,
 							prompt: body.text,
 							images: body.images,
+							resumeFromPersistence: true,
 							providerId: clineLaunchConfig.providerId,
 							modelId: clineLaunchConfig.modelId,
 							mode: requestedMode,
@@ -618,6 +717,27 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 				clearedPaths: [...debugResetTargetPaths],
 			};
 		},
+		enableRemoteControl: async (workspaceScope, input) => {
+			const body = parseEnableRemoteControlRequest(input);
+			const terminalManager = await deps.getScopedTerminalManager(workspaceScope);
+			const summary = terminalManager.getSummary(body.taskId);
+			if (!summary) {
+				return { ok: false, error: "No session found for this task." };
+			}
+			if (summary.agentId !== "claude") {
+				return { ok: false, error: "Remote control is only supported for Claude Code sessions." };
+			}
+			const isActive = summary.state === "running" || summary.state === "awaiting_review";
+			if (isActive) {
+				return {
+					ok: false,
+					error: "Session is currently running. Stop the session and restart to apply remote control changes.",
+					requiresRestart: true,
+				};
+			}
+			terminalManager.setRemoteControlEnabled(body.taskId, body.enabled);
+			return { ok: true };
+		},
 		openFile: async (input) => {
 			const filePath = input.filePath.trim();
 			if (!filePath) {
@@ -628,6 +748,12 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 			}
 			openInBrowser(filePath);
 			return { ok: true };
+		},
+		getUpdateStatus: async () => {
+			return deps.getUpdateStatus();
+		},
+		runUpdateNow: async () => {
+			return await deps.runUpdateNow();
 		},
 	};
 }

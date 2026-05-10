@@ -1,4 +1,10 @@
-import type { RuntimeBoardColumnId, RuntimeTaskAutoReviewMode, RuntimeTaskImage } from "@/runtime/types";
+import type {
+	RuntimeAgentId,
+	RuntimeBoardColumnId,
+	RuntimeTaskAutoReviewMode,
+	RuntimeTaskClineSettings,
+	RuntimeTaskImage,
+} from "@/runtime/types";
 
 export type BoardColumnId = RuntimeBoardColumnId;
 
@@ -8,7 +14,7 @@ export type TaskImage = RuntimeTaskImage;
 export const DEFAULT_TASK_AUTO_REVIEW_MODE: TaskAutoReviewMode = "commit";
 
 export function resolveTaskAutoReviewMode(mode: TaskAutoReviewMode | null | undefined): TaskAutoReviewMode {
-	if (mode === "pr" || mode === "move_to_trash") {
+	if (mode === "pr") {
 		return mode;
 	}
 	return DEFAULT_TASK_AUTO_REVIEW_MODE;
@@ -19,9 +25,6 @@ export function getTaskAutoReviewActionLabel(mode: TaskAutoReviewMode | null | u
 	if (resolvedMode === "pr") {
 		return "PR";
 	}
-	if (resolvedMode === "move_to_trash") {
-		return "move to trash";
-	}
 	return "commit";
 }
 
@@ -30,22 +33,29 @@ export function getTaskAutoReviewCancelButtonLabel(mode: TaskAutoReviewMode | nu
 	if (resolvedMode === "pr") {
 		return "Cancel Auto-PR";
 	}
-	if (resolvedMode === "move_to_trash") {
-		return "Cancel Auto-trash";
-	}
 	return "Cancel Auto-commit";
 }
 
 export interface BoardCard {
 	id: string;
+	title: string;
 	prompt: string;
 	startInPlanMode: boolean;
 	autoReviewEnabled?: boolean;
 	autoReviewMode?: TaskAutoReviewMode;
 	images?: TaskImage[];
+	agentId?: RuntimeAgentId;
+	clineSettings?: RuntimeTaskClineSettings;
 	baseRef: string;
 	createdAt: number;
 	updatedAt: number;
+	recurringEnabled?: boolean;
+	recurringMaxIterations?: number;
+	recurringPeriodMs?: number;
+	recurringCurrentIteration?: number;
+	scheduledStartAt?: number | null;
+	scheduledEndAt?: number | null;
+	recurringLinkedTaskIds?: string[];
 }
 
 export interface BoardColumn {

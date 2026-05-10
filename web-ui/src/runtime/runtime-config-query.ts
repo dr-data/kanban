@@ -4,8 +4,14 @@
 import { getRuntimeTrpcClient } from "@/runtime/trpc-client";
 import type {
 	RuntimeAgentId,
+	RuntimeClineAccountBalanceResponse,
+	RuntimeClineAccountOrganizationsResponse,
 	RuntimeClineAccountProfileResponse,
+	RuntimeClineAccountSwitchResponse,
 	RuntimeClineAddProviderResponse,
+	RuntimeClineDeviceAuthCompleteRequest,
+	RuntimeClineDeviceAuthCompleteResponse,
+	RuntimeClineDeviceAuthStartResponse,
 	RuntimeClineKanbanAccessResponse,
 	RuntimeClineMcpAuthStatusResponse,
 	RuntimeClineMcpOAuthResponse,
@@ -18,9 +24,13 @@ import type {
 	RuntimeClineProviderModel,
 	RuntimeClineProviderSettings,
 	RuntimeClineReasoningEffort,
+	RuntimeClineUpdateProviderResponse,
 	RuntimeConfigResponse,
 	RuntimeDebugResetAllStateResponse,
+	RuntimeFeaturebaseTokenResponse,
 	RuntimeProjectShortcut,
+	RuntimeRunUpdateResponse,
+	RuntimeUpdateStatusResponse,
 } from "@/runtime/types";
 
 export async function fetchRuntimeConfig(workspaceId: string | null): Promise<RuntimeConfigResponse> {
@@ -52,6 +62,20 @@ export async function saveClineProviderSettings(
 		apiKey?: string | null;
 		baseUrl?: string | null;
 		reasoningEffort?: RuntimeClineReasoningEffort | null;
+		region?: string | null;
+		aws?: {
+			accessKey?: string | null;
+			secretKey?: string | null;
+			sessionToken?: string | null;
+			region?: string | null;
+			profile?: string | null;
+			authentication?: "iam" | "api-key" | "profile" | null;
+			endpoint?: string | null;
+		};
+		gcp?: {
+			projectId?: string | null;
+			region?: string | null;
+		};
 	},
 ): Promise<RuntimeClineProviderSettings> {
 	const trpcClient = getRuntimeTrpcClient(workspaceId);
@@ -77,6 +101,25 @@ export async function addClineProvider(
 	return await trpcClient.runtime.addClineProvider.mutate(input);
 }
 
+export async function updateClineProvider(
+	workspaceId: string | null,
+	input: {
+		providerId: string;
+		name?: string;
+		baseUrl?: string;
+		apiKey?: string | null;
+		headers?: Record<string, string> | null;
+		timeoutMs?: number | null;
+		models?: string[];
+		defaultModelId?: string | null;
+		modelsSourceUrl?: string | null;
+		capabilities?: RuntimeClineProviderCapability[];
+	},
+): Promise<RuntimeClineUpdateProviderResponse> {
+	const trpcClient = getRuntimeTrpcClient(workspaceId);
+	return await trpcClient.runtime.updateClineProvider.mutate(input);
+}
+
 export async function fetchClineProviderCatalog(
 	workspaceId: string | null,
 ): Promise<RuntimeClineProviderCatalogItem[]> {
@@ -97,6 +140,11 @@ export async function fetchClineKanbanAccess(workspaceId: string | null): Promis
 	return await trpcClient.runtime.getClineKanbanAccess.query();
 }
 
+export async function fetchFeaturebaseToken(workspaceId: string | null): Promise<RuntimeFeaturebaseTokenResponse> {
+	const trpcClient = getRuntimeTrpcClient(workspaceId);
+	return await trpcClient.runtime.getFeaturebaseToken.query();
+}
+
 export async function fetchClineProviderModels(
 	workspaceId: string | null,
 	providerId: string,
@@ -115,6 +163,19 @@ export async function runClineProviderOauthLogin(
 ): Promise<RuntimeClineOauthLoginResponse> {
 	const trpcClient = getRuntimeTrpcClient(workspaceId);
 	return await trpcClient.runtime.runClineProviderOAuthLogin.mutate(input);
+}
+
+export async function startClineDeviceAuth(workspaceId: string | null): Promise<RuntimeClineDeviceAuthStartResponse> {
+	const trpcClient = getRuntimeTrpcClient(workspaceId);
+	return await trpcClient.runtime.startClineDeviceAuth.mutate();
+}
+
+export async function completeClineDeviceAuth(
+	workspaceId: string | null,
+	input: RuntimeClineDeviceAuthCompleteRequest,
+): Promise<RuntimeClineDeviceAuthCompleteResponse> {
+	const trpcClient = getRuntimeTrpcClient(workspaceId);
+	return await trpcClient.runtime.completeClineDeviceAuth.mutate(input);
 }
 
 export async function fetchClineMcpSettings(workspaceId: string | null): Promise<RuntimeClineMcpSettingsResponse> {
@@ -157,4 +218,36 @@ export async function resetRuntimeDebugState(workspaceId: string | null): Promis
 export async function openFileOnHost(workspaceId: string | null, filePath: string): Promise<void> {
 	const trpcClient = getRuntimeTrpcClient(workspaceId);
 	await trpcClient.runtime.openFile.mutate({ filePath });
+}
+
+export async function fetchClineAccountBalance(
+	workspaceId: string | null,
+): Promise<RuntimeClineAccountBalanceResponse> {
+	const trpcClient = getRuntimeTrpcClient(workspaceId);
+	return await trpcClient.runtime.getClineAccountBalance.query();
+}
+
+export async function fetchClineAccountOrganizations(
+	workspaceId: string | null,
+): Promise<RuntimeClineAccountOrganizationsResponse> {
+	const trpcClient = getRuntimeTrpcClient(workspaceId);
+	return await trpcClient.runtime.getClineAccountOrganizations.query();
+}
+
+export async function switchClineAccount(
+	workspaceId: string | null,
+	organizationId: string | null,
+): Promise<RuntimeClineAccountSwitchResponse> {
+	const trpcClient = getRuntimeTrpcClient(workspaceId);
+	return await trpcClient.runtime.switchClineAccount.mutate({ organizationId });
+}
+
+export async function fetchRuntimeUpdateStatus(workspaceId: string | null): Promise<RuntimeUpdateStatusResponse> {
+	const trpcClient = getRuntimeTrpcClient(workspaceId);
+	return await trpcClient.runtime.getUpdateStatus.query();
+}
+
+export async function runRuntimeUpdateNow(workspaceId: string | null): Promise<RuntimeRunUpdateResponse> {
+	const trpcClient = getRuntimeTrpcClient(workspaceId);
+	return await trpcClient.runtime.runUpdateNow.mutate();
 }

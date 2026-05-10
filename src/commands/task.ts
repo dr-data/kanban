@@ -2,12 +2,17 @@ import { createTRPCProxyClient, httpBatchLink } from "@trpc/client";
 import type { Command } from "commander";
 
 import type {
+	RuntimeAgentId,
 	RuntimeBoardCard,
 	RuntimeBoardColumnId,
 	RuntimeBoardDependency,
+	RuntimeClineReasoningEffort,
+	RuntimeTaskAutoReviewMode,
+	RuntimeTaskClineSettings,
 	RuntimeWorkspaceStateResponse,
 } from "../core/api-contract";
-import { buildKanbanRuntimeUrl, getKanbanRuntimeOrigin } from "../core/runtime-endpoint";
+import { runtimeAgentIdSchema, runtimeClineReasoningEffortSchema } from "../core/api-contract";
+import { buildKanbanRuntimeUrl, getKanbanRuntimeOrigin, getRuntimeFetch } from "../core/runtime-endpoint";
 import {
 	addTaskDependency,
 	addTaskToColumn,
@@ -59,20 +64,164 @@ function parseListColumn(value: string | undefined): ListTaskColumn | undefined 
 	if (value === undefined) {
 		return undefined;
 	}
+	if (value === "done") {
+		return "trash";
+	}
 	if (value === "backlog" || value === "in_progress" || value === "review" || value === "trash") {
 		return value;
 	}
-	throw new Error(`Invalid column "${value}". Expected one of: ${LIST_TASK_COLUMNS.join(", ")}.`);
+	throw new Error(`Invalid column "${value}". Expected one of: ${LIST_TASK_COLUMNS.join(", ")}, done.`);
 }
 
-function parseAutoReviewMode(value: string | undefined): "commit" | "pr" | "move_to_trash" | undefined {
+function parseAutoReviewMode(value: string | undefined): "commit" | "pr" | undefined {
 	if (value === undefined) {
 		return undefined;
 	}
-	if (value === "commit" || value === "pr" || value === "move_to_trash") {
+	if (value === "commit" || value === "pr") {
 		return value;
 	}
-	throw new Error(`Invalid auto review mode "${value}". Expected: commit, pr, move_to_trash.`);
+	throw new Error(`Invalid auto review mode "${value}". Expected: commit, pr.`);
+}
+
+const VALID_AGENT_IDS = runtimeAgentIdSchema.options;
+
+function parseAgentId(value: string | undefined): RuntimeAgentId | null | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (value === "default") {
+		return null;
+	}
+	const result = runtimeAgentIdSchema.safeParse(value);
+	if (result.success) {
+		return result.data;
+	}
+	throw new Error(`Invalid agent ID "${value}". Expected one of: ${VALID_AGENT_IDS.join(", ")}, default.`);
+}
+
+function parseOptionalStringOrDefault(value: string | undefined): string | null | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (value === "default") {
+		return null;
+	}
+	return value;
+}
+
+type ParsedTaskClineReasoningEffort = RuntimeClineReasoningEffort | "default" | null | undefined;
+
+function parseTaskClineReasoningEffort(value: string | undefined): ParsedTaskClineReasoningEffort {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (value === "inherit") {
+		return null;
+	}
+	if (value === "default") {
+		return "default";
+	}
+	const result = runtimeClineReasoningEffortSchema.safeParse(value);
+	if (result.success) {
+		return result.data;
+	}
+	throw new Error("Invalid Cline reasoning effort. Expected one of: default, low, medium, high, xhigh, inherit.");
+}
+
+function cloneTaskClineSettings(settings?: RuntimeTaskClineSettings): RuntimeTaskClineSettings | undefined {
+	if (settings === undefined) {
+		return undefined;
+	}
+	const providerId = settings.providerId?.trim();
+	const modelId = settings.modelId?.trim();
+	return {
+		...(providerId ? { providerId } : {}),
+		...(modelId ? { modelId } : {}),
+		...(settings.reasoningEffort ? { reasoningEffort: settings.reasoningEffort } : {}),
+	};
+}
+
+function formatTaskClineSettings(settings?: RuntimeTaskClineSettings): JsonRecord {
+	if (settings === undefined) {
+		return {};
+	}
+	return {
+		clineSettings: cloneTaskClineSettings(settings) ?? {},
+	};
+}
+
+function buildTaskClineSettingsForCreate(input: {
+	providerId?: string;
+	modelId?: string;
+	reasoningEffort?: ParsedTaskClineReasoningEffort;
+}): RuntimeTaskClineSettings | undefined {
+	const providerId = input.providerId?.trim();
+	const modelId = input.modelId?.trim();
+	const reasoningEffort = input.reasoningEffort === null ? undefined : input.reasoningEffort;
+	if (!providerId && !modelId && reasoningEffort === undefined) {
+		return undefined;
+	}
+	return {
+		...(providerId ? { providerId } : {}),
+		...(modelId ? { modelId } : {}),
+		...(reasoningEffort && reasoningEffort !== "default" ? { reasoningEffort } : {}),
+	};
+}
+
+function buildTaskClineSettingsForUpdate(
+	currentSettings: RuntimeTaskClineSettings | undefined,
+	input: {
+		providerId?: string | null;
+		modelId?: string | null;
+		reasoningEffort?: ParsedTaskClineReasoningEffort;
+	},
+): RuntimeTaskClineSettings | null | undefined {
+	if (input.providerId === undefined && input.modelId === undefined && input.reasoningEffort === undefined) {
+		return undefined;
+	}
+	const nextSettings = cloneTaskClineSettings(currentSettings) ?? {};
+	let preserveEmptyOverride = currentSettings !== undefined && Object.keys(currentSettings).length === 0;
+
+	if (input.providerId !== undefined) {
+		const providerId = input.providerId?.trim();
+		if (providerId) {
+			nextSettings.providerId = providerId;
+		} else {
+			delete nextSettings.providerId;
+		}
+	}
+
+	if (input.modelId !== undefined) {
+		const modelId = input.modelId?.trim();
+		if (modelId) {
+			nextSettings.modelId = modelId;
+		} else {
+			delete nextSettings.modelId;
+		}
+	}
+
+	if (input.reasoningEffort !== undefined) {
+		if (input.reasoningEffort === "default") {
+			delete nextSettings.reasoningEffort;
+			preserveEmptyOverride = true;
+		} else if (input.reasoningEffort === null) {
+			delete nextSettings.reasoningEffort;
+			preserveEmptyOverride = false;
+		} else {
+			nextSettings.reasoningEffort = input.reasoningEffort;
+		}
+	}
+
+	if (
+		nextSettings.providerId === undefined &&
+		nextSettings.modelId === undefined &&
+		nextSettings.reasoningEffort === undefined &&
+		!preserveEmptyOverride
+	) {
+		return null;
+	}
+
+	return nextSettings;
 }
 
 function resolveTaskCommandTarget(input: TaskCommandTarget, commandName: string): ResolvedTaskCommandTarget {
@@ -102,6 +251,10 @@ function createRuntimeTrpcClient(workspaceId: string | null) {
 			httpBatchLink({
 				url: buildKanbanRuntimeUrl("/api/trpc"),
 				headers: () => (workspaceId ? { "x-kanban-workspace-id": workspaceId } : {}),
+				fetch: async (url, options) => {
+					const runtimeFetch = await getRuntimeFetch();
+					return runtimeFetch(url, options);
+				},
 			}),
 		],
 	});
@@ -199,6 +352,8 @@ function formatTaskRecord(
 		startInPlanMode: task.startInPlanMode,
 		autoReviewEnabled: task.autoReviewEnabled === true,
 		autoReviewMode: task.autoReviewMode ?? "commit",
+		...(task.agentId ? { agentId: task.agentId } : {}),
+		...formatTaskClineSettings(task.clineSettings),
 		createdAt: task.createdAt,
 		updatedAt: task.updatedAt,
 		session: session
@@ -238,7 +393,7 @@ function getLinkFailureMessage(reason: RuntimeAddTaskDependencyResult["reason"])
 		return "These tasks are already linked.";
 	}
 	if (reason === "trash_task") {
-		return "Links cannot include trashed tasks.";
+		return "Links cannot include done tasks.";
 	}
 	if (reason === "non_backlog") {
 		return "Links require at least one backlog task.";
@@ -318,14 +473,23 @@ async function deleteTaskWorkspace(
 	}
 }
 
+/** Create a new task in the backlog column with optional recurring and scheduling configuration. */
 async function createTask(input: {
 	cwd: string;
+	title?: string;
 	prompt: string;
 	projectPath?: string;
 	baseRef?: string;
 	startInPlanMode?: boolean;
 	autoReviewEnabled?: boolean;
 	autoReviewMode?: "commit" | "pr" | "move_to_trash";
+	agentId?: RuntimeAgentId;
+	clineSettings?: RuntimeTaskClineSettings;
+	recurringEnabled?: boolean;
+	recurringMaxIterations?: number;
+	recurringPeriodMs?: number;
+	scheduledStartAt?: number;
+	scheduledEndAt?: number;
 }): Promise<JsonRecord> {
 	const workspaceRepoPath = await resolveWorkspaceRepoPath(input.projectPath, input.cwd);
 	const workspaceId = await ensureRuntimeWorkspace(workspaceRepoPath);
@@ -339,11 +503,19 @@ async function createTask(input: {
 			state.board,
 			"backlog",
 			{
+				title: input.title,
 				prompt: input.prompt,
 				startInPlanMode: input.startInPlanMode,
 				autoReviewEnabled: input.autoReviewEnabled,
-				autoReviewMode: input.autoReviewMode,
+				autoReviewMode: input.autoReviewMode as RuntimeTaskAutoReviewMode | undefined,
+				agentId: input.agentId,
+				clineSettings: input.clineSettings,
 				baseRef: resolvedBaseRef,
+				recurringEnabled: input.recurringEnabled,
+				recurringMaxIterations: input.recurringMaxIterations,
+				recurringPeriodMs: input.recurringPeriodMs,
+				scheduledStartAt: input.scheduledStartAt ?? null,
+				scheduledEndAt: input.scheduledEndAt ?? null,
 			},
 			() => globalThis.crypto.randomUUID(),
 		);
@@ -359,31 +531,60 @@ async function createTask(input: {
 			id: created.id,
 			column: "backlog",
 			workspacePath: workspaceRepoPath,
+			title: created.title,
 			prompt: created.prompt,
 			baseRef: created.baseRef,
 			startInPlanMode: created.startInPlanMode,
 			autoReviewEnabled: created.autoReviewEnabled === true,
 			autoReviewMode: created.autoReviewMode ?? "commit",
+			...(created.agentId ? { agentId: created.agentId } : {}),
+			...formatTaskClineSettings(created.clineSettings),
+			recurringEnabled: created.recurringEnabled ?? false,
+			recurringMaxIterations: created.recurringMaxIterations ?? 0,
+			recurringPeriodMs: created.recurringPeriodMs ?? 0,
+			scheduledStartAt: created.scheduledStartAt ?? null,
+			scheduledEndAt: created.scheduledEndAt ?? null,
 		},
 	};
 }
 
+/** Update an existing task, including prompt, base ref, plan mode, auto-review, and recurring configuration. */
 async function updateTaskCommand(input: {
 	cwd: string;
 	taskId: string;
+	title?: string;
 	projectPath?: string;
 	prompt?: string;
 	baseRef?: string;
 	startInPlanMode?: boolean;
 	autoReviewEnabled?: boolean;
 	autoReviewMode?: "commit" | "pr" | "move_to_trash";
+	agentId?: RuntimeAgentId | null;
+	clineProviderId?: string | null;
+	clineModelId?: string | null;
+	clineReasoningEffort?: ParsedTaskClineReasoningEffort;
+	recurringEnabled?: boolean;
+	recurringMaxIterations?: number;
+	recurringPeriodMs?: number;
+	scheduledStartAt?: number;
+	scheduledEndAt?: number;
 }): Promise<JsonRecord> {
 	if (
+		input.title === undefined &&
 		input.prompt === undefined &&
 		input.baseRef === undefined &&
 		input.startInPlanMode === undefined &&
 		input.autoReviewEnabled === undefined &&
-		input.autoReviewMode === undefined
+		input.autoReviewMode === undefined &&
+		input.agentId === undefined &&
+		input.clineProviderId === undefined &&
+		input.clineModelId === undefined &&
+		input.clineReasoningEffort === undefined &&
+		input.recurringEnabled === undefined &&
+		input.recurringMaxIterations === undefined &&
+		input.recurringPeriodMs === undefined &&
+		input.scheduledStartAt === undefined &&
+		input.scheduledEndAt === undefined
 	) {
 		throw new Error("task update requires at least one field to change.");
 	}
@@ -396,13 +597,28 @@ async function updateTaskCommand(input: {
 		if (!taskRecord) {
 			throw new Error(`Task "${input.taskId}" was not found in workspace ${workspaceRepoPath}.`);
 		}
+		const nextTaskClineSettings = buildTaskClineSettingsForUpdate(taskRecord.task.clineSettings, {
+			providerId: input.clineProviderId,
+			modelId: input.clineModelId,
+			reasoningEffort: input.clineReasoningEffort,
+		});
 
 		const updatedTask = updateTask(runtimeState.board, input.taskId, {
+			title: input.title ?? taskRecord.task.title,
 			prompt: input.prompt ?? taskRecord.task.prompt,
 			baseRef: input.baseRef ?? taskRecord.task.baseRef,
 			startInPlanMode: input.startInPlanMode ?? taskRecord.task.startInPlanMode,
 			autoReviewEnabled: input.autoReviewEnabled ?? taskRecord.task.autoReviewEnabled === true,
-			autoReviewMode: input.autoReviewMode ?? taskRecord.task.autoReviewMode ?? "commit",
+			autoReviewMode: (input.autoReviewMode ??
+				taskRecord.task.autoReviewMode ??
+				"commit") as RuntimeTaskAutoReviewMode,
+			agentId: input.agentId,
+			clineSettings: nextTaskClineSettings,
+			recurringEnabled: input.recurringEnabled ?? taskRecord.task.recurringEnabled,
+			recurringMaxIterations: input.recurringMaxIterations ?? taskRecord.task.recurringMaxIterations,
+			recurringPeriodMs: input.recurringPeriodMs ?? taskRecord.task.recurringPeriodMs,
+			scheduledStartAt: input.scheduledStartAt ?? taskRecord.task.scheduledStartAt,
+			scheduledEndAt: input.scheduledEndAt ?? taskRecord.task.scheduledEndAt,
 		});
 		if (!updatedTask.updated || !updatedTask.task) {
 			throw new Error(`Task "${input.taskId}" could not be updated.`);
@@ -526,8 +742,11 @@ async function startTask(input: { cwd: string; taskId: string; projectPath?: str
 		const started = await runtimeClient.runtime.startTaskSession.mutate({
 			taskId: task.id,
 			prompt: task.prompt,
+			taskTitle: task.title,
 			startInPlanMode: task.startInPlanMode,
 			baseRef: task.baseRef,
+			agentId: task.agentId,
+			clineSettings: task.clineSettings,
 		});
 		if (!started.ok || !started.summary) {
 			throw new Error(started.error ?? "Could not start task session.");
@@ -624,7 +843,7 @@ async function trashTaskById(input: {
 
 		const trashed = trashTaskAndGetReadyLinkedTaskIds(latestState.board, input.taskId);
 		if (!trashed.moved || !trashed.task) {
-			throw new Error(`Task "${input.taskId}" could not be moved to trash.`);
+			throw new Error(`Task "${input.taskId}" could not be moved to done.`);
 		}
 
 		const nextState: RuntimeWorkspaceStateResponse = {
@@ -692,7 +911,7 @@ async function trashTask(input: {
 	column?: ListTaskColumn;
 	projectPath?: string;
 }): Promise<JsonRecord> {
-	const target = resolveTaskCommandTarget(input, "task trash");
+	const target = resolveTaskCommandTarget(input, "task done");
 	const workspaceRepoPath = await resolveWorkspaceRepoPath(input.projectPath, input.cwd);
 	const workspaceId = await ensureRuntimeWorkspace(workspaceRepoPath);
 	const runtimeClient = createRuntimeTrpcClient(workspaceId);
@@ -708,7 +927,7 @@ async function trashTask(input: {
 		if (trashed.alreadyInTrash) {
 			return {
 				ok: true,
-				message: `Task "${target.taskId}" is already in trash.`,
+				message: `Task "${target.taskId}" is already done.`,
 				task: trashed.task,
 				workspacePath: workspaceRepoPath,
 				readyTaskIds: [],
@@ -915,7 +1134,11 @@ export function registerTaskCommand(program: Command): void {
 		.command("list")
 		.description("List Kanban tasks for a workspace.")
 		.option("--project-path <path>", "Workspace path. Defaults to current directory workspace.")
-		.option("--column <column>", "Filter column: backlog | in_progress | review | trash.", parseListColumn)
+		.option(
+			"--column <column>",
+			"Filter column: backlog | in_progress | review | done. trash is also accepted.",
+			parseListColumn,
+		)
 		.action(async (options: { projectPath?: string; column?: ListTaskColumn }) => {
 			await runTaskCommand(
 				async () =>
@@ -930,31 +1153,72 @@ export function registerTaskCommand(program: Command): void {
 	task
 		.command("create")
 		.description("Create a task in backlog.")
+		.option("--title <text>", "Task title.")
 		.requiredOption("--prompt <text>", "Task prompt text.")
 		.option("--project-path <path>", "Workspace path. Defaults to current directory workspace.")
 		.option("--base-ref <branch>", "Task base branch/ref.")
 		.option("--start-in-plan-mode [value]", "Set plan mode (true|false). Flag-only implies true.")
 		.option("--auto-review-enabled [value]", "Enable auto-review behavior (true|false). Flag-only implies true.")
 		.option("--auto-review-mode <mode>", "Auto-review mode: commit | pr | move_to_trash.", parseAutoReviewMode)
+		.option("--agent-id <id>", "Agent override: cline | claude | codex | droid | gemini | opencode | default.")
+		.option(
+			"--cline-provider <id>",
+			'Cline provider override (e.g. anthropic, openai, cline). Use "default" for workspace default.',
+		)
+		.option(
+			"--cline-model <id>",
+			'Cline model override (e.g. claude-sonnet-4-20250514). Use "default" for workspace default.',
+		)
+		.option(
+			"--cline-reasoning-effort <level>",
+			"Cline reasoning effort override: default | low | medium | high | xhigh.",
+		)
+		.option("--recurring-enabled [value]", "Enable recurring execution (true|false). Flag-only implies true.")
+		.option("--recurring-max-iterations <n>", "Max recurring iterations (0 = unlimited).", parseInt)
+		.option("--recurring-period-ms <ms>", "Delay between recurring iterations in ms.", parseInt)
+		.option("--scheduled-start-at <epoch>", "Scheduled start time as epoch ms.", parseInt)
+		.option("--scheduled-end-at <epoch>", "Scheduled end time as epoch ms.", parseInt)
 		.action(
 			async (options: {
+				title?: string;
 				prompt: string;
 				projectPath?: string;
 				baseRef?: string;
 				startInPlanMode?: unknown;
 				autoReviewEnabled?: unknown;
 				autoReviewMode?: "commit" | "pr" | "move_to_trash";
+				agentId?: string;
+				clineProvider?: string;
+				clineModel?: string;
+				clineReasoningEffort?: string;
+				recurringEnabled?: unknown;
+				recurringMaxIterations?: number;
+				recurringPeriodMs?: number;
+				scheduledStartAt?: number;
+				scheduledEndAt?: number;
 			}) => {
 				await runTaskCommand(
 					async () =>
 						await createTask({
 							cwd: process.cwd(),
+							title: options.title,
 							prompt: options.prompt,
 							projectPath: options.projectPath,
 							baseRef: options.baseRef,
 							startInPlanMode: parseOptionalBooleanOption(options.startInPlanMode, "--start-in-plan-mode"),
 							autoReviewEnabled: parseOptionalBooleanOption(options.autoReviewEnabled, "--auto-review-enabled"),
 							autoReviewMode: options.autoReviewMode,
+							agentId: parseAgentId(options.agentId) ?? undefined,
+							clineSettings: buildTaskClineSettingsForCreate({
+								providerId: parseOptionalStringOrDefault(options.clineProvider) ?? undefined,
+								modelId: parseOptionalStringOrDefault(options.clineModel) ?? undefined,
+								reasoningEffort: parseTaskClineReasoningEffort(options.clineReasoningEffort),
+							}),
+							recurringEnabled: parseOptionalBooleanOption(options.recurringEnabled, "--recurring-enabled"),
+							recurringMaxIterations: options.recurringMaxIterations,
+							recurringPeriodMs: options.recurringPeriodMs,
+							scheduledStartAt: options.scheduledStartAt,
+							scheduledEndAt: options.scheduledEndAt,
 						}),
 				);
 			},
@@ -964,33 +1228,72 @@ export function registerTaskCommand(program: Command): void {
 		.command("update")
 		.description("Update an existing task.")
 		.requiredOption("--task-id <id>", "Task ID.")
+		.option("--title <text>", "Replacement task title.")
 		.option("--prompt <text>", "Replacement task prompt.")
 		.option("--project-path <path>", "Workspace path. Defaults to current directory workspace.")
 		.option("--base-ref <branch>", "Replacement base branch/ref.")
 		.option("--start-in-plan-mode [value]", "Set plan mode (true|false). Flag-only implies true.")
 		.option("--auto-review-enabled [value]", "Enable auto-review behavior (true|false). Flag-only implies true.")
 		.option("--auto-review-mode <mode>", "Auto-review mode: commit | pr | move_to_trash.", parseAutoReviewMode)
+		.option(
+			"--agent-id <id>",
+			'Agent override: cline | claude | codex | droid | gemini | opencode. Use "default" to clear.',
+		)
+		.option(
+			"--cline-provider <id>",
+			'Cline provider override (e.g. anthropic, openai, cline). Use "default" to clear.',
+		)
+		.option("--cline-model <id>", 'Cline model override (e.g. claude-sonnet-4-20250514). Use "default" to clear.')
+		.option(
+			"--cline-reasoning-effort <level>",
+			'Cline reasoning effort override: default | low | medium | high | xhigh. Use "inherit" to clear.',
+		)
+		.option("--recurring-enabled [value]", "Enable recurring execution (true|false). Flag-only implies true.")
+		.option("--recurring-max-iterations <n>", "Max recurring iterations (0 = unlimited).", parseInt)
+		.option("--recurring-period-ms <ms>", "Delay between recurring iterations in ms.", parseInt)
+		.option("--scheduled-start-at <epoch>", "Scheduled start time as epoch ms.", parseInt)
+		.option("--scheduled-end-at <epoch>", "Scheduled end time as epoch ms.", parseInt)
 		.action(
 			async (options: {
 				taskId: string;
+				title?: string;
 				prompt?: string;
 				projectPath?: string;
 				baseRef?: string;
 				startInPlanMode?: unknown;
 				autoReviewEnabled?: unknown;
 				autoReviewMode?: "commit" | "pr" | "move_to_trash";
+				agentId?: string;
+				clineProvider?: string;
+				clineModel?: string;
+				clineReasoningEffort?: string;
+				recurringEnabled?: unknown;
+				recurringMaxIterations?: number;
+				recurringPeriodMs?: number;
+				scheduledStartAt?: number;
+				scheduledEndAt?: number;
 			}) => {
 				await runTaskCommand(
 					async () =>
 						await updateTaskCommand({
 							cwd: process.cwd(),
 							taskId: options.taskId,
+							title: options.title,
 							projectPath: options.projectPath,
 							prompt: options.prompt,
 							baseRef: options.baseRef,
 							startInPlanMode: parseOptionalBooleanOption(options.startInPlanMode, "--start-in-plan-mode"),
 							autoReviewEnabled: parseOptionalBooleanOption(options.autoReviewEnabled, "--auto-review-enabled"),
 							autoReviewMode: options.autoReviewMode,
+							agentId: parseAgentId(options.agentId),
+							clineProviderId: parseOptionalStringOrDefault(options.clineProvider),
+							clineModelId: parseOptionalStringOrDefault(options.clineModel),
+							clineReasoningEffort: parseTaskClineReasoningEffort(options.clineReasoningEffort),
+							recurringEnabled: parseOptionalBooleanOption(options.recurringEnabled, "--recurring-enabled"),
+							recurringMaxIterations: options.recurringMaxIterations,
+							recurringPeriodMs: options.recurringPeriodMs,
+							scheduledStartAt: options.scheduledStartAt,
+							scheduledEndAt: options.scheduledEndAt,
 						}),
 				);
 			},
@@ -998,9 +1301,14 @@ export function registerTaskCommand(program: Command): void {
 
 	task
 		.command("trash")
-		.description("Move a task or an entire column to trash and clean up task workspaces.")
+		.alias("done")
+		.description("Move a task or an entire column to done and clean up task workspaces.")
 		.option("--task-id <id>", "Task ID.")
-		.option("--column <column>", "Column to bulk-trash: backlog | in_progress | review | trash.", parseListColumn)
+		.option(
+			"--column <column>",
+			"Column to move to done: backlog | in_progress | review | done. trash is also accepted.",
+			parseListColumn,
+		)
 		.option("--project-path <path>", "Workspace path. Defaults to current directory workspace.")
 		.action(async (options: { taskId?: string; column?: ListTaskColumn; projectPath?: string }) => {
 			await runTaskCommand(
@@ -1018,7 +1326,11 @@ export function registerTaskCommand(program: Command): void {
 		.command("delete")
 		.description("Permanently delete a task or every task in a column.")
 		.option("--task-id <id>", "Task ID to permanently delete.")
-		.option("--column <column>", "Column to bulk-delete: backlog | in_progress | review | trash.", parseListColumn)
+		.option(
+			"--column <column>",
+			"Column to bulk-delete: backlog | in_progress | review | done. trash is also accepted.",
+			parseListColumn,
+		)
 		.option("--project-path <path>", "Workspace path. Defaults to current directory workspace.")
 		.action(async (options: { taskId?: string; column?: ListTaskColumn; projectPath?: string }) => {
 			await runTaskCommand(
@@ -1049,7 +1361,7 @@ export function registerTaskCommand(program: Command): void {
 				"  Once only one linked task remains in backlog, Kanban reorients the saved link",
 				"  so the backlog task is the waiting dependent task and the other task is the",
 				"  prerequisite.",
-				"  When the prerequisite finishes review and moves to trash, the waiting backlog",
+				"  When the prerequisite finishes review and moves to done, the waiting backlog",
 				"  task becomes ready to start.",
 				"",
 			].join("\n"),

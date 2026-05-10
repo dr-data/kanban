@@ -32,6 +32,7 @@ export function BoardColumn({
 	editingTaskId,
 	inlineTaskEditor,
 	onEditTask,
+	onSaveTitle,
 	onCommitTask,
 	onOpenPrTask,
 	onCancelAutomaticTaskAction,
@@ -58,6 +59,10 @@ export function BoardColumn({
 	onMobileColumnChange,
 	isDragDisabled,
 	dependencies,
+	onEnterMobileLinkMode,
+	onShowMobileDependencies,
+	onUpdateTask,
+	defaultClineModelId,
 }: {
 	column: BoardColumnModel;
 	taskSessions: Record<string, RuntimeTaskSessionSummary>;
@@ -68,6 +73,7 @@ export function BoardColumn({
 	editingTaskId?: string | null;
 	inlineTaskEditor?: ReactNode;
 	onEditTask?: (card: BoardCardModel) => void;
+	onSaveTitle?: (taskId: string, title: string) => void;
 	onCommitTask?: (taskId: string) => void;
 	onOpenPrTask?: (taskId: string) => void;
 	onCancelAutomaticTaskAction?: (taskId: string) => void;
@@ -102,6 +108,13 @@ export function BoardColumn({
 	isDragDisabled?: boolean;
 	/** Dependencies for computing per-card link badge counts (mobile only). */
 	dependencies?: import("@/types").BoardDependency[];
+	/** Callback to activate mobile tap-based dependency link mode with the given card as source. */
+	onEnterMobileLinkMode?: (taskId: string) => void;
+	/** Callback to open the mobile dependency sheet for a given task. */
+	onShowMobileDependencies?: (taskId: string) => void;
+	/** Callback to update recurring/schedule fields on a task. */
+	onUpdateTask?: (taskId: string, updates: Record<string, unknown>) => void;
+	defaultClineModelId?: string | null;
 }): React.ReactElement {
 	const canCreate = column.id === "backlog" && onCreateTask;
 	const canStartAllTasks = column.id === "backlog" && onStartAllTasks;
@@ -138,7 +151,10 @@ export function BoardColumn({
 		<section
 			data-column-id={column.id}
 			data-mobile-position={mobilePosition}
-			className="kb-board-column flex flex-col min-w-0 min-h-0 bg-surface-1 rounded-lg overflow-hidden"
+			className="kb-board-column flex flex-col min-w-0 min-h-0 bg-surface-1 rounded-lg overflow-hidden border border-border"
+			style={{
+				flex: "1 1 0",
+			}}
 		>
 			<div className="flex flex-col min-h-0" style={{ flex: "1 1 0" }}>
 				{/* On mobile, show inline pill selector so users can switch the pane's column */}
@@ -220,8 +236,8 @@ export function BoardColumn({
 								className="text-status-red hover:text-status-red"
 								onClick={onClearTrash}
 								disabled={column.cards.length === 0}
-								aria-label="Clear trash"
-								title={column.cards.length > 0 ? "Clear trash permanently" : "Trash is empty"}
+								aria-label="Clear done"
+								title={column.cards.length > 0 ? "Clear done items permanently" : "Done is empty"}
 							/>
 						) : null}
 					</div>
@@ -286,6 +302,12 @@ export function BoardColumn({
 											onMoveToColumn={onMoveToColumn}
 											isDragDisabled={isDragDisabled}
 											dependencyCount={dependencyCountByTaskId.get(card.id) ?? 0}
+											onEnterMobileLinkMode={onEnterMobileLinkMode}
+											onShowMobileDependencies={onShowMobileDependencies}
+											onUpdateTask={onUpdateTask}
+											onEditTask={onEditTask}
+											defaultClineModelId={defaultClineModelId}
+											onSaveTitle={onSaveTitle}
 											onClick={() => {
 												if (column.id === "backlog") {
 													onEditTask?.(card);

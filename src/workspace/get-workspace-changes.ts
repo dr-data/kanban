@@ -280,8 +280,30 @@ async function readDiffStatFromRef(repoRoot: string, fromRef: string, path: stri
 	}
 }
 
-async function buildFileChange(repoRoot: string, entry: NameStatusEntry): Promise<RuntimeWorkspaceFileChange> {
+async function buildFileChange(
+	repoRoot: string,
+	entry: NameStatusEntry,
+	options?: { skipContent?: boolean },
+): Promise<RuntimeWorkspaceFileChange> {
 	const basePath = entry.previousPath ?? entry.path;
+
+	if (options?.skipContent) {
+		/* Fast path: only fetch stats, skip full file reads for initial polls. */
+		const stats =
+			entry.status === "untracked"
+				? { additions: 0, deletions: 0 }
+				: ((await readDiffStat(repoRoot, entry.path)) ?? { additions: 0, deletions: 0 });
+		return {
+			path: entry.path,
+			previousPath: entry.previousPath,
+			status: entry.status,
+			additions: stats.additions,
+			deletions: stats.deletions,
+			oldText: null,
+			newText: null,
+		};
+	}
+
 	const oldText =
 		entry.status === "added" || entry.status === "untracked" ? null : await readHeadFile(repoRoot, basePath);
 	const newText = entry.status === "deleted" ? null : await readWorkingTreeFile(repoRoot, entry.path);
@@ -306,8 +328,26 @@ async function buildFileChangeBetweenRefs(
 	entry: NameStatusEntry,
 	fromRef: string,
 	toRef: string,
+	options?: { skipContent?: boolean },
 ): Promise<RuntimeWorkspaceFileChange> {
 	const basePath = entry.previousPath ?? entry.path;
+
+	if (options?.skipContent) {
+		const stats = (await readDiffStatBetweenRefs(repoRoot, fromRef, toRef, entry.path)) ?? {
+			additions: 0,
+			deletions: 0,
+		};
+		return {
+			path: entry.path,
+			previousPath: entry.previousPath,
+			status: entry.status,
+			additions: stats.additions,
+			deletions: stats.deletions,
+			oldText: null,
+			newText: null,
+		};
+	}
+
 	const oldText = entry.status === "added" ? null : await readFileAtRef(repoRoot, fromRef, basePath);
 	const newText = entry.status === "deleted" ? null : await readFileAtRef(repoRoot, toRef, entry.path);
 	const stats =
@@ -328,8 +368,26 @@ async function buildFileChangeFromRef(
 	repoRoot: string,
 	entry: NameStatusEntry,
 	fromRef: string,
+	options?: { skipContent?: boolean },
 ): Promise<RuntimeWorkspaceFileChange> {
 	const basePath = entry.previousPath ?? entry.path;
+
+	if (options?.skipContent) {
+		const stats =
+			entry.status === "untracked"
+				? { additions: 0, deletions: 0 }
+				: ((await readDiffStatFromRef(repoRoot, fromRef, entry.path)) ?? { additions: 0, deletions: 0 });
+		return {
+			path: entry.path,
+			previousPath: entry.previousPath,
+			status: entry.status,
+			additions: stats.additions,
+			deletions: stats.deletions,
+			oldText: null,
+			newText: null,
+		};
+	}
+
 	const oldText =
 		entry.status === "added" || entry.status === "untracked"
 			? null
@@ -405,7 +463,7 @@ export async function getWorkspaceChanges(cwd: string): Promise<RuntimeWorkspace
 		return existing.response;
 	}
 
-	const files = await Promise.all(allChanges.map((entry) => buildFileChange(repoRoot, entry)));
+	const files = await Promise.all(allChanges.map((entry) => buildFileChange(repoRoot, entry, { skipContent: true })));
 	files.sort((left, right) => left.path.localeCompare(right.path));
 	const response: RuntimeWorkspaceChangesResponse = {
 		repoRoot,
@@ -443,7 +501,9 @@ export async function getWorkspaceChangesBetweenRefs(
 	}
 
 	const files = await Promise.all(
-		trackedChanges.map((entry) => buildFileChangeBetweenRefs(repoRoot, entry, input.fromRef, input.toRef)),
+		trackedChanges.map((entry) =>
+			buildFileChangeBetweenRefs(repoRoot, entry, input.fromRef, input.toRef, { skipContent: true }),
+		),
 	);
 	files.sort((left, right) => left.path.localeCompare(right.path));
 
@@ -488,11 +548,37 @@ export async function getWorkspaceChangesFromRef(input: ChangesFromRefInput): Pr
 		};
 	}
 
-	const files = await Promise.all(allChanges.map((entry) => buildFileChangeFromRef(repoRoot, entry, input.fromRef)));
+	const files = await Promise.all(
+		allChanges.map((entry) => buildFileChangeFromRef(repoRoot, entry, input.fromRef, { skipContent: true })),
+	);
 	files.sort((left, right) => left.path.localeCompare(right.path));
 	return {
 		repoRoot,
 		generatedAt: Date.now(),
 		files,
 	};
+}
+
+/** Loads full diff content (oldText + newText) for a single file in the working copy. */
+export async function getWorkspaceFileContent(
+	cwd: string,
+	filePath: string,
+): Promise<RuntimeWorkspaceFileChange | null> {
+	const repoRoot = (await getGitStdout(["rev-parse", "--show-toplevel"], cwd)).trim();
+	if (!repoRoot) return null;
+
+	const statusOutput = await getGitStdout(["diff", "--name-status", "HEAD", "--", filePath], repoRoot);
+	const entries = parseTrackedChanges(statusOutput);
+	let entry: NameStatusEntry | undefined = entries[0];
+	if (!entry) {
+		const untrackedOutput = await getGitStdout(
+			["ls-files", "--others", "--exclude-standard", "--", filePath],
+			repoRoot,
+		);
+		if (untrackedOutput.trim()) {
+			entry = { path: filePath, status: "untracked" };
+		}
+	}
+	if (!entry) return null;
+	return await buildFileChange(repoRoot, entry);
 }

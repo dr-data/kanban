@@ -23,6 +23,7 @@ function ColumnSection({
 	editingTaskId,
 	inlineTaskEditor,
 	onEditTask,
+	onSaveTitle,
 	onCommitTask,
 	onOpenPrTask,
 	onMoveToTrashTask,
@@ -32,6 +33,7 @@ function ColumnSection({
 	moveToTrashLoadingById,
 	activeDragSourceColumnId,
 	workspacePath,
+	defaultClineModelId,
 }: {
 	column: BoardColumn;
 	selectedCardId: string;
@@ -45,6 +47,7 @@ function ColumnSection({
 	editingTaskId?: string | null;
 	inlineTaskEditor?: ReactNode;
 	onEditTask?: (card: BoardCardModel) => void;
+	onSaveTitle?: (taskId: string, title: string) => void;
 	onCommitTask?: (taskId: string) => void;
 	onOpenPrTask?: (taskId: string) => void;
 	onMoveToTrashTask?: (taskId: string) => void;
@@ -54,6 +57,7 @@ function ColumnSection({
 	moveToTrashLoadingById?: Record<string, boolean>;
 	activeDragSourceColumnId?: BoardColumnId | null;
 	workspacePath?: string | null;
+	defaultClineModelId?: string | null;
 }): React.ReactElement {
 	const [open, setOpen] = useState(defaultOpen);
 	const canCreate = column.id === "backlog" && onCreateTask;
@@ -70,7 +74,7 @@ function ColumnSection({
 	}, [column.cards, selectedCardId]);
 
 	return (
-		<div className="bg-surface-1 rounded-lg shrink-0">
+		<div className="bg-surface-1 rounded-lg shrink-0 border border-border">
 			<div
 				style={{
 					display: "flex",
@@ -131,8 +135,8 @@ function ColumnSection({
 						className="text-status-red hover:text-status-red"
 						onClick={onClearTrash}
 						disabled={column.cards.length === 0}
-						aria-label="Clear trash"
-						title={column.cards.length > 0 ? "Clear trash permanently" : "Trash is empty"}
+						aria-label="Clear done"
+						title={column.cards.length > 0 ? "Clear done items permanently" : "Done is empty"}
 						style={{ marginRight: 4 }}
 					/>
 				) : null}
@@ -195,6 +199,8 @@ function ColumnSection({
 												isOpenPrLoading={openPrTaskLoadingById?.[card.id] ?? false}
 												isMoveToTrashLoading={moveToTrashLoadingById?.[card.id] ?? false}
 												workspacePath={workspacePath}
+												defaultClineModelId={defaultClineModelId}
+												onSaveTitle={onSaveTitle}
 												onClick={() => {
 													if (column.id === "backlog") {
 														onEditTask?.(card);
@@ -224,6 +230,7 @@ function ColumnSection({
 export function ColumnContextPanel({
 	selection,
 	workspacePath,
+	defaultClineModelId,
 	onCardSelect,
 	taskSessions,
 	onTaskDragEnd,
@@ -234,6 +241,7 @@ export function ColumnContextPanel({
 	editingTaskId,
 	inlineTaskEditor,
 	onEditTask,
+	onSaveTaskTitle,
 	onCommitTask,
 	onOpenPrTask,
 	onMoveToTrashTask,
@@ -241,6 +249,7 @@ export function ColumnContextPanel({
 	commitTaskLoadingById,
 	openPrTaskLoadingById,
 	moveToTrashLoadingById,
+	panelWidth,
 }: {
 	selection: CardSelection;
 	workspacePath?: string | null;
@@ -254,6 +263,7 @@ export function ColumnContextPanel({
 	editingTaskId?: string | null;
 	inlineTaskEditor?: ReactNode;
 	onEditTask?: (card: BoardCardModel) => void;
+	onSaveTaskTitle?: (taskId: string, title: string) => void;
 	onCommitTask?: (taskId: string) => void;
 	onOpenPrTask?: (taskId: string) => void;
 	onMoveToTrashTask?: (taskId: string) => void;
@@ -261,6 +271,8 @@ export function ColumnContextPanel({
 	commitTaskLoadingById?: Record<string, boolean>;
 	openPrTaskLoadingById?: Record<string, boolean>;
 	moveToTrashLoadingById?: Record<string, boolean>;
+	panelWidth?: string;
+	defaultClineModelId?: string | null;
 }): React.ReactElement {
 	const [activeDragSourceColumnId, setActiveDragSourceColumnId] = useState<BoardColumnId | null>(null);
 	const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -307,11 +319,10 @@ export function ColumnContextPanel({
 			style={{
 				display: "flex",
 				flexDirection: "column",
-				width: "20%",
+				width: panelWidth ?? "20%",
 				minHeight: 0,
 				overflow: "hidden",
 				background: "var(--color-surface-0)",
-				borderRight: "1px solid var(--color-divider)",
 			}}
 		>
 			<DragDropContext onBeforeCapture={handleBeforeCapture} onDragEnd={handleDragEnd}>
@@ -341,6 +352,7 @@ export function ColumnContextPanel({
 							editingTaskId={column.id === "backlog" ? editingTaskId : null}
 							inlineTaskEditor={column.id === "backlog" ? inlineTaskEditor : undefined}
 							onEditTask={column.id === "backlog" ? onEditTask : undefined}
+							onSaveTitle={column.id !== "trash" ? onSaveTaskTitle : undefined}
 							onCommitTask={column.id === "review" ? onCommitTask : undefined}
 							onOpenPrTask={column.id === "review" ? onOpenPrTask : undefined}
 							onMoveToTrashTask={column.id === "review" ? onMoveToTrashTask : undefined}
@@ -350,6 +362,7 @@ export function ColumnContextPanel({
 							moveToTrashLoadingById={column.id === "review" ? moveToTrashLoadingById : undefined}
 							activeDragSourceColumnId={activeDragSourceColumnId}
 							workspacePath={workspacePath}
+							defaultClineModelId={defaultClineModelId}
 						/>
 					))}
 				</div>

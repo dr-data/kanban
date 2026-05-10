@@ -48,6 +48,7 @@ function initGitRepository(path: string): void {
 function createCard(taskId: string) {
 	return {
 		id: taskId,
+		title: `Task ${taskId}`,
 		prompt: `Task ${taskId}`,
 		startInPlanMode: false,
 		baseRef: "main",
@@ -70,7 +71,7 @@ function createBoard(taskIds: { inProgress?: string[]; review?: string[] }): Run
 				title: "Review",
 				cards: (taskIds.review ?? []).map((taskId) => createCard(taskId)),
 			},
-			{ id: "trash", title: "Trash", cards: [] },
+			{ id: "trash", title: "Done", cards: [] },
 		],
 		dependencies: [],
 	};
@@ -90,6 +91,7 @@ function createSession(taskId: string, state: "running" | "awaiting_review" | "i
 		exitCode: null,
 		lastHookAt: null,
 		latestHookActivity: null,
+		remoteControlEnabled: false,
 	};
 }
 

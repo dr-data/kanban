@@ -21,6 +21,7 @@ function createBoard(taskId: string): BoardData {
 				cards: [
 					{
 						id: taskId,
+						title: `Prompt ${taskId}`,
 						prompt: `Prompt ${taskId}`,
 						startInPlanMode: false,
 						autoReviewEnabled: false,
@@ -33,7 +34,7 @@ function createBoard(taskId: string): BoardData {
 			},
 			{ id: "in_progress", title: "In Progress", cards: [] },
 			{ id: "review", title: "Review", cards: [] },
-			{ id: "trash", title: "Trash", cards: [] },
+			{ id: "trash", title: "Done", cards: [] },
 		],
 		dependencies: [],
 	};
@@ -84,6 +85,7 @@ function createSessionSummary(
 			: null,
 		latestTurnCheckpoint: null,
 		previousTurnCheckpoint: null,
+		remoteControlEnabled: false,
 	};
 }
 

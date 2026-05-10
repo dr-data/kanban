@@ -26,6 +26,10 @@ vi.mock("react-hotkeys-hook", () => ({
 	useHotkeys: () => {},
 }));
 
+vi.mock("@/hooks/use-is-mobile", () => ({
+	useIsMobile: () => false,
+}));
+
 vi.mock("@/components/detail-panels/agent-terminal-panel", () => ({
 	AgentTerminalPanel: mockAgentTerminalPanel,
 }));
@@ -56,7 +60,7 @@ vi.mock("@/components/detail-panels/file-tree-panel", () => ({
 	FileTreePanel: () => <div data-testid="file-tree-panel" />,
 }));
 
-vi.mock("@/components/resizable-bottom-pane", () => ({
+vi.mock("@/resize/resizable-bottom-pane", () => ({
 	ResizableBottomPane: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
@@ -68,9 +72,14 @@ vi.mock("@/stores/workspace-metadata-store", () => ({
 	useTaskWorkspaceStateVersionValue: () => 0,
 }));
 
+vi.mock("@/resize/layout-customizations", () => ({
+	useLayoutResetEffect: () => {},
+}));
+
 function createCard(id: string): BoardCard {
 	return {
 		id,
+		title: `Task ${id}`,
 		prompt: `Task ${id}`,
 		startInPlanMode: false,
 		autoReviewEnabled: false,
@@ -101,7 +110,7 @@ function createSelection(): CardSelection {
 		},
 		{
 			id: "trash",
-			title: "Trash",
+			title: "Done",
 			cards: [],
 		},
 	];
@@ -136,6 +145,23 @@ function requireAgentPanel(container: HTMLElement): HTMLElement {
 	const panel = separator.previousElementSibling;
 	if (!(panel instanceof HTMLElement)) {
 		throw new Error("Expected an agent panel element.");
+	}
+	return panel;
+}
+
+function requireDetailDiffSeparator(container: HTMLElement): HTMLElement {
+	const separator = container.querySelector('[aria-label="Resize detail diff panels"]');
+	if (!(separator instanceof HTMLElement)) {
+		throw new Error("Expected a detail diff resize separator.");
+	}
+	return separator;
+}
+
+function requireDetailDiffFileTreePanel(container: HTMLElement): HTMLElement {
+	const separator = requireDetailDiffSeparator(container);
+	const panel = separator.nextElementSibling;
+	if (!(panel instanceof HTMLElement)) {
+		throw new Error("Expected a detail diff file tree panel element.");
 	}
 	return panel;
 }
@@ -278,6 +304,59 @@ describe("CardDetailView", () => {
 		expect(lastCall?.[7]).toBe(true);
 	});
 
+	it("keeps the active diff mode visually highlighted", async () => {
+		await act(async () => {
+			root.render(
+				<CardDetailView
+					selection={createSelection()}
+					currentProjectId="workspace-1"
+					sessionSummary={null}
+					taskSessions={{}}
+					onSessionSummary={() => {}}
+					onCardSelect={() => {}}
+					onTaskDragEnd={() => {}}
+					onMoveToTrash={() => {}}
+					bottomTerminalOpen={false}
+					bottomTerminalTaskId={null}
+					bottomTerminalSummary={null}
+					onBottomTerminalClose={() => {}}
+				/>,
+			);
+		});
+
+		const getDiffModeButton = (label: string): HTMLButtonElement => {
+			const button = Array.from(container.querySelectorAll("button")).find(
+				(candidate) => candidate.textContent?.trim() === label,
+			);
+			if (!(button instanceof HTMLButtonElement)) {
+				throw new Error(`Expected a ${label} button.`);
+			}
+			return button;
+		};
+
+		const allChangesButton = getDiffModeButton("All Changes");
+		const lastTurnButton = getDiffModeButton("Last Turn");
+
+		expect(allChangesButton.getAttribute("aria-pressed")).toBe("true");
+		expect(allChangesButton.getAttribute("style")).toContain(
+			"background-color: color-mix(in srgb, var(--color-surface-3) 80%, var(--color-text-primary))",
+		);
+		expect(lastTurnButton.getAttribute("aria-pressed")).toBe("false");
+		expect(lastTurnButton.style.backgroundColor).toBe("");
+
+		await act(async () => {
+			lastTurnButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+			lastTurnButton.click();
+		});
+
+		expect(getDiffModeButton("All Changes").getAttribute("aria-pressed")).toBe("false");
+		expect(getDiffModeButton("All Changes").style.backgroundColor).toBe("");
+		expect(getDiffModeButton("Last Turn").getAttribute("aria-pressed")).toBe("true");
+		expect(getDiffModeButton("Last Turn").getAttribute("style")).toContain(
+			"background-color: color-mix(in srgb, var(--color-surface-3) 80%, var(--color-text-primary))",
+		);
+	});
+
 	it("closes git history before handling other Escape behavior", async () => {
 		const onCloseGitHistory = vi.fn();
 
@@ -338,6 +417,33 @@ describe("CardDetailView", () => {
 		expect(container.querySelector('[data-testid="agent-terminal-panel"]')).toBeNull();
 	});
 
+	it("does not render native chat panel when the task explicitly uses a non-cline agent", async () => {
+		const selection = createSelection();
+		selection.card.agentId = "codex";
+
+		await act(async () => {
+			root.render(
+				<CardDetailView
+					selection={selection}
+					currentProjectId="workspace-1"
+					selectedAgentId="cline"
+					sessionSummary={null}
+					taskSessions={{}}
+					onSessionSummary={() => {}}
+					onCardSelect={() => {}}
+					onTaskDragEnd={() => {}}
+					onMoveToTrash={() => {}}
+					bottomTerminalOpen={false}
+					bottomTerminalTaskId={null}
+					bottomTerminalSummary={null}
+					onBottomTerminalClose={() => {}}
+				/>,
+			);
+		});
+
+		expect(container.querySelector('[data-testid="cline-agent-chat-panel"]')).toBeNull();
+	});
+
 	it("shows cline chat panel when task session agentId is cline even if global agent is claude", async () => {
 		await act(async () => {
 			root.render(
@@ -359,6 +465,7 @@ describe("CardDetailView", () => {
 						lastHookAt: null,
 						latestHookActivity: null,
 						warningMessage: null,
+						remoteControlEnabled: false,
 					}}
 					taskSessions={{}}
 					onSessionSummary={() => {}}
@@ -397,6 +504,7 @@ describe("CardDetailView", () => {
 						lastHookAt: null,
 						latestHookActivity: null,
 						warningMessage: null,
+						remoteControlEnabled: false,
 					}}
 					taskSessions={{}}
 					onSessionSummary={() => {}}
@@ -438,7 +546,7 @@ describe("CardDetailView", () => {
 
 		const lastCall = mockAgentTerminalPanel.mock.calls.at(-1);
 		expect(lastCall?.[0]).toMatchObject({
-			panelBackgroundColor: TERMINAL_THEME_COLORS.surfacePrimary,
+			panelBackgroundColor: "var(--color-surface-0)",
 			terminalBackgroundColor: TERMINAL_THEME_COLORS.surfacePrimary,
 		});
 	});
@@ -631,5 +739,43 @@ describe("CardDetailView", () => {
 		const restoredWidth = requireAgentPanel(container).style.width;
 		const restoredRatio = Number.parseFloat(restoredWidth) / 100;
 		expect(restoredRatio).toBeCloseTo(Number(expectedRatio), 2);
+	});
+
+	it("uses separate file-tree ratios for collapsed and expanded diff layouts", async () => {
+		window.localStorage.setItem(LocalStorageKey.DetailDiffFileTreePanelRatio, "0.42");
+		window.localStorage.setItem(LocalStorageKey.DetailExpandedDiffFileTreePanelRatio, "0.18");
+
+		await act(async () => {
+			root.render(
+				<CardDetailView
+					selection={createSelection()}
+					currentProjectId="workspace-1"
+					sessionSummary={null}
+					taskSessions={{}}
+					onSessionSummary={() => {}}
+					onCardSelect={() => {}}
+					onTaskDragEnd={() => {}}
+					onMoveToTrash={() => {}}
+					bottomTerminalOpen={false}
+					bottomTerminalTaskId={null}
+					bottomTerminalSummary={null}
+					onBottomTerminalClose={() => {}}
+				/>,
+			);
+		});
+
+		expect(requireDetailDiffFileTreePanel(container).style.flex).toBe("0 0 42%");
+
+		const expandButton = container.querySelector('button[aria-label="Expand split diff view"]');
+		expect(expandButton).toBeInstanceOf(HTMLButtonElement);
+		if (!(expandButton instanceof HTMLButtonElement)) {
+			throw new Error("Expected an expand diff button.");
+		}
+
+		await act(async () => {
+			expandButton.click();
+		});
+
+		expect(requireDetailDiffFileTreePanel(container).style.flex).toBe("0 0 18%");
 	});
 });

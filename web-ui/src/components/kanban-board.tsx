@@ -8,12 +8,14 @@ import {
 	type SensorAPI,
 	type SnapDragActions,
 } from "@hello-pangea/dnd";
-import { Plus } from "lucide-react";
+import { Link2, Plus } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 
 import { BoardColumn } from "@/components/board-column";
 import { DependencyOverlay } from "@/components/dependencies/dependency-overlay";
+import { MobileDependencySheet } from "@/components/dependencies/mobile-dependency-sheet";
 import { useDependencyLinking } from "@/components/dependencies/use-dependency-linking";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import type { RuntimeTaskSessionSummary } from "@/runtime/types";
@@ -40,6 +42,7 @@ export function KanbanBoard({
 	editingTaskId,
 	inlineTaskEditor,
 	onEditTask,
+	onSaveTaskTitle,
 	onCommitTask,
 	onOpenPrTask,
 	onCancelAutomaticTaskAction,
@@ -54,6 +57,8 @@ export function KanbanBoard({
 	onDragEnd,
 	onRequestProgrammaticCardMoveReady,
 	workspacePath,
+	onUpdateTask,
+	defaultClineModelId,
 }: {
 	data: BoardData;
 	taskSessions: Record<string, RuntimeTaskSessionSummary>;
@@ -65,6 +70,7 @@ export function KanbanBoard({
 	editingTaskId?: string | null;
 	inlineTaskEditor?: ReactNode;
 	onEditTask?: (card: BoardCard) => void;
+	onSaveTaskTitle?: (taskId: string, title: string) => void;
 	onCommitTask?: (taskId: string) => void;
 	onOpenPrTask?: (taskId: string) => void;
 	onCancelAutomaticTaskAction?: (taskId: string) => void;
@@ -79,6 +85,9 @@ export function KanbanBoard({
 	onDragEnd: (result: DropResult) => void;
 	onRequestProgrammaticCardMoveReady?: (requestMove: RequestProgrammaticCardMove | null) => void;
 	workspacePath?: string | null;
+	/** Callback to update recurring/schedule fields on a task. */
+	onUpdateTask?: (taskId: string, updates: Record<string, unknown>) => void;
+	defaultClineModelId?: string | null;
 }): React.ReactElement {
 	const isMobile = useIsMobile();
 	const dragOccurredRef = useRef(false);
@@ -87,9 +96,11 @@ export function KanbanBoard({
 	const latestDataRef = useRef<BoardData>(data);
 	const programmaticCardMoveInFlightRef = useRef<ProgrammaticCardMoveInFlight | null>(null);
 	const [activeDragTaskId, setActiveDragTaskId] = useState<string | null>(null);
+
 	const [activeDragSourceColumnId, setActiveDragSourceColumnId] = useState<BoardColumnId | null>(null);
 	const [mobileTopColumnId, setMobileTopColumnIdRaw] = useState<BoardColumnId>("backlog");
 	const [mobileBottomColumnId, setMobileBottomColumnIdRaw] = useState<BoardColumnId>("in_progress");
+	const [mobileDependencySheetTaskId, setMobileDependencySheetTaskId] = useState<string | null>(null);
 
 	/** Swap-aware setter: if the chosen column is already in the other pane, swap them. */
 	const setMobileTopColumnId = useCallback((id: BoardColumnId) => {
@@ -106,9 +117,24 @@ export function KanbanBoard({
 	}, []);
 	const [programmaticCardMoveInFlight, setProgrammaticCardMoveInFlight] =
 		useState<ProgrammaticCardMoveInFlight | null>(null);
+
+	/**
+	 * Wraps onCreateDependency to show a toast on mobile when a link is created.
+	 * On desktop the dependency overlay provides visual feedback already.
+	 */
+	const handleCreateDependencyWithToast = useCallback(
+		(fromTaskId: string, toTaskId: string) => {
+			onCreateDependency?.(fromTaskId, toTaskId);
+			if (isMobile) {
+				toast.success("Dependency created");
+			}
+		},
+		[isMobile, onCreateDependency],
+	);
+
 	const dependencyLinking = useDependencyLinking({
 		canLinkTasks: (fromTaskId, toTaskId) => canCreateTaskDependency(data, fromTaskId, toTaskId),
-		onCreateDependency,
+		onCreateDependency: handleCreateDependencyWithToast,
 	});
 
 	useEffect(() => {
@@ -426,6 +452,27 @@ export function KanbanBoard({
 		[onCardSelect],
 	);
 
+	/** Activates mobile tap-based dependency link mode with the given card as the source. */
+	const handleEnterMobileLinkMode = useCallback(
+		(taskId: string) => {
+			dependencyLinking.mobileLinkMode.enter(taskId);
+		},
+		[dependencyLinking.mobileLinkMode],
+	);
+
+	/** Opens the mobile dependency sheet for the given task. */
+	const handleShowMobileDependencies = useCallback((taskId: string) => {
+		setMobileDependencySheetTaskId(taskId);
+	}, []);
+
+	/** Add body class when mobile link mode is active to style the board surface. */
+	useEffect(() => {
+		if (isMobile && dependencyLinking.mobileLinkMode.isActive) {
+			document.body.classList.add("kb-dependency-link-mode-touch");
+			return () => document.body.classList.remove("kb-dependency-link-mode-touch");
+		}
+	}, [isMobile, dependencyLinking.mobileLinkMode.isActive]);
+
 	return (
 		<div className={isMobile ? "flex flex-1 flex-col min-h-0 min-w-0" : "contents"}>
 			<DragDropContext
@@ -476,6 +523,7 @@ export function KanbanBoard({
 								editingTaskId={column.id === "backlog" ? editingTaskId : null}
 								inlineTaskEditor={column.id === "backlog" ? inlineTaskEditor : undefined}
 								onEditTask={column.id === "backlog" ? onEditTask : undefined}
+								onSaveTitle={column.id !== "trash" ? onSaveTaskTitle : undefined}
 								onCommitTask={column.id === "review" ? onCommitTask : undefined}
 								onOpenPrTask={column.id === "review" ? onOpenPrTask : undefined}
 								onCancelAutomaticTaskAction={onCancelAutomaticTaskAction}
@@ -498,6 +546,10 @@ export function KanbanBoard({
 								onMoveToColumn={handleMoveToColumn}
 								onCardClick={handleCardClick}
 								dependencies={isMobile ? dependencies : undefined}
+								onEnterMobileLinkMode={isMobile ? handleEnterMobileLinkMode : undefined}
+								onShowMobileDependencies={isMobile ? handleShowMobileDependencies : undefined}
+								onUpdateTask={onUpdateTask}
+								defaultClineModelId={defaultClineModelId}
 							/>
 						);
 					})}
@@ -512,6 +564,41 @@ export function KanbanBoard({
 					/>
 				</section>
 			</DragDropContext>
+
+			{/* Mobile link-mode banner — shown at the top of the screen while tap-to-link is active */}
+			{isMobile && dependencyLinking.mobileLinkMode.isActive && (
+				<div className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-4 py-2 bg-accent text-white text-sm">
+					<span className="flex items-center gap-1.5">
+						<Link2 size={14} /> Tap a card to link
+					</span>
+					<button
+						type="button"
+						onClick={dependencyLinking.mobileLinkMode.exit}
+						className="text-white/80 hover:text-white font-medium"
+					>
+						Cancel
+					</button>
+				</div>
+			)}
+
+			{/* Mobile dependency sheet — shows all dependencies for a task when tapping the badge */}
+			{isMobile && mobileDependencySheetTaskId !== null && (
+				<MobileDependencySheet
+					taskId={mobileDependencySheetTaskId}
+					taskTitle={
+						data.columns
+							.flatMap((col) => col.cards)
+							.find((c) => c.id === mobileDependencySheetTaskId)
+							?.prompt.trim()
+							.split("\n")[0]
+							?.slice(0, 60) ?? mobileDependencySheetTaskId
+					}
+					dependencies={data.dependencies}
+					allColumns={data.columns}
+					onDeleteDependency={onDeleteDependency ?? (() => {})}
+					onClose={() => setMobileDependencySheetTaskId(null)}
+				/>
+			)}
 
 			{/* Floating action button for mobile task creation (backlog may be scrolled off-screen) */}
 			{isMobile && onCreateTask ? (
