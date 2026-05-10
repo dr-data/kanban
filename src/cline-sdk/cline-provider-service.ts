@@ -4,7 +4,12 @@
 
 import { z } from "zod";
 import type {
+	RuntimeClineAccountBalanceResponse,
+	RuntimeClineAccountOrganizationsResponse,
 	RuntimeClineAccountProfileResponse,
+	RuntimeClineAccountSwitchResponse,
+	RuntimeClineDeviceAuthCompleteResponse,
+	RuntimeClineDeviceAuthStartResponse,
 	RuntimeClineKanbanAccessResponse,
 	RuntimeClineOauthLoginResponse,
 	RuntimeClineProviderCatalogItem,
@@ -16,10 +21,16 @@ import type {
 	RuntimeClineReasoningEffort,
 } from "../core/api-contract";
 import { openInBrowser } from "../server/browser";
+import { createKanbanClineLogger } from "./cline-runtime-logger";
 import {
 	addSdkCustomProvider,
+	completeClineDeviceAuth as completeSdkDeviceAuth,
+	deleteSdkCustomProvider,
+	fetchSdkClineAccountBalance,
 	fetchSdkClineAccountProfile,
 	fetchSdkClineUserRemoteConfig,
+	fetchSdkFeaturebaseToken,
+	fetchSdkOrganizationBalance,
 	fetchSdkOrgData,
 	getLastUsedSdkProviderSettings,
 	getSdkProviderSettings,
@@ -31,10 +42,11 @@ import {
 	SDK_DEFAULT_MODEL_ID,
 	SDK_DEFAULT_PROVIDER_ID,
 	type SdkCustomProviderCapability,
-	type SdkProviderModelRecord,
 	type SdkProviderSettings,
 	saveSdkProviderSettings,
-	supportsSdkModelThinking,
+	startClineDeviceAuth as startSdkDeviceAuth,
+	switchSdkClineAccount,
+	updateSdkCustomProvider,
 } from "./sdk-provider-boundary";
 
 const WORKOS_TOKEN_PREFIX = "workos:";
@@ -47,8 +59,16 @@ const MANAGED_PROVIDER_ENV_KEYS: Record<ManagedClineOauthProviderId, readonly st
 const CLINE_REMOTE_CONFIG_SCHEMA = z.object({
 	kanbanEnabled: z.boolean().optional(),
 });
+const LITELLM_MODELS_RESPONSE_SCHEMA = z.object({
+	data: z.array(z.object({ id: z.string().optional(), model_name: z.string().optional() }).passthrough()).optional(),
+});
+const LITELLM_MODEL_LIST_PATHNAMES = ["/models", "/model/info"] as const;
+const LITELLM_MODEL_LIST_TIMEOUT_MS = 2_500;
+const LOGGER = createKanbanClineLogger({ component: "cline-provider-service" });
 
 type ClineRemoteConfig = z.infer<typeof CLINE_REMOTE_CONFIG_SCHEMA>;
+type LiteLlmModelListPathname = (typeof LITELLM_MODEL_LIST_PATHNAMES)[number];
+type LiteLlmModelListItem = NonNullable<z.infer<typeof LITELLM_MODELS_RESPONSE_SCHEMA>["data"]>[number];
 type SdkReasoningEffort = NonNullable<NonNullable<SdkProviderSettings["reasoning"]>["effort"]>;
 
 export interface ResolvedClineLaunchConfig {
@@ -56,7 +76,7 @@ export interface ResolvedClineLaunchConfig {
 	modelId: string | null;
 	apiKey: string | null;
 	baseUrl: string | null;
-	reasoningEffort: RuntimeClineReasoningEffort | null;
+	reasoningEffort?: RuntimeClineReasoningEffort | null;
 }
 
 export interface AddCustomClineProviderInput {
@@ -72,11 +92,24 @@ export interface AddCustomClineProviderInput {
 	capabilities?: SdkCustomProviderCapability[];
 }
 
+export interface UpdateCustomClineProviderInput {
+	providerId: string;
+	name?: string;
+	baseUrl?: string;
+	apiKey?: string | null;
+	headers?: Record<string, string> | null;
+	timeoutMs?: number | null;
+	models?: string[];
+	defaultModelId?: string | null;
+	modelsSourceUrl?: string | null;
+	capabilities?: SdkCustomProviderCapability[];
+}
+
 function toErrorMessage(error: unknown): string {
 	if (error instanceof Error) {
 		return error.message;
 	}
-	return String(error);
+	return "An unexpected error occurred.";
 }
 
 function parseClineRemoteConfigValue(value: string): ClineRemoteConfig {
@@ -193,18 +226,91 @@ function hasOauthRefreshToken(settings: SdkProviderSettings | null): boolean {
 	return (settings?.auth?.refreshToken?.trim() ?? "").length > 0;
 }
 
-function toRuntimeProviderModel(modelId: string, modelInfo: SdkProviderModelRecord[string]): RuntimeClineProviderModel {
-	const capabilities = new Set(modelInfo.capabilities ?? []);
-	const supportsVision = capabilities.has("images");
-	const supportsAttachments = capabilities.has("files") || supportsVision;
-	const supportsReasoningEffort = supportsSdkModelThinking(modelInfo);
+function toRuntimeProviderModel(model: RuntimeClineProviderModel): RuntimeClineProviderModel {
 	return {
-		id: modelId,
-		name: modelInfo.name?.trim() || modelId,
-		supportsVision: supportsVision || undefined,
-		supportsAttachments: supportsAttachments || undefined,
-		supportsReasoningEffort: supportsReasoningEffort || undefined,
+		id: model.id,
+		name: model.name?.trim() || model.id,
+		supportsVision: model.supportsVision || undefined,
+		supportsAttachments: model.supportsAttachments || undefined,
+		supportsReasoningEffort: model.supportsReasoningEffort || undefined,
 	};
+}
+
+function logLiteLlmModelListWarning(message: string, metadata?: Record<string, unknown>): void {
+	LOGGER.log(message, {
+		severity: "warn",
+		providerId: "litellm",
+		...(metadata ?? {}),
+	});
+}
+
+function hasAuthorizationHeader(headers: Record<string, string>): boolean {
+	return Object.keys(headers).some((key) => key.toLowerCase() === "authorization");
+}
+
+function resolveLiteLlmModelListHeaders(settings: SdkProviderSettings): Record<string, string> {
+	const headers = { ...(settings.headers ?? {}) };
+	const apiKey = resolveVisibleApiKey(settings);
+	if (apiKey && !hasAuthorizationHeader(headers)) {
+		headers.Authorization = `Bearer ${apiKey}`;
+	}
+	return headers;
+}
+
+function resolveLiteLlmModelListItemId(item: LiteLlmModelListItem, pathname: LiteLlmModelListPathname): string {
+	const modelId = pathname === "/model/info" ? (item.model_name ?? item.id) : item.id;
+	return modelId?.trim() ?? "";
+}
+
+async function fetchLiteLlmBaseUrlModels(settings: SdkProviderSettings | null): Promise<RuntimeClineProviderModel[]> {
+	const baseUrl = settings?.baseUrl?.trim() ?? "";
+	if (!settings || (settings.provider?.trim().toLowerCase() ?? "") !== "litellm" || !baseUrl) {
+		return [];
+	}
+
+	const headers = resolveLiteLlmModelListHeaders(settings);
+	const timeoutMs =
+		typeof settings.timeout === "number" && settings.timeout > 0
+			? Math.min(settings.timeout, LITELLM_MODEL_LIST_TIMEOUT_MS)
+			: LITELLM_MODEL_LIST_TIMEOUT_MS;
+	const normalizedBaseUrl = baseUrl.replace(/\/+$/, "");
+	for (const pathname of LITELLM_MODEL_LIST_PATHNAMES) {
+		const url = `${normalizedBaseUrl}${pathname}`;
+		try {
+			const response = await globalThis.fetch(url, {
+				method: "GET",
+				headers,
+				signal: AbortSignal.timeout(timeoutMs),
+			});
+			if (!response.ok) {
+				logLiteLlmModelListWarning("LiteLLM model list request returned an unsuccessful response.", {
+					url,
+					status: response.status,
+				});
+				continue;
+			}
+
+			const parsed = LITELLM_MODELS_RESPONSE_SCHEMA.safeParse((await response.json()) as unknown);
+			if (!parsed.success) {
+				logLiteLlmModelListWarning("LiteLLM model list request returned an unexpected response.", { url });
+				continue;
+			}
+
+			const modelIds =
+				parsed.data.data
+					?.map((item) => resolveLiteLlmModelListItemId(item, pathname))
+					.filter((modelId) => modelId.length > 0) ?? [];
+			if (modelIds.length > 0) {
+				return [...new Set(modelIds)].map((id) => ({ id, name: id }));
+			}
+		} catch (error) {
+			logLiteLlmModelListWarning("LiteLLM model list request failed.", {
+				url,
+				errorMessage: toErrorMessage(error),
+			});
+		}
+	}
+	return [];
 }
 
 function createEmptyProviderSettingsSummary(): RuntimeClineProviderSettings {
@@ -357,6 +463,31 @@ export function createClineProviderService() {
 	const getProviderSettingsSummary = (): RuntimeClineProviderSettings =>
 		toProviderSettingsSummary(getSelectedProviderSettings());
 
+	// Dedup concurrent fetchSdkClineAccountProfile calls (e.g. balance + orgs on dialog open).
+	// Cached for 5s so back-to-back callers share a single network round-trip.
+	const PROFILE_CACHE_TTL_MS = 5_000;
+	let profileCache: {
+		key: string;
+		promise: ReturnType<typeof fetchSdkClineAccountProfile>;
+		expiresAt: number;
+	} | null = null;
+
+	function fetchProfileDeduped(apiParams: { apiBaseUrl: string; accessToken: string }) {
+		const cacheKey = `${apiParams.apiBaseUrl}::${apiParams.accessToken}`;
+		if (profileCache && profileCache.key === cacheKey && Date.now() < profileCache.expiresAt) {
+			return profileCache.promise;
+		}
+		const promise = fetchSdkClineAccountProfile(apiParams);
+		profileCache = { key: cacheKey, promise, expiresAt: Date.now() + PROFILE_CACHE_TTL_MS };
+		// Clear cache on failure so retries aren't stuck with a rejected promise.
+		promise.catch(() => {
+			if (profileCache?.promise === promise) {
+				profileCache = null;
+			}
+		});
+		return promise;
+	}
+
 	return {
 		getProviderSettingsSummary(): RuntimeClineProviderSettings {
 			return getProviderSettingsSummary();
@@ -385,7 +516,7 @@ export function createClineProviderService() {
 					if (!rawAccessToken) {
 						return null;
 					}
-					const me = await fetchSdkClineAccountProfile({
+					const me = await fetchProfileDeduped({
 						apiBaseUrl: settings.baseUrl?.trim() || DEFAULT_CLINE_API_BASE_URL,
 						accessToken: ensureWorkosPrefix(rawAccessToken),
 					});
@@ -436,14 +567,14 @@ export function createClineProviderService() {
 					apiBaseUrl: selectedSettings.baseUrl?.trim() || DEFAULT_CLINE_API_BASE_URL,
 					accessToken: ensureWorkosPrefix(rawAccessToken),
 				});
-				if (!remoteConfigResponse.enabled || !remoteConfigResponse.organizationId) {
+				if (!remoteConfigResponse?.enabled || !remoteConfigResponse?.organizationId) {
 					return { enabled: true };
 				}
 
 				const orgData = await fetchSdkOrgData({
 					apiBaseUrl: selectedSettings.baseUrl?.trim() || DEFAULT_CLINE_API_BASE_URL,
 					accessToken: ensureWorkosPrefix(rawAccessToken),
-					organizatinId: remoteConfigResponse.organizationId,
+					organizationId: remoteConfigResponse.organizationId,
 				});
 
 				const parsedRemoteConfig = parseClineRemoteConfigValue(remoteConfigResponse.value);
@@ -459,8 +590,203 @@ export function createClineProviderService() {
 			}
 		},
 
-		async resolveLaunchConfig(): Promise<ResolvedClineLaunchConfig> {
+		async getFeaturebaseToken(): Promise<{ featurebaseJwt: string }> {
 			const selectedSettings = getSelectedProviderSettings();
+			if (!selectedSettings) {
+				throw new Error("No provider settings configured.");
+			}
+
+			const normalizedProviderId = selectedSettings.provider.trim().toLowerCase();
+			if (normalizedProviderId !== "cline") {
+				throw new Error("Featurebase token requires a Cline provider.");
+			}
+
+			const tryFetchToken = async (settings: SdkProviderSettings): Promise<{ featurebaseJwt: string }> => {
+				const rawAccessToken = settings.auth?.accessToken?.trim() ?? "";
+				if (!rawAccessToken) {
+					throw new Error("No access token configured for Cline provider.");
+				}
+				return await fetchSdkFeaturebaseToken({
+					apiBaseUrl: settings.baseUrl?.trim() || DEFAULT_CLINE_API_BASE_URL,
+					accessToken: ensureWorkosPrefix(rawAccessToken),
+				});
+			};
+
+			try {
+				return await tryFetchToken(selectedSettings);
+			} catch {
+				// Retry once after OAuth refresh.
+			}
+
+			const oauthResolution = await refreshManagedOauthSettings(selectedSettings);
+			if (oauthResolution?.settings) {
+				return await tryFetchToken(oauthResolution.settings);
+			}
+			throw new Error("Failed to fetch Featurebase token.");
+		},
+
+		async getClineAccountBalance(): Promise<RuntimeClineAccountBalanceResponse> {
+			try {
+				const selectedSettings = getSelectedProviderSettings();
+				if (!selectedSettings) {
+					return { balance: null, activeAccountLabel: null, activeOrganizationId: null };
+				}
+				const normalizedProviderId = selectedSettings.provider.trim().toLowerCase();
+				if (normalizedProviderId !== "cline") {
+					return { balance: null, activeAccountLabel: null, activeOrganizationId: null };
+				}
+
+				const resolveWithSettings = async (
+					settings: SdkProviderSettings,
+				): Promise<RuntimeClineAccountBalanceResponse> => {
+					const rawAccessToken = settings.auth?.accessToken?.trim() ?? "";
+					if (!rawAccessToken) {
+						return { balance: null, activeAccountLabel: null, activeOrganizationId: null };
+					}
+					const apiParams = {
+						apiBaseUrl: settings.baseUrl?.trim() || DEFAULT_CLINE_API_BASE_URL,
+						accessToken: ensureWorkosPrefix(rawAccessToken),
+					};
+					const me = await fetchProfileDeduped(apiParams);
+					const activeOrg = me.organizations?.find((org) => org.active) ?? null;
+					if (activeOrg) {
+						const orgBalance = await fetchSdkOrganizationBalance({
+							...apiParams,
+							organizationId: activeOrg.organizationId,
+						});
+						return {
+							balance: orgBalance.balance,
+							activeAccountLabel: activeOrg.name,
+							activeOrganizationId: activeOrg.organizationId,
+						};
+					}
+					const personalBalance = await fetchSdkClineAccountBalance(apiParams);
+					return {
+						balance: personalBalance.balance,
+						activeAccountLabel: "Personal",
+						activeOrganizationId: null,
+					};
+				};
+
+				try {
+					return await resolveWithSettings(selectedSettings);
+				} catch {
+					// Retry once after OAuth refresh.
+				}
+				const oauthResolution = await refreshManagedOauthSettings(selectedSettings);
+				if (oauthResolution?.settings) {
+					return await resolveWithSettings(oauthResolution.settings);
+				}
+				return { balance: null, activeAccountLabel: null, activeOrganizationId: null };
+			} catch (error) {
+				return {
+					balance: null,
+					activeAccountLabel: null,
+					activeOrganizationId: null,
+					error: toErrorMessage(error),
+				};
+			}
+		},
+
+		async getClineAccountOrganizations(): Promise<RuntimeClineAccountOrganizationsResponse> {
+			try {
+				const selectedSettings = getSelectedProviderSettings();
+				if (!selectedSettings) {
+					return { organizations: [] };
+				}
+				const normalizedProviderId = selectedSettings.provider.trim().toLowerCase();
+				if (normalizedProviderId !== "cline") {
+					return { organizations: [] };
+				}
+
+				const resolveWithSettings = async (
+					settings: SdkProviderSettings,
+				): Promise<RuntimeClineAccountOrganizationsResponse> => {
+					const rawAccessToken = settings.auth?.accessToken?.trim() ?? "";
+					if (!rawAccessToken) {
+						return { organizations: [] };
+					}
+					const apiParams = {
+						apiBaseUrl: settings.baseUrl?.trim() || DEFAULT_CLINE_API_BASE_URL,
+						accessToken: ensureWorkosPrefix(rawAccessToken),
+					};
+					const me = await fetchProfileDeduped(apiParams);
+					return {
+						organizations: (me.organizations ?? []).map((org: NonNullable<typeof me.organizations>[number]) => ({
+							organizationId: org.organizationId,
+							name: org.name,
+							active: org.active,
+							roles: org.roles ?? [],
+						})),
+					};
+				};
+
+				try {
+					return await resolveWithSettings(selectedSettings);
+				} catch {
+					// Retry once after OAuth refresh.
+				}
+				const oauthResolution = await refreshManagedOauthSettings(selectedSettings);
+				if (oauthResolution?.settings) {
+					return await resolveWithSettings(oauthResolution.settings);
+				}
+				return { organizations: [] };
+			} catch (error) {
+				return {
+					organizations: [],
+					error: toErrorMessage(error),
+				};
+			}
+		},
+
+		async switchClineAccount(organizationId: string | null): Promise<RuntimeClineAccountSwitchResponse> {
+			try {
+				const selectedSettings = getSelectedProviderSettings();
+				if (!selectedSettings) {
+					return { ok: false, error: "No provider settings configured." };
+				}
+				const normalizedProviderId = selectedSettings.provider.trim().toLowerCase();
+				if (normalizedProviderId !== "cline") {
+					return { ok: false, error: "Account switching requires a Cline provider." };
+				}
+
+				const doSwitch = async (settings: SdkProviderSettings): Promise<RuntimeClineAccountSwitchResponse> => {
+					const rawAccessToken = settings.auth?.accessToken?.trim() ?? "";
+					if (!rawAccessToken) {
+						return { ok: false, error: "No access token configured." };
+					}
+					await switchSdkClineAccount({
+						apiBaseUrl: settings.baseUrl?.trim() || DEFAULT_CLINE_API_BASE_URL,
+						accessToken: ensureWorkosPrefix(rawAccessToken),
+						organizationId,
+					});
+					profileCache = null;
+					return { ok: true };
+				};
+
+				try {
+					return await doSwitch(selectedSettings);
+				} catch {
+					// Retry once after OAuth refresh.
+				}
+				const oauthResolution = await refreshManagedOauthSettings(selectedSettings);
+				if (oauthResolution?.settings) {
+					return await doSwitch(oauthResolution.settings);
+				}
+				return { ok: false, error: "Failed to switch account." };
+			} catch (error) {
+				return { ok: false, error: toErrorMessage(error) };
+			}
+		},
+
+		async resolveLaunchConfig(overrides?: {
+			providerIdOverride?: string;
+			modelIdOverride?: string;
+			reasoningEffortOverride?: RuntimeClineReasoningEffort | null;
+		}): Promise<ResolvedClineLaunchConfig> {
+			const selectedSettings = overrides?.providerIdOverride
+				? (getSdkProviderSettings(overrides.providerIdOverride) ?? getSelectedProviderSettings())
+				: getSelectedProviderSettings();
 			if (!selectedSettings) {
 				throw new Error(
 					"No native Cline provider is configured. Open Settings, choose a provider, and then start the task again.",
@@ -482,12 +808,19 @@ export function createClineProviderService() {
 						oauthApiKey: oauthResolution?.apiKey ?? null,
 					})
 				: resolveVisibleApiKey(resolvedSettings);
+			const modelId =
+				overrides?.modelIdOverride?.trim() ||
+				resolvedSettings.model?.trim() ||
+				(await resolveDefaultModelIdForProvider(normalizedProviderId));
 			return {
 				providerId: normalizedProviderId,
-				modelId: resolvedSettings.model?.trim() || (await resolveDefaultModelIdForProvider(normalizedProviderId)),
+				modelId,
 				apiKey,
 				baseUrl: resolvedSettings.baseUrl?.trim() || null,
-				reasoningEffort: toRuntimeReasoningEffort(resolvedSettings.reasoning?.effort),
+				reasoningEffort:
+					overrides && "reasoningEffortOverride" in overrides
+						? (overrides.reasoningEffortOverride ?? null)
+						: (toRuntimeReasoningEffort(resolvedSettings.reasoning?.effort) ?? undefined),
 			};
 		},
 
@@ -539,16 +872,21 @@ export function createClineProviderService() {
 
 		async getProviderModels(providerId: string): Promise<RuntimeClineProviderModelsResponse> {
 			const normalizedProviderId = providerId.trim().toLowerCase();
-			const providerModels =
+			let providerModels =
 				normalizedProviderId.length > 0
 					? await listSdkProviderModels(normalizedProviderId)
-							.then((sdkModels) =>
-								Object.entries(sdkModels)
-									.map(([modelId, modelInfo]) => toRuntimeProviderModel(modelId, modelInfo))
-									.sort((left, right) => left.name.localeCompare(right.name)),
-							)
+							.then((sdkModels) => sdkModels.map((model) => toRuntimeProviderModel(model)))
+							.then((sdkModels) => sdkModels.sort((left, right) => left.name.localeCompare(right.name)))
 							.catch(() => [])
 					: [];
+			if (normalizedProviderId === "litellm") {
+				const liteLlmModels = await fetchLiteLlmBaseUrlModels(getSdkProviderSettings(normalizedProviderId));
+				const existingModelIds = new Set(providerModels.map((model) => model.id));
+				providerModels = [
+					...providerModels,
+					...liteLlmModels.filter((model) => !existingModelIds.has(model.id)),
+				].sort((left, right) => left.name.localeCompare(right.name));
+			}
 
 			if (providerModels.length > 0) {
 				return {
@@ -557,7 +895,7 @@ export function createClineProviderService() {
 				};
 			}
 
-			const configuredModel = getProviderSettingsSummary().modelId?.trim() ?? "";
+			const configuredModel = getSdkProviderSettings(normalizedProviderId)?.model?.trim() ?? "";
 			if (configuredModel.length > 0) {
 				return {
 					providerId: normalizedProviderId || providerId,
@@ -601,12 +939,66 @@ export function createClineProviderService() {
 			return toProviderSettingsSummary(getSdkProviderSettings(providerId));
 		},
 
+		async updateCustomProvider(input: UpdateCustomClineProviderInput): Promise<RuntimeClineProviderSettings> {
+			const providerId = input.providerId.trim().toLowerCase();
+			if (!providerId) {
+				throw new Error("Provider ID cannot be empty.");
+			}
+
+			await updateSdkCustomProvider({
+				providerId,
+				name: input.name,
+				baseUrl: input.baseUrl,
+				apiKey: input.apiKey ?? undefined,
+				headers: input.headers ?? undefined,
+				timeoutMs: input.timeoutMs ?? undefined,
+				models: input.models,
+				defaultModelId: input.defaultModelId ?? undefined,
+				modelsSourceUrl: input.modelsSourceUrl ?? undefined,
+				capabilities: input.capabilities,
+			});
+
+			const existingSettings = getSdkProviderSettings(providerId) ?? { provider: providerId };
+			const isLastUsed = getLastUsedSdkProviderSettings()?.provider?.trim().toLowerCase() === providerId;
+			saveSdkProviderSettings({
+				settings: existingSettings,
+				tokenSource: hasOauthAccessToken(existingSettings) ? "oauth" : "manual",
+				setLastUsed: isLastUsed,
+			});
+
+			return toProviderSettingsSummary(getSdkProviderSettings(providerId));
+		},
+
+		async deleteCustomProvider(input: { providerId: string }): Promise<RuntimeClineProviderSettings> {
+			const providerId = input.providerId.trim().toLowerCase();
+			if (!providerId) {
+				throw new Error("Provider ID cannot be empty.");
+			}
+
+			await deleteSdkCustomProvider(providerId);
+			return getProviderSettingsSummary();
+		},
+
 		saveProviderSettings(input: {
 			providerId: string;
 			modelId?: string | null;
 			apiKey?: string | null;
 			baseUrl?: string | null;
 			reasoningEffort?: RuntimeClineReasoningEffort | null;
+			region?: string | null;
+			aws?: {
+				accessKey?: string | null;
+				secretKey?: string | null;
+				sessionToken?: string | null;
+				region?: string | null;
+				profile?: string | null;
+				authentication?: "iam" | "api-key" | "profile" | null;
+				endpoint?: string | null;
+			};
+			gcp?: {
+				projectId?: string | null;
+				region?: string | null;
+			};
 		}): RuntimeClineProviderSettingsSaveResponse {
 			const providerId = input.providerId.trim().toLowerCase();
 			if (!providerId) {
@@ -663,6 +1055,104 @@ export function createClineProviderService() {
 					delete nextSettings.reasoning;
 				} else {
 					nextSettings.reasoning = nextReasoning;
+				}
+			}
+
+			if (input.region !== undefined) {
+				const region = input.region?.trim() ?? "";
+				if (region) {
+					nextSettings.region = region;
+				} else {
+					delete nextSettings.region;
+				}
+			}
+
+			if (input.aws !== undefined) {
+				const nextAws = { ...(nextSettings.aws ?? {}) } as NonNullable<SdkProviderSettings["aws"]>;
+				if (input.aws.accessKey !== undefined) {
+					const accessKey = input.aws.accessKey?.trim() ?? "";
+					if (accessKey) nextAws.accessKey = accessKey;
+					else delete nextAws.accessKey;
+				}
+				if (input.aws.secretKey !== undefined) {
+					const secretKey = input.aws.secretKey?.trim() ?? "";
+					if (secretKey) nextAws.secretKey = secretKey;
+					else delete nextAws.secretKey;
+				}
+				if (input.aws.sessionToken !== undefined) {
+					const sessionToken = input.aws.sessionToken?.trim() ?? "";
+					if (sessionToken) nextAws.sessionToken = sessionToken;
+					else delete nextAws.sessionToken;
+				}
+				if (input.aws.region !== undefined) {
+					const awsRegion = input.aws.region?.trim() ?? "";
+					if (awsRegion) nextAws.region = awsRegion;
+					else delete nextAws.region;
+				}
+				if (input.aws.profile !== undefined) {
+					const profile = input.aws.profile?.trim() ?? "";
+					if (profile) nextAws.profile = profile;
+					else delete nextAws.profile;
+				}
+				if (input.aws.authentication !== undefined) {
+					const authentication = input.aws.authentication;
+					if (authentication) nextAws.authentication = authentication;
+					else delete nextAws.authentication;
+				}
+				if (input.aws.endpoint !== undefined) {
+					const endpoint = input.aws.endpoint?.trim() ?? "";
+					if (endpoint) nextAws.endpoint = endpoint;
+					else delete nextAws.endpoint;
+				}
+
+				if (
+					nextAws.accessKey === undefined &&
+					nextAws.secretKey === undefined &&
+					nextAws.sessionToken === undefined &&
+					nextAws.region === undefined &&
+					nextAws.profile === undefined &&
+					nextAws.authentication === undefined &&
+					nextAws.usePromptCache === undefined &&
+					nextAws.useCrossRegionInference === undefined &&
+					nextAws.useGlobalInference === undefined &&
+					nextAws.endpoint === undefined &&
+					nextAws.customModelBaseId === undefined
+				) {
+					delete nextSettings.aws;
+				} else {
+					nextSettings.aws = nextAws;
+				}
+			}
+
+			if (input.gcp !== undefined) {
+				const nextGcp = { ...(nextSettings.gcp ?? {}) } as NonNullable<SdkProviderSettings["gcp"]>;
+				if (input.gcp.projectId !== undefined) {
+					const projectId = input.gcp.projectId?.trim() ?? "";
+					if (projectId) nextGcp.projectId = projectId;
+					else delete nextGcp.projectId;
+				}
+				if (input.gcp.region !== undefined) {
+					const gcpRegion = input.gcp.region?.trim() ?? "";
+					if (gcpRegion) nextGcp.region = gcpRegion;
+					else delete nextGcp.region;
+				}
+				if (nextGcp.projectId === undefined && nextGcp.region === undefined) {
+					delete nextSettings.gcp;
+				} else {
+					nextSettings.gcp = nextGcp;
+				}
+			}
+
+			if (providerId === "vertex") {
+				const projectId = nextSettings.gcp?.projectId?.trim() ?? "";
+				if (!projectId) {
+					throw new Error("Vertex provider requires GCP Project ID.");
+				}
+				const modelId = nextSettings.model?.trim().toLowerCase() ?? "";
+				const isClaudeModel = modelId.includes("claude");
+				const resolvedRegion = nextSettings.gcp?.region?.trim() || nextSettings.region?.trim() || "";
+				if (isClaudeModel && !resolvedRegion) {
+					throw new Error("Vertex Claude models require GCP Region (or Region).");
 				}
 			}
 
@@ -728,6 +1218,74 @@ export function createClineProviderService() {
 				return {
 					ok: false,
 					provider: input.providerId,
+					error: toErrorMessage(error),
+				};
+			}
+		},
+
+		async startDeviceAuth(): Promise<RuntimeClineDeviceAuthStartResponse> {
+			const result = await startSdkDeviceAuth();
+			return {
+				deviceCode: result.deviceCode,
+				userCode: result.userCode,
+				verificationUrl: result.verificationUri,
+				expiresInSeconds: result.expiresInSeconds,
+				pollIntervalSeconds: result.pollIntervalSeconds,
+			};
+		},
+
+		async completeDeviceAuth(input: {
+			deviceCode: string;
+			expiresInSeconds: number;
+			pollIntervalSeconds: number;
+			baseUrl?: string | null;
+		}): Promise<RuntimeClineDeviceAuthCompleteResponse> {
+			const providerId: ManagedClineOauthProviderId = "cline";
+			try {
+				const existingSettings = getSdkProviderSettings(providerId) ?? {
+					provider: providerId,
+				};
+				const apiBaseUrl = input.baseUrl?.trim() || DEFAULT_CLINE_API_BASE_URL;
+				const credentials = await completeSdkDeviceAuth({
+					deviceCode: input.deviceCode,
+					expiresInSeconds: input.expiresInSeconds,
+					pollIntervalSeconds: input.pollIntervalSeconds,
+					apiBaseUrl,
+				});
+
+				const nextSettings: SdkProviderSettings = {
+					...existingSettings,
+					provider: providerId,
+					auth: {
+						...(existingSettings.auth ?? {}),
+						accessToken: toProviderApiKey(providerId, credentials.access),
+						refreshToken: credentials.refresh,
+						accountId: credentials.accountId ?? undefined,
+						expiresAt: normalizeEpochMs(credentials.expires),
+					},
+				};
+
+				if (apiBaseUrl !== DEFAULT_CLINE_API_BASE_URL) {
+					nextSettings.baseUrl = apiBaseUrl;
+				} else {
+					delete nextSettings.baseUrl;
+				}
+
+				saveSdkProviderSettings({
+					settings: nextSettings,
+					tokenSource: "oauth",
+					setLastUsed: true,
+				});
+
+				return {
+					ok: true,
+					provider: providerId,
+					settings: toProviderSettingsSummary(nextSettings),
+				};
+			} catch (error) {
+				return {
+					ok: false,
+					provider: providerId,
 					error: toErrorMessage(error),
 				};
 			}

@@ -43,14 +43,6 @@ export const RUNTIME_AGENT_CATALOG: RuntimeAgentCatalogEntry[] = [
 		installUrl: "https://github.com/cline/cline",
 	},
 	{
-		id: "kiro",
-		label: "Kiro CLI",
-		binary: "kiro-cli",
-		baseArgs: [],
-		autonomousArgs: ["--trust-all-tools"],
-		installUrl: "https://kiro.dev/docs/cli/installation/",
-	},
-	{
 		id: "opencode",
 		label: "OpenCode",
 		binary: "opencode",
@@ -65,6 +57,14 @@ export const RUNTIME_AGENT_CATALOG: RuntimeAgentCatalogEntry[] = [
 		baseArgs: [],
 		autonomousArgs: ["--auto", "high"],
 		installUrl: "https://docs.factory.ai/cli/getting-started/quickstart",
+	},
+	{
+		id: "kiro",
+		label: "Kiro",
+		binary: "kiro-cli",
+		baseArgs: ["chat"],
+		autonomousArgs: ["--trust-all-tools"],
+		installUrl: "https://kiro.dev",
 	},
 	{
 		id: "gemini",

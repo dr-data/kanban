@@ -298,6 +298,7 @@ function TopBarGitStatusSection({
 }
 
 export function TopBar({
+	onToggleSidebar,
 	onBack,
 	workspacePath,
 	isWorkspacePathLoading = false,
@@ -332,11 +333,11 @@ export function TopBar({
 	isOpeningWorkspace,
 	hideProjectDependentActions = false,
 	isMobile = false,
-	onToggleSidebar,
 	onTeleport,
 	isTeleportActive = false,
 	isTeleportDisabled = false,
 }: {
+	onToggleSidebar?: () => void;
 	onBack?: () => void;
 	workspacePath?: string;
 	isWorkspacePathLoading?: boolean;
@@ -372,8 +373,6 @@ export function TopBar({
 	hideProjectDependentActions?: boolean;
 	/** Whether the viewport is below the mobile breakpoint. */
 	isMobile?: boolean;
-	/** Callback to toggle the mobile sidebar drawer. */
-	onToggleSidebar?: () => void;
 	/** Callback to initiate teleport (remote control) to claude.ai. */
 	onTeleport?: () => void;
 	/** Whether remote control is currently active for the selected session. */

@@ -36,6 +36,7 @@ vi.mock("@hello-pangea/dnd", () => ({
 function createCard(id: string, prompt: string) {
 	return {
 		id,
+		title: prompt,
 		prompt,
 		startInPlanMode: false,
 		autoReviewEnabled: false,
@@ -104,7 +105,7 @@ describe("ColumnContextPanel", () => {
 			{ id: "backlog", title: "Backlog", cards: [createCard("task-1", "Backlog task")] },
 			{ id: "in_progress", title: "In Progress", cards: [createCard("task-2", "In progress task")] },
 			{ id: "review", title: "Review", cards: [createCard("task-3", "Review task")] },
-			{ id: "trash", title: "Trash", cards: [] },
+			{ id: "trash", title: "Done", cards: [] },
 		];
 
 		await act(async () => {

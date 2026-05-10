@@ -1,6 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer as createNetServer } from "node:net";
+import { resolve } from "node:path";
 import { Command, Option } from "commander";
 import ora, { type Ora } from "ora";
 import packageJson from "../package.json" with { type: "json" };
@@ -15,18 +17,24 @@ import {
 } from "./core/graceful-shutdown";
 import {
 	buildKanbanRuntimeUrl,
+	clearKanbanRuntimeTls,
 	DEFAULT_KANBAN_RUNTIME_PORT,
 	getKanbanRuntimeHost,
 	getKanbanRuntimeOrigin,
 	getKanbanRuntimePort,
+	getRuntimeFetch,
+	isKanbanRemoteHost,
 	parseRuntimePort,
 	setKanbanRuntimeHost,
 	setKanbanRuntimePort,
+	setKanbanRuntimeTls,
 } from "./core/runtime-endpoint";
+import { disablePasscode, generateInternalToken, generatePasscode } from "./security/passcode-manager";
 import { terminateProcessForTimeout } from "./server/process-termination";
 import type { RuntimeStateHub } from "./server/runtime-state-hub";
 import type { TerminalSessionManager } from "./terminal/session-manager";
 import type { RuntimeAppRouter } from "./trpc/app-router";
+import { runOnDemandUpdate } from "./update/update";
 
 /*
 	Telemetry modules (@sentry/node + Cline SDK telemetry) are loaded lazily
@@ -64,6 +72,10 @@ interface CliOptions {
 	skipShutdownCleanup: boolean;
 	host: string | null;
 	port: { mode: "fixed"; value: number } | { mode: "auto" } | null;
+	https: boolean;
+	cert: string | null;
+	key: string | null;
+	noPasscode: boolean;
 }
 
 const KANBAN_VERSION = typeof packageJson.version === "string" ? packageJson.version : "0.1.0";
@@ -88,6 +100,11 @@ interface RootCommandOptions {
 	port?: { mode: "fixed"; value: number } | { mode: "auto" };
 	open?: boolean;
 	skipShutdownCleanup?: boolean;
+	update?: boolean;
+	https?: boolean;
+	cert?: string;
+	key?: string;
+	noPasscode?: boolean;
 }
 
 type ShutdownIndicatorResult = "done" | "interrupted" | "failed";
@@ -105,8 +122,8 @@ interface ShutdownIndicator {
  * unexpected argument is treated as a command-style invocation instead.
  */
 function shouldAutoOpenBrowserTabForInvocation(argv: string[]): boolean {
-	const launchFlags = new Set(["--open", "--no-open", "--skip-shutdown-cleanup"]);
-	const launchOptionsWithValues = new Set(["--host", "--port", "--agent"]);
+	const launchFlags = new Set(["--open", "--no-open", "--skip-shutdown-cleanup", "--https", "--no-passcode"]);
+	const launchOptionsWithValues = new Set(["--host", "--port", "--agent", "--cert", "--key"]);
 
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
@@ -214,6 +231,25 @@ async function applyRuntimePortOption(portOption: CliOptions["port"]): Promise<n
 	return autoPort;
 }
 
+type TlsResult = { enabled: false } | { enabled: true };
+
+async function resolveRuntimeTls(options: CliOptions): Promise<TlsResult> {
+	const wantsHttps = options.https || options.cert !== null || options.key !== null;
+	if (!wantsHttps) {
+		clearKanbanRuntimeTls();
+		return { enabled: false };
+	}
+	if (!options.cert || !options.key) {
+		throw new Error("HTTPS requires both --cert and --key. Use plain HTTP if you do not have a TLS certificate.");
+	}
+	const cert = readFileSync(resolve(options.cert), "utf8");
+	const key = readFileSync(resolve(options.key), "utf8");
+	// Trust the exact configured cert for Kanban's own subcommands without
+	// disabling certificate validation for unrelated HTTPS endpoints.
+	setKanbanRuntimeTls({ cert, key, ca: cert });
+	return { enabled: true };
+}
+
 async function assertPathIsDirectory(path: string): Promise<void> {
 	const info = await stat(path);
 	if (!info.isDirectory()) {
@@ -255,7 +291,8 @@ async function canReachKanbanServer(workspaceId: string | null): Promise<boolean
 		if (workspaceId) {
 			headers["x-kanban-workspace-id"] = workspaceId;
 		}
-		const response = await fetch(buildKanbanRuntimeUrl("/api/trpc/projects.list"), {
+		const runtimeFetch = await getRuntimeFetch();
+		const response = await runtimeFetch(buildKanbanRuntimeUrl("/api/trpc/projects.list"), {
 			method: "GET",
 			headers,
 			signal: AbortSignal.timeout(1_500),
@@ -392,6 +429,7 @@ async function startServer(): Promise<{
 		{ createTRPCProxyClient, httpBatchLink },
 		{ createTaskScheduleMonitor },
 		{ createTaskRecurringMonitor },
+		{ clearPendingUpdateNotification, getPendingUpdateNotification },
 	] = await Promise.all([
 		import("./projects/project-path.js"),
 		import("./server/directory-picker.js"),
@@ -404,6 +442,7 @@ async function startServer(): Promise<{
 		import("@trpc/client"),
 		import("./server/task-schedule-monitor.js"),
 		import("./server/task-recurring-monitor.js"),
+		import("./update/update.js"),
 	]);
 	let runtimeStateHub: RuntimeStateHub | undefined;
 	const workspaceRegistry = await createWorkspaceRegistry({
@@ -452,6 +491,46 @@ async function startServer(): Promise<{
 		disposeWorkspace: disposeTrackedWorkspace,
 		collectProjectWorktreeTaskIdsForRemoval,
 		pickDirectoryPathFromSystemDialog,
+		getUpdateStatus: () => {
+			const notification = getPendingUpdateNotification();
+			if (!notification) {
+				return {
+					currentVersion: KANBAN_VERSION,
+					latestVersion: null,
+					updateAvailable: false,
+					updateTiming: null,
+					installCommand: null,
+				};
+			}
+			return {
+				currentVersion: notification.currentVersion,
+				latestVersion: notification.latestVersion,
+				updateAvailable: true,
+				updateTiming: notification.updateTiming,
+				installCommand: notification.installCommand,
+			};
+		},
+		runUpdateNow: async () => {
+			const result = await runOnDemandUpdate({
+				currentVersion: KANBAN_VERSION,
+			});
+			if (
+				result.status === "updated" ||
+				result.status === "already_up_to_date" ||
+				result.status === "cache_refreshed"
+			) {
+				// The pending notification is a one-shot signal recorded at startup.
+				// Clearing it here prevents the modal from reappearing on page reload
+				// after the user has already applied the update.
+				clearPendingUpdateNotification();
+			}
+			return {
+				status: result.status,
+				currentVersion: result.currentVersion,
+				latestVersion: result.latestVersion,
+				message: result.message,
+			};
+		},
 	});
 
 	/** Creates a tRPC proxy client that targets the local runtime server for a given workspace. */
@@ -547,12 +626,32 @@ async function runMainCommand(options: CliOptions, shouldAutoOpenBrowser: boolea
 
 	const [{ openInBrowser }, { autoUpdateOnStartup, runPendingAutoUpdateOnShutdown }] = await Promise.all([
 		import("./server/browser.js"),
-		import("./update/auto-update.js"),
+		import("./update/update.js"),
 	]);
 
 	const selectedPort = await applyRuntimePortOption(options.port);
 	if (selectedPort !== null) {
 		console.log(`Using runtime port ${selectedPort}.`);
+	}
+
+	const tlsResult = await resolveRuntimeTls(options);
+	if (tlsResult.enabled) {
+		console.log(`HTTPS enabled on ${getKanbanRuntimeOrigin()}`);
+	}
+
+	// Handle passcode generation for remote mode — deferred until after TLS
+	// validation so that an invalid --cert/--key fails before a passcode is
+	// printed (a passcode for a server that never starts is confusing).
+	if (isKanbanRemoteHost()) {
+		if (options.noPasscode) {
+			disablePasscode();
+			console.log("Passcode authentication disabled (--no-passcode). Ensure you have your own auth layer.");
+		} else {
+			const passcode = generatePasscode();
+			generateInternalToken();
+			// NOTE: passcode is printed ONLY here and never stored in logs or env.
+			console.log(`\n🔐 Remote access passcode: ${passcode}\n\nShare this with users who need access.\n`);
+		}
 	}
 
 	autoUpdateOnStartup({
@@ -610,6 +709,9 @@ async function runMainCommand(options: CliOptions, shouldAutoOpenBrowser: boolea
 		exit: (code) => {
 			process.exit(code);
 		},
+		reraiseSignal: (signal) => {
+			process.kill(process.pid, signal);
+		},
 		onShutdown: async () => {
 			shutdownIndicator.start();
 			try {
@@ -638,6 +740,19 @@ async function runMainCommand(options: CliOptions, shouldAutoOpenBrowser: boolea
 	});
 }
 
+async function runUpdateCommand(): Promise<void> {
+	const result = await runOnDemandUpdate({
+		currentVersion: KANBAN_VERSION,
+	});
+
+	if (result.status === "updated" || result.status === "already_up_to_date" || result.status === "cache_refreshed") {
+		console.log(result.message);
+		return;
+	}
+
+	throw new Error(result.message);
+}
+
 function createProgram(invocationArgs: string[]): Command {
 	const shouldAutoOpenBrowser = shouldAutoOpenBrowserTabForInvocation(invocationArgs);
 	const program = new Command();
@@ -648,7 +763,15 @@ function createProgram(invocationArgs: string[]): Command {
 		.option("--host <ip>", "Host IP to bind the server to (default: 127.0.0.1).")
 		.option("--port <number|auto>", "Runtime port (1-65535) or auto.", parseCliPortValue)
 		.option("--no-open", "Do not open browser automatically.")
-		.option("--skip-shutdown-cleanup", "Do not move sessions to trash or delete task worktrees on shutdown.")
+		.option("--skip-shutdown-cleanup", "Do not move sessions to done or delete task worktrees on shutdown.")
+		.option("--https", "Enable HTTPS. Requires both --cert and --key.")
+		.option("--cert <path>", "Path to a TLS certificate PEM file (implies HTTPS).")
+		.option("--key <path>", "Path to a TLS private key PEM file (implies HTTPS).")
+		.option("--update", "Update Kanban to the latest published version and exit.")
+		.option(
+			"--no-passcode",
+			"Disable auto-generated passcode for remote access (for advanced users behind a reverse proxy).",
+		)
 		.showHelpAfterError()
 		.addHelpText("after", `\nRuntime URL: ${getKanbanRuntimeOrigin()}`);
 
@@ -664,13 +787,28 @@ function createProgram(invocationArgs: string[]): Command {
 			console.warn("Deprecated. Please uninstall Kanban MCP.");
 		});
 
+	program
+		.command("update")
+		.description("Update Kanban to the latest published version.")
+		.action(async () => {
+			await runUpdateCommand();
+		});
+
 	program.action(async (options: RootCommandOptions) => {
+		if (options.update === true) {
+			await runUpdateCommand();
+			return;
+		}
 		await runMainCommand(
 			{
 				host: options.host ?? null,
 				port: options.port ?? null,
 				noOpen: options.open === false,
 				skipShutdownCleanup: options.skipShutdownCleanup === true,
+				https: options.https === true,
+				cert: options.cert ?? null,
+				key: options.key ?? null,
+				noPasscode: options.noPasscode === true,
 			},
 			shouldAutoOpenBrowser,
 		);

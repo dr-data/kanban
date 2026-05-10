@@ -48,7 +48,6 @@ export interface AgentTerminalPanelProps {
 	panelBackgroundColor?: string;
 	terminalBackgroundColor?: string;
 	cursorColor?: string;
-	showRightBorder?: boolean;
 	isVisible?: boolean;
 	onConnectionReady?: (taskId: string) => void;
 	agentCommand?: string | null;
@@ -169,7 +168,6 @@ function AgentTerminalPanelLayout({
 	panelBackgroundColor = "var(--color-surface-1)",
 	terminalBackgroundColor = "var(--color-surface-1)",
 	cursorColor: _cursorColor = "var(--color-text-primary)",
-	showRightBorder = true,
 	isVisible: _isVisible = true,
 	onConnectionReady: _onConnectionReady,
 	agentCommand,
@@ -200,7 +198,6 @@ function AgentTerminalPanelLayout({
 				minWidth: 0,
 				minHeight: 0,
 				background: panelBackgroundColor,
-				borderRight: showRightBorder ? "1px solid var(--color-divider)" : undefined,
 			}}
 		>
 			{showSessionToolbar ? (
@@ -353,7 +350,7 @@ function AgentTerminalPanelLayout({
 						</Button>
 					) : null}
 					<Button variant="danger" fill disabled={isMoveToTrashLoading} onClick={onMoveToTrash}>
-						{isMoveToTrashLoading ? <Spinner size={14} /> : "Move Card To Trash"}
+						{isMoveToTrashLoading ? <Spinner size={14} /> : "Move Card To Done"}
 					</Button>
 				</div>
 			) : null}

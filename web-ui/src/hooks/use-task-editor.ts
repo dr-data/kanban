@@ -1,3 +1,4 @@
+import { deriveTaskTitleFromPrompt } from "@runtime-task-title";
 import type { Dispatch, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -7,8 +8,8 @@ import {
 	TASK_AUTO_REVIEW_MODE_STORAGE_KEY,
 	TASK_START_IN_PLAN_MODE_STORAGE_KEY,
 } from "@/hooks/app-utils";
-import type { RuntimeAgentId } from "@/runtime/types";
-import { addTaskToColumnWithResult, findCardSelection, updateTask } from "@/state/board-state";
+import type { RuntimeAgentId, RuntimeTaskClineSettings } from "@/runtime/types";
+import { addTaskToColumnWithResult, findCardSelection, updateTask, updateTaskTitle } from "@/state/board-state";
 import { toTelemetrySelectedAgentId, trackTaskCreated } from "@/telemetry/events";
 import type { BoardCard, BoardData, TaskAutoReviewMode, TaskImage } from "@/types";
 import { resolveTaskAutoReviewMode } from "@/types";
@@ -58,6 +59,10 @@ export interface UseTaskEditorResult {
 	setNewTaskScheduledStartAt: Dispatch<SetStateAction<number | null>>;
 	newTaskScheduledEndAt: number | null;
 	setNewTaskScheduledEndAt: Dispatch<SetStateAction<number | null>>;
+	newTaskAgentId: RuntimeAgentId | undefined;
+	setNewTaskAgentId: Dispatch<SetStateAction<RuntimeAgentId | undefined>>;
+	newTaskClineSettings: RuntimeTaskClineSettings | undefined;
+	setNewTaskClineSettings: Dispatch<SetStateAction<RuntimeTaskClineSettings | undefined>>;
 	editingTaskId: string | null;
 	editTaskPrompt: string;
 	setEditTaskPrompt: Dispatch<SetStateAction<string>>;
@@ -82,12 +87,17 @@ export interface UseTaskEditorResult {
 	setEditTaskScheduledStartAt: Dispatch<SetStateAction<number | null>>;
 	editTaskScheduledEndAt: number | null;
 	setEditTaskScheduledEndAt: Dispatch<SetStateAction<number | null>>;
+	editTaskAgentId: RuntimeAgentId | undefined;
+	setEditTaskAgentId: Dispatch<SetStateAction<RuntimeAgentId | undefined>>;
+	editTaskClineSettings: RuntimeTaskClineSettings | undefined;
+	setEditTaskClineSettings: Dispatch<SetStateAction<RuntimeTaskClineSettings | undefined>>;
 	handleOpenCreateTask: () => void;
 	handleCancelCreateTask: () => void;
 	handleOpenEditTask: (task: BoardCard, options?: OpenEditTaskOptions) => void;
 	handleCancelEditTask: () => void;
 	handleSaveEditedTask: () => string | null;
 	handleSaveAndStartEditedTask: () => void;
+	handleSaveTaskTitle: (taskId: string, title: string) => void;
 	handleCreateTask: (options?: CreateTaskOptions) => string | null;
 	handleCreateTasks: (prompts: string[], options?: CreateTaskOptions) => string[];
 	resetTaskEditorState: () => void;
@@ -119,7 +129,7 @@ export function useTaskEditor({
 		"commit",
 		normalizeStoredTaskAutoReviewMode,
 	);
-	const isNewTaskStartInPlanModeDisabled = newTaskAutoReviewEnabled && newTaskAutoReviewMode === "move_to_trash";
+	const isNewTaskStartInPlanModeDisabled = false;
 	const [newTaskBranchRef, setNewTaskBranchRef] = useState("");
 	const [lastCreatedTaskBranchByProjectId, setLastCreatedTaskBranchByProjectId] = useState<Record<string, string>>({});
 	const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
@@ -128,7 +138,7 @@ export function useTaskEditor({
 	const [editTaskStartInPlanMode, setEditTaskStartInPlanMode] = useState(false);
 	const [editTaskAutoReviewEnabled, setEditTaskAutoReviewEnabled] = useState(false);
 	const [editTaskAutoReviewMode, setEditTaskAutoReviewMode] = useState<TaskAutoReviewMode>("commit");
-	const isEditTaskStartInPlanModeDisabled = editTaskAutoReviewEnabled && editTaskAutoReviewMode === "move_to_trash";
+	const isEditTaskStartInPlanModeDisabled = false;
 	const [editTaskBranchRef, setEditTaskBranchRef] = useState("");
 
 	/* Recurring state for new tasks */
@@ -144,6 +154,11 @@ export function useTaskEditor({
 	const [editTaskRecurringPeriodMs, setEditTaskRecurringPeriodMs] = useState(180_000);
 	const [editTaskScheduledStartAt, setEditTaskScheduledStartAt] = useState<number | null>(null);
 	const [editTaskScheduledEndAt, setEditTaskScheduledEndAt] = useState<number | null>(null);
+
+	const [newTaskAgentId, setNewTaskAgentId] = useState<RuntimeAgentId | undefined>(undefined);
+	const [newTaskClineSettings, setNewTaskClineSettings] = useState<RuntimeTaskClineSettings | undefined>(undefined);
+	const [editTaskAgentId, setEditTaskAgentId] = useState<RuntimeAgentId | undefined>(undefined);
+	const [editTaskClineSettings, setEditTaskClineSettings] = useState<RuntimeTaskClineSettings | undefined>(undefined);
 
 	const lastCreatedTaskBranchRef = useMemo(() => {
 		if (!currentProjectId) {
@@ -211,6 +226,7 @@ export function useTaskEditor({
 		const selection = findCardSelection(board, editingTaskId);
 		if (!selection || selection.column.id !== "backlog") {
 			setEditingTaskId(null);
+
 			setEditTaskPrompt("");
 			setEditTaskStartInPlanMode(false);
 			setEditTaskAutoReviewEnabled(false);
@@ -229,14 +245,20 @@ export function useTaskEditor({
 		setEditingTaskId(null);
 		setEditTaskPrompt("");
 		setEditTaskImages([]);
+
+		setNewTaskAgentId(undefined);
+		setNewTaskClineSettings(undefined);
 		setIsInlineTaskCreateOpen(true);
 	}, []);
 
 	const handleCancelCreateTask = useCallback(() => {
 		setIsInlineTaskCreateOpen(false);
+
 		setNewTaskPrompt("");
 		setNewTaskImages([]);
 		setNewTaskBranchRef(resolvedDefaultTaskBranchRef);
+		setNewTaskAgentId(undefined);
+		setNewTaskClineSettings(undefined);
 	}, [resolvedDefaultTaskBranchRef]);
 
 	const handleOpenEditTask = useCallback(
@@ -245,10 +267,12 @@ export function useTaskEditor({
 				setSelectedTaskId(null);
 			}
 			setIsInlineTaskCreateOpen(false);
+
 			setNewTaskPrompt("");
 			setNewTaskImages([]);
 			const taskPrompt = task.prompt.trim();
 			setEditingTaskId(task.id);
+
 			setEditTaskPrompt(taskPrompt);
 			setEditTaskImages(task.images ? task.images.map((image) => ({ ...image })) : []);
 			setEditTaskStartInPlanMode(task.startInPlanMode);
@@ -261,12 +285,15 @@ export function useTaskEditor({
 			setEditTaskRecurringPeriodMs(task.recurringPeriodMs ?? 180_000);
 			setEditTaskScheduledStartAt(task.scheduledStartAt ?? null);
 			setEditTaskScheduledEndAt(task.scheduledEndAt ?? null);
+			setEditTaskAgentId(task.agentId);
+			setEditTaskClineSettings(task.clineSettings);
 		},
 		[resolvedDefaultTaskBranchRef, setSelectedTaskId],
 	);
 
 	const handleCancelEditTask = useCallback(() => {
 		setEditingTaskId(null);
+
 		setEditTaskPrompt("");
 		setEditTaskStartInPlanMode(false);
 		setEditTaskAutoReviewEnabled(false);
@@ -296,12 +323,17 @@ export function useTaskEditor({
 		const savedTaskId = editingTaskId;
 
 		setBoard((currentBoard) => {
+			const currentCard = currentBoard.columns.flatMap((c) => c.cards).find((c) => c.id === savedTaskId);
+			const title = currentCard?.title ?? "";
 			const updated = updateTask(currentBoard, savedTaskId, {
+				title,
 				prompt,
 				startInPlanMode: editTaskStartInPlanMode,
 				autoReviewEnabled: editTaskAutoReviewEnabled,
 				autoReviewMode: editTaskAutoReviewMode,
 				images: editTaskImages,
+				agentId: editTaskAgentId,
+				clineSettings: editTaskClineSettings,
 				baseRef,
 				recurringEnabled: editTaskRecurringEnabled,
 				recurringMaxIterations: editTaskRecurringMaxIterations,
@@ -312,7 +344,9 @@ export function useTaskEditor({
 			return updated.updated ? updated.board : currentBoard;
 		});
 		setEditingTaskId(null);
+
 		setEditTaskPrompt("");
+		setEditTaskStartInPlanMode(false);
 		setEditTaskAutoReviewEnabled(false);
 		setEditTaskAutoReviewMode("commit");
 		setEditTaskImages([]);
@@ -321,11 +355,16 @@ export function useTaskEditor({
 		setEditTaskRecurringPeriodMs(180_000);
 		setEditTaskScheduledStartAt(null);
 		setEditTaskScheduledEndAt(null);
+		setEditTaskBranchRef("");
+		setEditTaskAgentId(undefined);
+		setEditTaskClineSettings(undefined);
 		return savedTaskId;
 	}, [
+		editTaskAgentId,
 		editTaskAutoReviewEnabled,
 		editTaskAutoReviewMode,
 		editTaskBranchRef,
+		editTaskClineSettings,
 		editTaskPrompt,
 		editTaskImages,
 		editTaskStartInPlanMode,
@@ -347,6 +386,16 @@ export function useTaskEditor({
 		queueTaskStartAfterEdit?.(taskId);
 	}, [handleSaveEditedTask, queueTaskStartAfterEdit]);
 
+	const handleSaveTaskTitle = useCallback(
+		(taskId: string, title: string) => {
+			setBoard((currentBoard) => {
+				const updated = updateTaskTitle(currentBoard, taskId, title);
+				return updated.updated ? updated.board : currentBoard;
+			});
+		},
+		[setBoard],
+	);
+
 	const handleCreateTask = useCallback(
 		(options?: CreateTaskOptions): string | null => {
 			const prompt = newTaskPrompt.trim();
@@ -357,12 +406,16 @@ export function useTaskEditor({
 				return null;
 			}
 			const baseRef = newTaskBranchRef || resolvedDefaultTaskBranchRef;
+			const title = deriveTaskTitleFromPrompt(prompt);
 			const created = addTaskToColumnWithResult(board, "backlog", {
+				title,
 				prompt,
 				startInPlanMode: newTaskStartInPlanMode,
 				autoReviewEnabled: newTaskAutoReviewEnabled,
 				autoReviewMode: newTaskAutoReviewMode,
 				images: newTaskImages,
+				agentId: newTaskAgentId,
+				clineSettings: newTaskClineSettings,
 				baseRef,
 				recurringEnabled: newTaskRecurringEnabled,
 				recurringMaxIterations: newTaskRecurringMaxIterations,
@@ -372,7 +425,7 @@ export function useTaskEditor({
 			});
 			setBoard(created.board);
 			trackTaskCreated({
-				selected_agent_id: toTelemetrySelectedAgentId(selectedAgentId),
+				selected_agent_id: toTelemetrySelectedAgentId(newTaskAgentId ?? selectedAgentId),
 				start_in_plan_mode: newTaskStartInPlanMode,
 				...(newTaskAutoReviewEnabled ? { auto_review_mode: newTaskAutoReviewMode } : {}),
 				prompt_character_count: prompt.length,
@@ -383,9 +436,12 @@ export function useTaskEditor({
 					[currentProjectId]: baseRef,
 				}));
 			}
+
 			setNewTaskPrompt("");
 			setNewTaskImages([]);
 			setNewTaskBranchRef(baseRef);
+			setNewTaskAgentId(undefined);
+			setNewTaskClineSettings(undefined);
 			if (!options?.keepDialogOpen) {
 				setIsInlineTaskCreateOpen(false);
 			}
@@ -394,9 +450,11 @@ export function useTaskEditor({
 		[
 			board,
 			currentProjectId,
+			newTaskAgentId,
 			newTaskAutoReviewEnabled,
 			newTaskAutoReviewMode,
 			newTaskBranchRef,
+			newTaskClineSettings,
 			newTaskImages,
 			newTaskPrompt,
 			newTaskStartInPlanMode,
@@ -408,6 +466,8 @@ export function useTaskEditor({
 			resolvedDefaultTaskBranchRef,
 			selectedAgentId,
 			setBoard,
+			setNewTaskAgentId,
+			setNewTaskClineSettings,
 		],
 	);
 
@@ -430,6 +490,8 @@ export function useTaskEditor({
 					autoReviewEnabled: newTaskAutoReviewEnabled,
 					autoReviewMode: newTaskAutoReviewMode,
 					images: newTaskImages,
+					agentId: newTaskAgentId,
+					clineSettings: newTaskClineSettings,
 					baseRef,
 					recurringEnabled: newTaskRecurringEnabled,
 					recurringMaxIterations: newTaskRecurringMaxIterations,
@@ -443,7 +505,7 @@ export function useTaskEditor({
 			setBoard(updatedBoard);
 			for (const prompt of validPrompts) {
 				trackTaskCreated({
-					selected_agent_id: toTelemetrySelectedAgentId(selectedAgentId),
+					selected_agent_id: toTelemetrySelectedAgentId(newTaskAgentId ?? selectedAgentId),
 					start_in_plan_mode: newTaskStartInPlanMode,
 					...(newTaskAutoReviewEnabled ? { auto_review_mode: newTaskAutoReviewMode } : {}),
 					prompt_character_count: prompt.length,
@@ -455,9 +517,12 @@ export function useTaskEditor({
 					[currentProjectId]: baseRef,
 				}));
 			}
+
 			setNewTaskPrompt("");
 			setNewTaskImages([]);
 			setNewTaskBranchRef(baseRef);
+			setNewTaskAgentId(undefined);
+			setNewTaskClineSettings(undefined);
 			if (!options?.keepDialogOpen) {
 				setIsInlineTaskCreateOpen(false);
 			}
@@ -466,9 +531,11 @@ export function useTaskEditor({
 		[
 			board,
 			currentProjectId,
+			newTaskAgentId,
 			newTaskAutoReviewEnabled,
 			newTaskAutoReviewMode,
 			newTaskBranchRef,
+			newTaskClineSettings,
 			newTaskImages,
 			newTaskStartInPlanMode,
 			newTaskRecurringEnabled,
@@ -479,12 +546,17 @@ export function useTaskEditor({
 			resolvedDefaultTaskBranchRef,
 			selectedAgentId,
 			setBoard,
+			setNewTaskAgentId,
+			setNewTaskClineSettings,
 		],
 	);
 
 	const resetTaskEditorState = useCallback(() => {
 		setIsInlineTaskCreateOpen(false);
 		setEditingTaskId(null);
+
+		setNewTaskPrompt("");
+
 		setEditTaskPrompt("");
 		setEditTaskStartInPlanMode(false);
 		setEditTaskAutoReviewEnabled(false);
@@ -496,7 +568,11 @@ export function useTaskEditor({
 		setEditTaskRecurringPeriodMs(180_000);
 		setEditTaskScheduledStartAt(null);
 		setEditTaskScheduledEndAt(null);
+		setEditTaskAgentId(undefined);
+		setEditTaskClineSettings(undefined);
 		setNewTaskImages([]);
+		setNewTaskAgentId(undefined);
+		setNewTaskClineSettings(undefined);
 	}, []);
 
 	return {
@@ -524,6 +600,10 @@ export function useTaskEditor({
 		setNewTaskScheduledStartAt,
 		newTaskScheduledEndAt,
 		setNewTaskScheduledEndAt,
+		newTaskAgentId,
+		setNewTaskAgentId,
+		newTaskClineSettings,
+		setNewTaskClineSettings,
 		editingTaskId,
 		editTaskPrompt,
 		setEditTaskPrompt,
@@ -548,12 +628,17 @@ export function useTaskEditor({
 		setEditTaskScheduledStartAt,
 		editTaskScheduledEndAt,
 		setEditTaskScheduledEndAt,
+		editTaskAgentId,
+		setEditTaskAgentId,
+		editTaskClineSettings,
+		setEditTaskClineSettings,
 		handleOpenCreateTask,
 		handleCancelCreateTask,
 		handleOpenEditTask,
 		handleCancelEditTask,
 		handleSaveEditedTask,
 		handleSaveAndStartEditedTask,
+		handleSaveTaskTitle,
 		handleCreateTask,
 		handleCreateTasks,
 		resetTaskEditorState,

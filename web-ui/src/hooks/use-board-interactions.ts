@@ -771,10 +771,14 @@ export function useBoardInteractions({
 
 	const handleCardSelect = useCallback(
 		(taskId: string) => {
+			const selection = findCardSelection(board, taskId);
+			if (!selection || selection.column.id === "trash") {
+				return;
+			}
 			setSelectedTaskId(taskId);
 			setIsGitHistoryOpen(false);
 		},
-		[setIsGitHistoryOpen, setSelectedTaskId],
+		[board, setIsGitHistoryOpen, setSelectedTaskId],
 	);
 
 	const handleMoveToTrash = useCallback(() => {
@@ -841,6 +845,9 @@ export function useBoardInteractions({
 					startInPlanMode: selection.card.startInPlanMode,
 					autoReviewEnabled: false,
 					autoReviewMode: resolveTaskAutoReviewMode(selection.card.autoReviewMode),
+					images: selection.card.images,
+					agentId: selection.card.agentId,
+					clineSettings: selection.card.clineSettings,
 					baseRef: selection.card.baseRef,
 				});
 				return updated.updated ? updated.board : currentBoard;

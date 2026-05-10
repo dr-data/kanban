@@ -1,14 +1,18 @@
 import { z } from "zod";
 
 import {
+	type RuntimeClineAccountSwitchRequest,
 	type RuntimeClineAddProviderRequest,
+	type RuntimeClineDeviceAuthCompleteRequest,
 	type RuntimeClineMcpOAuthRequest,
 	type RuntimeClineMcpSettingsSaveRequest,
 	type RuntimeClineOauthLoginRequest,
 	type RuntimeClineProviderModelsRequest,
 	type RuntimeClineProviderSettingsSaveRequest,
+	type RuntimeClineUpdateProviderRequest,
 	type RuntimeCommandRunRequest,
 	type RuntimeConfigSaveRequest,
+	type RuntimeDirectoryListRequest,
 	type RuntimeEnableRemoteControlRequest,
 	type RuntimeGitCheckoutRequest,
 	type RuntimeHookIngestRequest,
@@ -30,14 +34,18 @@ import {
 	type RuntimeWorkspaceStateSaveRequest,
 	type RuntimeWorktreeDeleteRequest,
 	type RuntimeWorktreeEnsureRequest,
+	runtimeClineAccountSwitchRequestSchema,
 	runtimeClineAddProviderRequestSchema,
+	runtimeClineDeviceAuthCompleteRequestSchema,
 	runtimeClineMcpOAuthRequestSchema,
 	runtimeClineMcpSettingsSaveRequestSchema,
 	runtimeClineOauthLoginRequestSchema,
 	runtimeClineProviderModelsRequestSchema,
 	runtimeClineProviderSettingsSaveRequestSchema,
+	runtimeClineUpdateProviderRequestSchema,
 	runtimeCommandRunRequestSchema,
 	runtimeConfigSaveRequestSchema,
+	runtimeDirectoryListRequestSchema,
 	runtimeEnableRemoteControlRequestSchema,
 	runtimeGitCheckoutRequestSchema,
 	runtimeHookIngestRequestSchema,
@@ -174,12 +182,14 @@ export function parseWorkspaceStateSaveRequest(value: unknown): RuntimeWorkspace
 
 export function parseProjectAddRequest(value: unknown): RuntimeProjectAddRequest {
 	const parsed = parseWithSchema(runtimeProjectAddRequestSchema, value);
-	const path = parsed.path.trim();
-	if (!path) {
-		throw new Error("Project path cannot be empty.");
+	const path = parsed.path?.trim() || undefined;
+	const gitUrl = parsed.gitUrl?.trim() || undefined;
+	if (!path && !gitUrl) {
+		throw new Error("Either path or gitUrl is required.");
 	}
 	return {
 		path,
+		gitUrl,
 		initializeGit: parsed.initializeGit,
 	};
 }
@@ -364,15 +374,73 @@ export function parseClineAddProviderRequest(value: unknown): RuntimeClineAddPro
 	};
 }
 
+export function parseClineUpdateProviderRequest(value: unknown): RuntimeClineUpdateProviderRequest {
+	const parsed = parseWithSchema(runtimeClineUpdateProviderRequestSchema, value);
+	const providerId = parsed.providerId.trim().toLowerCase().replace(/\s+/g, "-");
+	if (!providerId) {
+		throw new Error("Provider ID cannot be empty.");
+	}
+
+	const headers =
+		parsed.headers === undefined
+			? undefined
+			: parsed.headers === null
+				? null
+				: Object.fromEntries(
+						Object.entries(parsed.headers)
+							.map(([key, entry]) => [key.trim(), entry.trim()] as const)
+							.filter(([key]) => key.length > 0),
+					);
+	const models = parsed.models?.map((model) => model.trim()).filter((model) => model.length > 0);
+
+	return {
+		providerId,
+		...(parsed.name !== undefined ? { name: parsed.name.trim() } : {}),
+		...(parsed.baseUrl !== undefined ? { baseUrl: parsed.baseUrl.trim() } : {}),
+		...(parsed.apiKey !== undefined ? { apiKey: parsed.apiKey?.trim() || null } : {}),
+		...(headers !== undefined ? { headers } : {}),
+		...(parsed.timeoutMs !== undefined ? { timeoutMs: parsed.timeoutMs } : {}),
+		...(models !== undefined ? { models: [...new Set(models)] } : {}),
+		...(parsed.defaultModelId !== undefined ? { defaultModelId: parsed.defaultModelId?.trim() || null } : {}),
+		...(parsed.modelsSourceUrl !== undefined ? { modelsSourceUrl: parsed.modelsSourceUrl?.trim() || null } : {}),
+		...(parsed.capabilities ? { capabilities: [...new Set(parsed.capabilities)] } : {}),
+	};
+}
+
 export function parseClineProviderSettingsSaveRequest(value: unknown): RuntimeClineProviderSettingsSaveRequest {
 	const parsed = parseWithSchema(runtimeClineProviderSettingsSaveRequestSchema, value);
 	const providerId = parsed.providerId.trim();
 	if (!providerId) {
 		throw new Error("Provider ID cannot be empty.");
 	}
+
+	const aws =
+		parsed.aws === undefined
+			? undefined
+			: {
+					...(parsed.aws.accessKey !== undefined ? { accessKey: parsed.aws.accessKey?.trim() || null } : {}),
+					...(parsed.aws.secretKey !== undefined ? { secretKey: parsed.aws.secretKey?.trim() || null } : {}),
+					...(parsed.aws.sessionToken !== undefined
+						? { sessionToken: parsed.aws.sessionToken?.trim() || null }
+						: {}),
+					...(parsed.aws.region !== undefined ? { region: parsed.aws.region?.trim() || null } : {}),
+					...(parsed.aws.profile !== undefined ? { profile: parsed.aws.profile?.trim() || null } : {}),
+					...(parsed.aws.authentication !== undefined ? { authentication: parsed.aws.authentication } : {}),
+					...(parsed.aws.endpoint !== undefined ? { endpoint: parsed.aws.endpoint?.trim() || null } : {}),
+				};
+	const gcp =
+		parsed.gcp === undefined
+			? undefined
+			: {
+					...(parsed.gcp.projectId !== undefined ? { projectId: parsed.gcp.projectId?.trim() || null } : {}),
+					...(parsed.gcp.region !== undefined ? { region: parsed.gcp.region?.trim() || null } : {}),
+				};
 	return {
 		...parsed,
 		providerId,
+		...(parsed.region !== undefined ? { region: parsed.region?.trim() || null } : {}),
+		...(aws ? { aws } : {}),
+		...(gcp ? { gcp } : {}),
 	};
 }
 
@@ -464,6 +532,14 @@ export function parseClineOauthLoginRequest(value: unknown): RuntimeClineOauthLo
 	};
 }
 
+export function parseClineDeviceAuthCompleteRequest(value: unknown): RuntimeClineDeviceAuthCompleteRequest {
+	const parsed = parseWithSchema(runtimeClineDeviceAuthCompleteRequestSchema, value);
+	return {
+		...parsed,
+		baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl.trim() || null : parsed.baseUrl,
+	};
+}
+
 export function parseShellSessionStartRequest(value: unknown): RuntimeShellSessionStartRequest {
 	const parsed = parseWithSchema(runtimeShellSessionStartRequestSchema, value);
 	const taskId = parsed.taskId.trim();
@@ -525,4 +601,14 @@ export function parseTerminalWsClientMessage(value: unknown): RuntimeTerminalWsC
 /** Validates and parses a request to enable or disable remote control on a task session. */
 export function parseEnableRemoteControlRequest(value: unknown): RuntimeEnableRemoteControlRequest {
 	return parseWithSchema(runtimeEnableRemoteControlRequestSchema, value);
+}
+
+/** Validates and parses a request to list a directory's contents. */
+export function parseDirectoryListRequest(value: unknown): RuntimeDirectoryListRequest {
+	return parseWithSchema(runtimeDirectoryListRequestSchema, value);
+}
+
+/** Validates and parses a request to switch the active Cline account. */
+export function parseClineAccountSwitchRequest(value: unknown): RuntimeClineAccountSwitchRequest {
+	return parseWithSchema(runtimeClineAccountSwitchRequestSchema, value);
 }

@@ -101,6 +101,7 @@ describe("ClineAgentChatPanel", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		act(() => {
 			root.unmount();
 		});
@@ -151,6 +152,19 @@ describe("ClineAgentChatPanel", () => {
 		});
 
 		expect(container.textContent).toContain("Reasoning");
+		expect(container.textContent).not.toContain("Thinking through the next edit");
+
+		const reasoningToggle = Array.from(container.querySelectorAll("button")).find((button) =>
+			button.textContent?.includes("Reasoning"),
+		);
+		expect(reasoningToggle).toBeInstanceOf(HTMLButtonElement);
+		if (!(reasoningToggle instanceof HTMLButtonElement)) {
+			throw new Error("Expected reasoning toggle button");
+		}
+		await act(async () => {
+			reasoningToggle.click();
+		});
+
 		expect(container.textContent).toContain("Thinking through the next edit");
 		expect(container.textContent).toContain("Read");
 		expect(container.textContent).toContain("src/index.ts");
@@ -174,6 +188,71 @@ describe("ClineAgentChatPanel", () => {
 		expect(container.textContent).toContain('{"ok":true}');
 	});
 
+	it("keeps completed reasoning collapsed after the stream finishes", async () => {
+		const onLoadMessages = vi.fn(async () => []);
+		const streamingReasoningMessage: ClineChatMessage = {
+			id: "reasoning-1",
+			role: "reasoning",
+			content: "Thinking through the next edit",
+			createdAt: 1,
+			meta: {
+				hookEventName: "reasoning_delta",
+				streamType: "reasoning",
+			},
+		};
+		const completedReasoningMessage: ClineChatMessage = {
+			...streamingReasoningMessage,
+			meta: {
+				hookEventName: "reasoning_end",
+				streamType: "reasoning",
+			},
+		};
+
+		await act(async () => {
+			renderPanel(
+				root,
+				<ClineAgentChatPanel
+					taskId="task-1"
+					summary={createSummary("running")}
+					onLoadMessages={onLoadMessages}
+					incomingMessage={streamingReasoningMessage}
+				/>,
+			);
+			await Promise.resolve();
+		});
+
+		expect(container.textContent).toContain("Thinking through the next edit");
+
+		await act(async () => {
+			renderPanel(
+				root,
+				<ClineAgentChatPanel
+					taskId="task-1"
+					summary={createSummary("running")}
+					onLoadMessages={onLoadMessages}
+					incomingMessage={completedReasoningMessage}
+				/>,
+			);
+			await Promise.resolve();
+		});
+
+		expect(container.textContent).not.toContain("Thinking through the next edit");
+
+		await act(async () => {
+			renderPanel(
+				root,
+				<ClineAgentChatPanel
+					taskId="task-1"
+					summary={createSummary("awaiting_review")}
+					onLoadMessages={onLoadMessages}
+				/>,
+			);
+			await Promise.resolve();
+		});
+
+		expect(container.textContent).not.toContain("Thinking through the next edit");
+	});
+
 	it("shows running progress indicator while session is running", async () => {
 		await act(async () => {
 			renderPanel(
@@ -183,6 +262,8 @@ describe("ClineAgentChatPanel", () => {
 			await Promise.resolve();
 		});
 
+		const thinkingSpinner = container.querySelector('[data-testid="cline-thinking-spinner"]');
+		expect(thinkingSpinner?.textContent).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/u);
 		expect(container.textContent).toContain("Thinking...");
 		expect(container.textContent).not.toContain("Cline chat");
 	});
@@ -205,6 +286,69 @@ describe("ClineAgentChatPanel", () => {
 		});
 
 		expect(container.textContent).toContain('Failed to load MCP server "linear"');
+	});
+
+	it("renders a chat-level out-of-credits notice when credit-limit metadata is present", async () => {
+		await act(async () => {
+			renderPanel(
+				root,
+				<ClineAgentChatPanel
+					taskId="task-1"
+					summary={createSummary(
+						"awaiting_review",
+						{
+							activityText: "Agent error: 402 Insufficient balance",
+							toolName: null,
+							toolInputSummary: null,
+							finalMessage: "402 Insufficient balance. Your Cline Credits balance is $0.00",
+							hookEventName: "agent_error",
+							notificationType: "credit_limit",
+							source: "cline-sdk",
+						},
+						{ reviewReason: "error" },
+					)}
+					onLoadMessages={async () => []}
+				/>,
+			);
+			await Promise.resolve();
+		});
+
+		await vi.waitFor(() => {
+			const buyCreditsLink = container.querySelector('a[href="https://app.cline.bot/"]');
+			expect(buyCreditsLink).toBeInstanceOf(HTMLAnchorElement);
+		});
+		expect(container.textContent).toContain("Out of Cline credits.");
+	});
+
+	it("shows out-of-credits notice after interrupted state when credit-limit metadata persists", async () => {
+		await act(async () => {
+			renderPanel(
+				root,
+				<ClineAgentChatPanel
+					taskId="task-1"
+					summary={createSummary(
+						"interrupted",
+						{
+							activityText: "Agent error: 402 Insufficient balance",
+							toolName: null,
+							toolInputSummary: null,
+							finalMessage: "402 Insufficient balance. Your Cline Credits balance is $0.00",
+							hookEventName: "agent_end",
+							notificationType: "credit_limit",
+							source: "cline-sdk",
+						},
+						{ reviewReason: "interrupted" },
+					)}
+					onLoadMessages={async () => []}
+				/>,
+			);
+			await Promise.resolve();
+		});
+
+		await vi.waitFor(() => {
+			const buyCreditsLink = container.querySelector('a[href="https://app.cline.bot/"]');
+			expect(buyCreditsLink).toBeInstanceOf(HTMLAnchorElement);
+		});
 	});
 
 	it("renders user message images inline without a task header", async () => {
@@ -372,7 +516,7 @@ describe("ClineAgentChatPanel", () => {
 		expect(scroll.getScrollTop()).toBe(320);
 	});
 
-	it("hides the thinking indicator while assistant text is streaming", async () => {
+	it("shows the thinking indicator while assistant text is streaming", async () => {
 		const messages: ClineChatMessage[] = [
 			{
 				id: "assistant-1",
@@ -403,10 +547,10 @@ describe("ClineAgentChatPanel", () => {
 		});
 
 		expect(container.textContent).toContain("Streaming reply");
-		expect(container.textContent).not.toContain("Thinking...");
+		expect(container.textContent).toContain("Thinking...");
 	});
 
-	it("hides the thinking indicator while a tool call is streaming", async () => {
+	it("shows the thinking indicator while a tool call is streaming", async () => {
 		const messages: ClineChatMessage[] = [
 			{
 				id: "tool-1",
@@ -442,7 +586,7 @@ describe("ClineAgentChatPanel", () => {
 		});
 
 		expect(container.textContent).toContain("Read");
-		expect(container.textContent).not.toContain("Thinking...");
+		expect(container.textContent).toContain("Thinking...");
 	});
 
 	it("renders assistant markdown including fenced code blocks", async () => {
@@ -1018,6 +1162,6 @@ describe("ClineAgentChatPanel", () => {
 
 		expect(container.textContent).not.toContain("Commit");
 		expect(container.textContent).not.toContain("Open PR");
-		expect(container.textContent).toContain("Move Card To Trash");
+		expect(container.textContent).toContain("Move Card To Done");
 	});
 });

@@ -1,21 +1,31 @@
 import { Draggable } from "@hello-pangea/dnd";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { getRuntimeAgentCatalogEntry } from "@runtime-agent-catalog";
 import { formatClineToolCallLabel } from "@runtime-cline-tool-call-display";
 import { buildTaskWorktreeDisplayPath } from "@runtime-task-worktree-path";
 import {
 	AlertCircle,
+	AlertTriangle,
+	Bot,
 	Clock,
 	GitBranch,
 	Link2,
 	MoveHorizontal,
+	Pencil,
 	Play,
 	Repeat,
 	RotateCcw,
 	Settings,
 	Trash2,
 } from "lucide-react";
-import { type MouseEvent, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent, MouseEvent } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+	formatClineReasoningEffortLabel,
+	formatClineSelectedModelButtonText,
+	resolveClineModelDisplayName,
+} from "@/components/detail-panels/cline-model-picker-options";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
 import { ColumnIndicator } from "@/components/ui/column-indicator";
@@ -31,7 +41,8 @@ import { formatPathForDisplay } from "@/utils/path-display";
 import { useMeasure } from "@/utils/react-use";
 import {
 	clampTextWithInlineSuffix,
-	splitPromptToTitleDescriptionByWidth,
+	getTaskPromptDescription,
+	normalizePromptForDisplay,
 	truncateTaskPromptLabel,
 } from "@/utils/task-prompt";
 import { DEFAULT_TEXT_MEASURE_FONT, measureTextWidth, readElementFontShorthand } from "@/utils/text-measure";
@@ -46,15 +57,17 @@ const SESSION_ACTIVITY_COLOR = {
 	success: "var(--color-status-green)",
 	waiting: "var(--color-status-gold)",
 	error: "var(--color-status-red)",
+	warning: "var(--color-status-orange)",
 	muted: "var(--color-text-tertiary)",
 	secondary: "var(--color-text-secondary)",
 } as const;
 
 const DESCRIPTION_COLLAPSE_LINES = 3;
-const SESSION_PREVIEW_COLLAPSE_LINES = 6;
+const DESCRIPTION_EXPANDED_MAX_LINES = 10;
 const DESCRIPTION_EXPAND_LABEL = "See more";
 const DESCRIPTION_COLLAPSE_LABEL = "Less";
 const DESCRIPTION_COLLAPSE_SUFFIX = `… ${DESCRIPTION_EXPAND_LABEL}`;
+const DESCRIPTION_EXPANDED_SUFFIX = `… ${DESCRIPTION_COLLAPSE_LABEL}`;
 
 /** Human-readable labels for each board column, used in the mobile move-to menu. */
 const COLUMN_LABELS: Record<BoardColumnId, string> = {
@@ -174,10 +187,11 @@ function resolveToolCallLabel(
 	toolInputSummary: string | null,
 ): string | null {
 	if (toolName) {
-		return formatClineToolCallLabel(
-			toolName,
-			toolInputSummary ?? extractToolInputSummaryFromActivityText(activityText ?? "", toolName),
-		);
+		const parsedSummary = extractToolInputSummaryFromActivityText(activityText ?? "", toolName);
+		if (!toolInputSummary && !parsedSummary) {
+			return null;
+		}
+		return formatClineToolCallLabel(toolName, toolInputSummary ?? parsedSummary);
 	}
 	if (!activityText) {
 		return null;
@@ -201,6 +215,20 @@ function isStaleRunningSession(summary: RuntimeTaskSessionSummary): boolean {
 	return summary.pid === null;
 }
 
+/**
+ * Detects whether the latest hook activity reports a credit-limit notification
+ * for a session that is awaiting review, failed, or interrupted.
+ */
+function isCardCreditLimitError(summary: RuntimeTaskSessionSummary | undefined): boolean {
+	if (!summary) {
+		return false;
+	}
+	if (summary.state !== "awaiting_review" && summary.state !== "failed" && summary.state !== "interrupted") {
+		return false;
+	}
+	return summary.latestHookActivity?.notificationType === "credit_limit";
+}
+
 function getCardSessionActivity(summary: RuntimeTaskSessionSummary | undefined): CardSessionActivity | null {
 	if (!summary) {
 		return null;
@@ -216,6 +244,9 @@ function getCardSessionActivity(summary: RuntimeTaskSessionSummary | undefined):
 		};
 	}
 
+	if (isCardCreditLimitError(summary)) {
+		return { dotColor: SESSION_ACTIVITY_COLOR.warning, text: "Out of credits" };
+	}
 	const hookActivity = summary.latestHookActivity;
 	const activityText = hookActivity?.activityText?.trim();
 	const toolName = hookActivity?.toolName?.trim() ?? null;
@@ -347,6 +378,7 @@ export const BoardCard = memo(function BoardCard({
 	onStart,
 	onMoveToTrash,
 	onRestoreFromTrash,
+	onSaveTitle,
 	onCommit,
 	onOpenPr,
 	onCancelAutomaticAction,
@@ -368,6 +400,7 @@ export const BoardCard = memo(function BoardCard({
 	onShowMobileDependencies,
 	onUpdateTask: _onUpdateTask,
 	onEditTask,
+	defaultClineModelId = null,
 }: {
 	card: BoardCardModel;
 	index: number;
@@ -378,6 +411,7 @@ export const BoardCard = memo(function BoardCard({
 	onStart?: (taskId: string) => void;
 	onMoveToTrash?: (taskId: string) => void;
 	onRestoreFromTrash?: (taskId: string) => void;
+	onSaveTitle?: (taskId: string, title: string) => void;
 	onCommit?: (taskId: string) => void;
 	onOpenPr?: (taskId: string) => void;
 	onCancelAutomaticAction?: (taskId: string) => void;
@@ -408,22 +442,18 @@ export const BoardCard = memo(function BoardCard({
 	onUpdateTask?: (taskId: string, updates: Record<string, unknown>) => void;
 	/** Callback to open the task editor for this card. */
 	onEditTask?: (card: BoardCardModel) => void;
+	defaultClineModelId?: string | null;
 }): React.ReactElement {
 	const [isHovered, setIsHovered] = useState(false);
-	const [titleContainerRef, titleRect] = useMeasure<HTMLDivElement>();
+	const [isEditingTitle, setIsEditingTitle] = useState(false);
+	const [draftTitle, setDraftTitle] = useState(card.title);
+	const titleInputRef = useRef<HTMLInputElement | null>(null);
+	const titleEditCancelledRef = useRef(false);
 	const [descriptionContainerRef, descriptionRect] = useMeasure<HTMLDivElement>();
-	const [sessionPreviewContainerRef, sessionPreviewRect] = useMeasure<HTMLDivElement>();
-	const titleRef = useRef<HTMLParagraphElement | null>(null);
 	const descriptionRef = useRef<HTMLParagraphElement | null>(null);
-	const sessionPreviewRef = useRef<HTMLParagraphElement | null>(null);
-	const [titleWidthFallback, setTitleWidthFallback] = useState(0);
 	const [descriptionWidthFallback, setDescriptionWidthFallback] = useState(0);
-	const [sessionPreviewWidthFallback, setSessionPreviewWidthFallback] = useState(0);
-	const [titleFont, setTitleFont] = useState(DEFAULT_TEXT_MEASURE_FONT);
 	const [descriptionFont, setDescriptionFont] = useState(DEFAULT_TEXT_MEASURE_FONT);
-	const [sessionPreviewFont, setSessionPreviewFont] = useState(DEFAULT_TEXT_MEASURE_FONT);
 	const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
-	const [isSessionPreviewExpanded, setIsSessionPreviewExpanded] = useState(false);
 	const reviewWorkspaceSnapshot = useTaskWorkspaceSnapshotValue(card.id);
 	const isTrashCard = columnId === "trash";
 	const isMobile = useIsMobile();
@@ -447,12 +477,7 @@ export const BoardCard = memo(function BoardCard({
 	);
 
 	const isCardInteractive = !isTrashCard;
-	const titleWidth = titleRect.width > 0 ? titleRect.width : titleWidthFallback;
 	const descriptionWidth = descriptionRect.width > 0 ? descriptionRect.width : descriptionWidthFallback;
-	const sessionPreviewWidth = sessionPreviewRect.width > 0 ? sessionPreviewRect.width : sessionPreviewWidthFallback;
-	const displayPrompt = useMemo(() => {
-		return card.prompt.trim();
-	}, [card.prompt]);
 	const rawSessionActivity = useMemo(() => getCardSessionActivity(sessionSummary), [sessionSummary]);
 	const lastSessionActivityRef = useRef<CardSessionActivity | null>(null);
 	const lastSessionActivityCardIdRef = useRef<string | null>(null);
@@ -464,131 +489,123 @@ export const BoardCard = memo(function BoardCard({
 		lastSessionActivityRef.current = rawSessionActivity;
 	}
 	const sessionActivity = rawSessionActivity ?? lastSessionActivityRef.current;
-	const displayPromptSplit = useMemo(() => {
-		const fallbackTitle = truncateTaskPromptLabel(card.prompt);
-		if (!displayPrompt) {
-			return {
-				title: fallbackTitle,
-				description: "",
-			};
-		}
-		if (titleWidth <= 0) {
-			return {
-				title: fallbackTitle,
-				description: "",
-			};
-		}
-		const split = splitPromptToTitleDescriptionByWidth(displayPrompt, {
-			maxTitleWidthPx: titleWidth,
-			measureText: (value) => measureTextWidth(value, titleFont),
-		});
-		return {
-			title: split.title || fallbackTitle,
-			description: split.description,
-		};
-	}, [card.prompt, displayPrompt, titleFont, titleWidth]);
+	const displayTitle = useMemo(
+		() => normalizePromptForDisplay(card.title) || truncateTaskPromptLabel(card.prompt),
+		[card.prompt, card.title],
+	);
+	const displayDescription = useMemo(
+		() => getTaskPromptDescription(card.prompt, displayTitle),
+		[card.prompt, displayTitle],
+	);
 
 	useLayoutEffect(() => {
-		if (titleRect.width > 0) {
-			return;
-		}
-		const nextWidth = titleRef.current?.parentElement?.getBoundingClientRect().width ?? 0;
-		if (nextWidth > 0 && nextWidth !== titleWidthFallback) {
-			setTitleWidthFallback(nextWidth);
-		}
-	}, [titleRect.width, titleWidthFallback]);
-
-	useLayoutEffect(() => {
-		if (descriptionRect.width > 0 || !displayPromptSplit.description) {
+		if (descriptionRect.width > 0 || !displayDescription) {
 			return;
 		}
 		const nextWidth = descriptionRef.current?.parentElement?.getBoundingClientRect().width ?? 0;
 		if (nextWidth > 0 && nextWidth !== descriptionWidthFallback) {
 			setDescriptionWidthFallback(nextWidth);
 		}
-	}, [descriptionRect.width, descriptionWidthFallback, displayPromptSplit.description]);
-
-	useLayoutEffect(() => {
-		if (sessionPreviewRect.width > 0 || !isTrashCard || !sessionActivity?.text) {
-			return;
-		}
-		const nextWidth = sessionPreviewRef.current?.parentElement?.getBoundingClientRect().width ?? 0;
-		if (nextWidth > 0 && nextWidth !== sessionPreviewWidthFallback) {
-			setSessionPreviewWidthFallback(nextWidth);
-		}
-	}, [isTrashCard, sessionActivity?.text, sessionPreviewRect.width, sessionPreviewWidthFallback]);
-
-	useLayoutEffect(() => {
-		setTitleFont(readElementFontShorthand(titleRef.current, DEFAULT_TEXT_MEASURE_FONT));
-	}, [titleWidth]);
+	}, [descriptionRect.width, descriptionWidthFallback, displayDescription]);
 
 	useLayoutEffect(() => {
 		setDescriptionFont(readElementFontShorthand(descriptionRef.current, DEFAULT_TEXT_MEASURE_FONT));
-	}, [descriptionWidth, displayPromptSplit.description]);
-
-	useLayoutEffect(() => {
-		setSessionPreviewFont(readElementFontShorthand(sessionPreviewRef.current, DEFAULT_TEXT_MEASURE_FONT));
-	}, [sessionActivity?.text, sessionPreviewWidth]);
+	}, [descriptionWidth, displayDescription]);
 
 	useEffect(() => {
 		setIsDescriptionExpanded(false);
-	}, [card.id, displayPromptSplit.description]);
+	}, [card.id, displayDescription]);
 
 	useEffect(() => {
-		setIsSessionPreviewExpanded(false);
-	}, [card.id, sessionActivity?.text]);
+		setDraftTitle(card.title);
+		setIsEditingTitle(false);
+	}, [card.id, card.title]);
+
+	useEffect(() => {
+		if (!isEditingTitle) {
+			return;
+		}
+		window.requestAnimationFrame(() => {
+			titleInputRef.current?.focus();
+			titleInputRef.current?.select();
+		});
+	}, [isEditingTitle]);
 
 	const stopEvent = (event: MouseEvent<HTMLElement>) => {
 		event.preventDefault();
 		event.stopPropagation();
 	};
 
+	const submitTitle = () => {
+		if (titleEditCancelledRef.current) {
+			titleEditCancelledRef.current = false;
+			return;
+		}
+		setIsEditingTitle(false);
+		if (!onSaveTitle) {
+			return;
+		}
+		const trimmed = draftTitle.trim();
+		if (trimmed === card.title) {
+			return;
+		}
+		onSaveTitle(card.id, trimmed);
+	};
+
+	const handleTitleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+		if (event.key === "Enter") {
+			event.preventDefault();
+			event.stopPropagation();
+			titleInputRef.current?.blur();
+			return;
+		}
+		if (event.key === "Escape") {
+			event.preventDefault();
+			event.stopPropagation();
+			titleEditCancelledRef.current = true;
+			setDraftTitle(card.title);
+			setIsEditingTitle(false);
+			titleInputRef.current?.blur();
+		}
+	};
+
 	const isDescriptionMeasured = descriptionRect.width > 0;
-	const isSessionPreviewMeasured = sessionPreviewRect.width > 0;
 
 	const descriptionDisplay = useMemo(() => {
-		if (!displayPromptSplit.description) {
+		if (!displayDescription) {
 			return {
-				text: "",
-				isTruncated: false,
+				collapsed: { text: "", isTruncated: false },
+				expanded: { text: "", isTruncated: false },
 			};
 		}
 		if (descriptionWidth <= 0) {
 			return {
-				text: displayPromptSplit.description,
-				isTruncated: false,
+				collapsed: { text: displayDescription, isTruncated: false },
+				expanded: { text: displayDescription, isTruncated: false },
 			};
 		}
-		return clampTextWithInlineSuffix(displayPromptSplit.description, {
-			maxWidthPx: descriptionWidth,
-			maxLines: DESCRIPTION_COLLAPSE_LINES,
-			suffix: DESCRIPTION_COLLAPSE_SUFFIX,
-			measureText: (value) => measureTextWidth(value, descriptionFont),
-		});
-	}, [descriptionFont, descriptionWidth, displayPromptSplit.description]);
+		const measure = (value: string) => measureTextWidth(value, descriptionFont);
+		return {
+			collapsed: clampTextWithInlineSuffix(displayDescription, {
+				maxWidthPx: descriptionWidth,
+				maxLines: DESCRIPTION_COLLAPSE_LINES,
+				suffix: DESCRIPTION_COLLAPSE_SUFFIX,
+				measureText: measure,
+			}),
+			expanded: clampTextWithInlineSuffix(displayDescription, {
+				maxWidthPx: descriptionWidth,
+				maxLines: DESCRIPTION_EXPANDED_MAX_LINES,
+				suffix: DESCRIPTION_EXPANDED_SUFFIX,
+				measureText: measure,
+			}),
+		};
+	}, [descriptionFont, descriptionWidth, displayDescription]);
 
-	const sessionPreviewDisplay = useMemo(() => {
-		if (!sessionActivity?.text) {
-			return {
-				text: "",
-				isTruncated: false,
-			};
-		}
-		if (sessionPreviewWidth <= 0) {
-			return {
-				text: sessionActivity.text,
-				isTruncated: false,
-			};
-		}
-		return clampTextWithInlineSuffix(sessionActivity.text, {
-			maxWidthPx: sessionPreviewWidth,
-			maxLines: SESSION_PREVIEW_COLLAPSE_LINES,
-			suffix: DESCRIPTION_COLLAPSE_SUFFIX,
-			measureText: (value) => measureTextWidth(value, sessionPreviewFont),
-		});
-	}, [sessionActivity?.text, sessionPreviewFont, sessionPreviewWidth]);
-
+	const isCreditLimit = isCardCreditLimitError(sessionSummary);
 	const renderStatusMarker = () => {
+		if (isCreditLimit) {
+			return <AlertTriangle size={12} className="text-status-orange" />;
+		}
 		if (columnId === "in_progress") {
 			if (sessionSummary?.state === "failed") {
 				return <AlertCircle size={12} className="text-status-red" />;
@@ -622,6 +639,44 @@ export const BoardCard = memo(function BoardCard({
 	const isAnyGitActionLoading = isCommitLoading || isOpenPrLoading;
 	const cancelAutomaticActionLabel =
 		!isTrashCard && card.autoReviewEnabled ? getTaskAutoReviewCancelButtonLabel(card.autoReviewMode) : null;
+	const agentOverrideLabel = useMemo(
+		() => (card.agentId ? (getRuntimeAgentCatalogEntry(card.agentId)?.label ?? card.agentId) : null),
+		[card.agentId],
+	);
+	const modelOverrideLabel = useMemo(() => {
+		if (card.clineSettings === undefined) {
+			return null;
+		}
+		const explicitReasoningLabel = card.clineSettings.reasoningEffort
+			? formatClineReasoningEffortLabel(card.clineSettings.reasoningEffort)
+			: !card.clineSettings.providerId && !card.clineSettings.modelId
+				? "Default"
+				: null;
+		if (card.clineSettings.providerId && !card.clineSettings.modelId) {
+			const providerLabel = `Provider: ${card.clineSettings.providerId}`;
+			return explicitReasoningLabel ? `${providerLabel} (${explicitReasoningLabel})` : providerLabel;
+		}
+		const effectiveModelId = card.clineSettings.modelId ?? defaultClineModelId;
+		if (!effectiveModelId) {
+			return explicitReasoningLabel ? `Default model (${explicitReasoningLabel})` : null;
+		}
+		const modelName = resolveClineModelDisplayName(effectiveModelId);
+		if (explicitReasoningLabel) {
+			return `${modelName} (${explicitReasoningLabel})`;
+		}
+		const inheritedReasoningEffort = "";
+		return formatClineSelectedModelButtonText({
+			modelName,
+			reasoningEffort: inheritedReasoningEffort,
+			showReasoningEffort: Boolean(inheritedReasoningEffort),
+		});
+	}, [card.clineSettings, defaultClineModelId]);
+	const taskAgentSettingsLabel = useMemo(() => {
+		const parts = [agentOverrideLabel, modelOverrideLabel].filter((value): value is string => Boolean(value));
+		return parts.length > 0 ? parts.join(" · ") : null;
+	}, [agentOverrideLabel, modelOverrideLabel]);
+
+	const activeDescriptionDisplay = isDescriptionExpanded ? descriptionDisplay.expanded : descriptionDisplay.collapsed;
 
 	return (
 		<Draggable draggableId={card.id} index={index} isDragDisabled={isDragDisabled}>
@@ -657,6 +712,9 @@ export const BoardCard = memo(function BoardCard({
 							onDependencyPointerDown?.(card.id, event);
 						}}
 						onClick={(event) => {
+							if (!isCardInteractive) {
+								return;
+							}
 							if (isDependencyLinking) {
 								event.preventDefault();
 								event.stopPropagation();
@@ -670,6 +728,10 @@ export const BoardCard = memo(function BoardCard({
 								return;
 							}
 							if (event.metaKey || event.ctrlKey) {
+								return;
+							}
+							const target = event.target as HTMLElement | null;
+							if (target?.closest("button, a, input, textarea, [contenteditable='true']")) {
 								return;
 							}
 							if (!snapshot.isDragging && onClick) {
@@ -707,16 +769,56 @@ export const BoardCard = memo(function BoardCard({
 						>
 							<div className="flex items-center gap-2" style={{ minHeight: 24 }}>
 								{statusMarker ? <div className="inline-flex items-center">{statusMarker}</div> : null}
-								<div ref={titleContainerRef} className="flex-1 min-w-0">
-									<p
-										ref={titleRef}
-										className={cn(
-											"kb-line-clamp-1 m-0 font-medium text-sm",
-											isTrashCard && "line-through text-text-tertiary",
-										)}
-									>
-										{displayPromptSplit.title}
-									</p>
+								<div className="flex-1 min-w-0">
+									{isEditingTitle ? (
+										<input
+											ref={titleInputRef}
+											value={draftTitle}
+											onChange={(event) => setDraftTitle(event.currentTarget.value)}
+											onBlur={submitTitle}
+											onKeyDown={handleTitleKeyDown}
+											onMouseDown={(event) => {
+												event.stopPropagation();
+											}}
+											className="h-7 w-full rounded-md border border-border-focus bg-surface-2 px-2 text-sm font-medium text-text-primary focus:outline-none"
+										/>
+									) : onSaveTitle ? (
+										<div className="flex items-center gap-1 min-w-0">
+											<p
+												className={cn(
+													"kb-line-clamp-1 m-0 min-w-0 font-medium text-sm",
+													isTrashCard && "line-through text-text-tertiary",
+												)}
+											>
+												{displayTitle}
+											</p>
+											<button
+												type="button"
+												aria-label="Edit task title"
+												onMouseDown={stopEvent}
+												onClick={(event) => {
+													stopEvent(event);
+													setDraftTitle(card.title);
+													setIsEditingTitle(true);
+												}}
+												className={cn(
+													"shrink-0 cursor-pointer rounded-sm p-0.5 text-text-tertiary hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+													isHovered ? "opacity-100" : "opacity-0",
+												)}
+											>
+												<Pencil size={12} />
+											</button>
+										</div>
+									) : (
+										<p
+											className={cn(
+												"kb-line-clamp-1 m-0 font-medium text-sm",
+												isTrashCard && "line-through text-text-tertiary",
+											)}
+										>
+											{displayTitle}
+										</p>
+									)}
 								</div>
 								{columnId === "backlog" ? (
 									<Button
@@ -736,7 +838,7 @@ export const BoardCard = memo(function BoardCard({
 										variant="ghost"
 										size="sm"
 										disabled={isMoveToTrashLoading}
-										aria-label="Move task to trash"
+										aria-label="Move task to done"
 										onMouseDown={stopEvent}
 										onClick={(event) => {
 											stopEvent(event);
@@ -758,7 +860,7 @@ export const BoardCard = memo(function BoardCard({
 											icon={<RotateCcw size={12} />}
 											variant="ghost"
 											size="sm"
-											aria-label="Restore task from trash"
+											aria-label="Restore task from done"
 											onMouseDown={stopEvent}
 											onClick={(event) => {
 												stopEvent(event);
@@ -819,7 +921,7 @@ export const BoardCard = memo(function BoardCard({
 									</button>
 								) : null}
 							</div>
-							{displayPromptSplit.description ? (
+							{displayDescription ? (
 								<div ref={descriptionContainerRef}>
 									<p
 										ref={descriptionRef}
@@ -832,47 +934,64 @@ export const BoardCard = memo(function BoardCard({
 											margin: "2px 0 0",
 										}}
 									>
-										{isDescriptionExpanded || !descriptionDisplay.isTruncated
-											? displayPromptSplit.description
-											: descriptionDisplay.text}
-										{descriptionDisplay.isTruncated ? (
-											isDescriptionExpanded ? (
-												<>
-													{" "}
-													<button
-														type="button"
-														className="inline cursor-pointer rounded-sm hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [color:inherit] [font:inherit]"
-														aria-expanded={isDescriptionExpanded}
-														aria-label="Collapse task description"
-														onMouseDown={stopEvent}
-														onClick={(event) => {
-															stopEvent(event);
-															setIsDescriptionExpanded(false);
-														}}
-													>
-														{DESCRIPTION_COLLAPSE_LABEL}
-													</button>
-												</>
-											) : (
-												<>
-													{"… "}
-													<button
-														type="button"
-														className="inline cursor-pointer rounded-sm hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [color:inherit] [font:inherit]"
-														aria-expanded={isDescriptionExpanded}
-														aria-label="Expand task description"
-														onMouseDown={stopEvent}
-														onClick={(event) => {
-															stopEvent(event);
-															setIsDescriptionExpanded(true);
-														}}
-													>
-														{DESCRIPTION_EXPAND_LABEL}
-													</button>
-												</>
-											)
+										{activeDescriptionDisplay.isTruncated
+											? activeDescriptionDisplay.text
+											: displayDescription}
+										{activeDescriptionDisplay.isTruncated ? (
+											<>
+												{"… "}
+												<button
+													type="button"
+													className="inline cursor-pointer rounded-sm text-text-tertiary hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [font:inherit]"
+													aria-expanded={isDescriptionExpanded}
+													aria-label={
+														isDescriptionExpanded
+															? "Collapse task description"
+															: "Expand task description"
+													}
+													onMouseDown={stopEvent}
+													onClick={(event) => {
+														stopEvent(event);
+														setIsDescriptionExpanded(!isDescriptionExpanded);
+													}}
+												>
+													{isDescriptionExpanded ? DESCRIPTION_COLLAPSE_LABEL : DESCRIPTION_EXPAND_LABEL}
+												</button>
+											</>
+										) : isDescriptionExpanded && descriptionDisplay.collapsed.isTruncated ? (
+											<>
+												{" "}
+												<button
+													type="button"
+													className="inline cursor-pointer rounded-sm text-text-tertiary hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [font:inherit]"
+													aria-expanded={isDescriptionExpanded}
+													aria-label="Collapse task description"
+													onMouseDown={stopEvent}
+													onClick={(event) => {
+														stopEvent(event);
+														setIsDescriptionExpanded(false);
+													}}
+												>
+													{DESCRIPTION_COLLAPSE_LABEL}
+												</button>
+											</>
 										) : null}
 									</p>
+								</div>
+							) : null}
+							{taskAgentSettingsLabel ? (
+								<div className="mt-1">
+									<span
+										className={cn(
+											"inline-flex max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs",
+											isTrashCard
+												? "border-border text-text-tertiary bg-surface-1"
+												: "border-status-blue/30 bg-status-blue/10 text-status-blue",
+										)}
+									>
+										<Bot size={12} className="shrink-0" />
+										<span className="truncate">{taskAgentSettingsLabel}</span>
+									</span>
 								</div>
 							) : null}
 							{sessionActivity ? (
@@ -891,59 +1010,9 @@ export const BoardCard = memo(function BoardCard({
 											marginTop: 4,
 										}}
 									/>
-									<div ref={sessionPreviewContainerRef} className="min-w-0 flex-1">
-										<p
-											ref={sessionPreviewRef}
-											className={cn(
-												"m-0 font-mono",
-												!isSessionPreviewMeasured && !isSessionPreviewExpanded && "line-clamp-6",
-											)}
-											style={{
-												fontSize: 12,
-												whiteSpace: "normal",
-												overflowWrap: "anywhere",
-											}}
-										>
-											{isSessionPreviewExpanded || !sessionPreviewDisplay.isTruncated
-												? sessionActivity.text
-												: sessionPreviewDisplay.text}
-											{sessionPreviewDisplay.isTruncated ? (
-												isSessionPreviewExpanded ? (
-													<>
-														{" "}
-														<button
-															type="button"
-															className="inline cursor-pointer rounded-sm hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [color:inherit] [font:inherit]"
-															aria-expanded={isSessionPreviewExpanded}
-															aria-label="Collapse task agent preview"
-															onMouseDown={stopEvent}
-															onClick={(event) => {
-																stopEvent(event);
-																setIsSessionPreviewExpanded(false);
-															}}
-														>
-															{DESCRIPTION_COLLAPSE_LABEL}
-														</button>
-													</>
-												) : (
-													<>
-														{"… "}
-														<button
-															type="button"
-															className="inline cursor-pointer rounded-sm hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [color:inherit] [font:inherit]"
-															aria-expanded={isSessionPreviewExpanded}
-															aria-label="Expand task agent preview"
-															onMouseDown={stopEvent}
-															onClick={(event) => {
-																stopEvent(event);
-																setIsSessionPreviewExpanded(true);
-															}}
-														>
-															{DESCRIPTION_EXPAND_LABEL}
-														</button>
-													</>
-												)
-											) : null}
+									<div className="min-w-0 flex-1">
+										<p className="m-0 font-mono truncate" style={{ fontSize: 12 }}>
+											{sessionActivity.text}
 										</p>
 									</div>
 								</div>

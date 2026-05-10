@@ -4,6 +4,39 @@
 import type { RuntimeTaskImage, RuntimeTaskSessionSummary } from "../core/api-contract";
 
 const CLINE_USER_ATTENTION_TOOL_NAMES = new Set(["ask_followup_question", "plan_mode_respond"]);
+
+/**
+ * Detect credit-limit / insufficient-balance errors from an error message string.
+ * Shared by the event adapter (for SDK agent events) and the session service (for
+ * start/send failures) so the detection logic stays in one place.
+ *
+ * NOTE: This relies on string matching because the SDK does not yet expose a
+ * structured error code for credit exhaustion. If the SDK adds one, prefer
+ * checking that code and keep this as a fallback for older SDK versions.
+ */
+const CREDIT_LIMIT_PATTERNS = [
+	"insufficient balance",
+	"insufficient_credits",
+	"insufficient credits",
+	"credit limit",
+	"credit_limit_exceeded",
+	"credits exhausted",
+	"out of credits",
+	"no remaining credits",
+	"402 payment required",
+] as const;
+
+export function isCreditLimitError(errorMessage: string | null): boolean {
+	if (!errorMessage) {
+		return false;
+	}
+	const normalized = errorMessage.toLowerCase();
+	if (CREDIT_LIMIT_PATTERNS.some((pattern) => normalized.includes(pattern))) {
+		return true;
+	}
+	return normalized.includes("402") && (normalized.includes("balance") || normalized.includes("credit"));
+}
+
 const WINDOWS_INVALID_SESSION_ID_CHARS = /[<>:"/\\|?*]/g;
 
 export interface ClineTaskSessionEntry {
@@ -192,12 +225,17 @@ export function appendReasoningChunk(entry: ClineTaskSessionEntry, taskId: strin
 		const updatedMessage = updateMessageInEntry(entry, existingMessageId, (currentMessage) => ({
 			...currentMessage,
 			content: `${currentMessage.content}${chunk}`,
+			meta: {
+				...(currentMessage.meta ?? {}),
+				hookEventName: "reasoning_delta",
+				streamType: "reasoning",
+			},
 		}));
 		if (updatedMessage) {
 			return updatedMessage;
 		}
 	}
-	return createReasoningMessage(entry, taskId, chunk);
+	return createReasoningMessage(entry, taskId, chunk, "reasoning_delta");
 }
 
 export function setOrCreateReasoningMessage(
@@ -211,11 +249,16 @@ export function setOrCreateReasoningMessage(
 	const updatedMessage = updateMessageInEntry(entry, entry.activeReasoningMessageId, (currentMessage) => ({
 		...currentMessage,
 		content,
+		meta: {
+			...(currentMessage.meta ?? {}),
+			hookEventName: "reasoning_end",
+			streamType: "reasoning",
+		},
 	}));
 	if (updatedMessage) {
 		return updatedMessage;
 	}
-	return createReasoningMessage(entry, taskId, content);
+	return createReasoningMessage(entry, taskId, content, "reasoning_end");
 }
 
 export function createAssistantMessage(
@@ -233,8 +276,10 @@ export function createReasoningMessage(
 	entry: ClineTaskSessionEntry,
 	taskId: string,
 	content: string,
+	hookEventName: string,
 ): ClineTaskMessage {
 	const message = createMessageWithMeta(taskId, "reasoning", content, {
+		hookEventName,
 		streamType: "reasoning",
 	});
 	entry.messages.push(message);

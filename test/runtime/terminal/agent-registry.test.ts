@@ -84,15 +84,15 @@ describe("buildRuntimeConfigResponse", () => {
 			"claude-kiro",
 			"codex",
 			"cline",
-			"kiro",
 			"droid",
+			"kiro",
 		]);
 		expect(response.agents.find((agent) => agent.id === "claude")?.defaultArgs).toEqual([]);
 		expect(response.agents.find((agent) => agent.id === "claude-kiro")?.defaultArgs).toEqual([]);
 		expect(response.agents.find((agent) => agent.id === "codex")?.defaultArgs).toEqual([]);
 		expect(response.agents.find((agent) => agent.id === "cline")?.defaultArgs).toEqual([]);
 		expect(response.agents.find((agent) => agent.id === "droid")?.defaultArgs).toEqual([]);
-		expect(response.agents.find((agent) => agent.id === "kiro")?.defaultArgs).toEqual([]);
+		expect(response.agents.find((agent) => agent.id === "kiro")?.defaultArgs).toEqual(["chat"]);
 		expect(response.agents.find((agent) => agent.id === "cline")?.installed).toBe(true);
 	});
 
@@ -120,19 +120,20 @@ describe("buildRuntimeConfigResponse", () => {
 			"claude-kiro",
 			"codex",
 			"cline",
-			"kiro",
 			"droid",
+			"kiro",
 		]);
 		expect(response.agents.find((agent) => agent.id === "claude")?.defaultArgs).toEqual([]);
 		expect(response.agents.find((agent) => agent.id === "claude-kiro")?.defaultArgs).toEqual([]);
 		expect(response.agents.find((agent) => agent.id === "codex")?.defaultArgs).toEqual([]);
 		expect(response.agents.find((agent) => agent.id === "cline")?.defaultArgs).toEqual([]);
 		expect(response.agents.find((agent) => agent.id === "droid")?.defaultArgs).toEqual([]);
-		expect(response.agents.find((agent) => agent.id === "kiro")?.defaultArgs).toEqual([]);
+		expect(response.agents.find((agent) => agent.id === "kiro")?.defaultArgs).toEqual(["chat"]);
 		expect(response.agents.find((agent) => agent.id === "cline")?.installed).toBe(true);
 		expect(response.agents.find((agent) => agent.id === "claude")?.command).toBe("claude");
 		expect(response.agents.find((agent) => agent.id === "codex")?.command).toBe("codex");
 		expect(response.agents.find((agent) => agent.id === "droid")?.command).toBe("droid");
+		expect(response.agents.find((agent) => agent.id === "kiro")?.command).toBe("kiro-cli chat");
 	});
 
 	it("sets debug mode from runtime environment variables", () => {

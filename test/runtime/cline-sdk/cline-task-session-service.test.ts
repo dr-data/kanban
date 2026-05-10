@@ -1,4 +1,4 @@
-import type { ToolApprovalRequest, ToolApprovalResult } from "@clinebot/agents";
+import type { ToolApprovalRequest, ToolApprovalResult } from "@clinebot/core";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import type { ClineRuntimeSetup } from "../../../src/cline-sdk/cline-runtime-setup";
 import type {
@@ -143,7 +143,7 @@ function createFakeClineSessionRuntime(): FakeClineSessionRuntimeController {
 					apiKey: request.apiKey,
 					baseUrl: request.baseUrl,
 					systemPrompt: request.systemPrompt,
-					userInstructionWatcher: request.userInstructionWatcher,
+					userInstructionService: request.userInstructionService,
 					requestToolApproval: request.requestToolApproval,
 				});
 				bindTaskSession(request.taskId, requestedSessionId);
@@ -200,34 +200,16 @@ function createFakeClineSessionRuntime(): FakeClineSessionRuntimeController {
 				const snapshot = await readPersistedTaskSessionMock(taskId);
 				if (snapshot) {
 					bindTaskSession(taskId, snapshot.record.sessionId);
-					if (!lastStartRequestByTaskId.has(taskId)) {
-						const record =
-							snapshot.record && typeof snapshot.record === "object"
-								? (snapshot.record as unknown as Record<string, unknown>)
-								: null;
-						const persistedCwd = typeof record?.cwd === "string" ? record.cwd : "";
-						const persistedWorkspaceRoot = typeof record?.workspaceRoot === "string" ? record.workspaceRoot : "";
-						lastStartRequestByTaskId.set(taskId, {
-							taskId,
-							cwd: persistedCwd || persistedWorkspaceRoot,
-							providerId: typeof record?.provider === "string" ? record.provider : "cline",
-							modelId: typeof record?.model === "string" ? record.model : "anthropic/claude-sonnet-4.6",
-							mode: undefined,
-							apiKey: undefined,
-							baseUrl: undefined,
-							systemPrompt: "You are a helpful coding assistant.",
-							userInstructionWatcher: undefined,
-							requestToolApproval: undefined,
-						});
-					}
 				}
 				return snapshot;
 			},
 			async stopTaskSession(taskId: string): Promise<void> {
 				await stopTaskSessionMock(taskId);
+				clearTaskSessionBinding(taskId);
 			},
 			async abortTaskSession(taskId: string): Promise<void> {
 				await abortTaskSessionMock(taskId);
+				clearTaskSessionBinding(taskId);
 			},
 			async clearTaskSessions(taskId: string): Promise<void> {
 				await clearTaskSessionsMock(taskId);
@@ -235,6 +217,12 @@ function createFakeClineSessionRuntime(): FakeClineSessionRuntimeController {
 			},
 			getTaskSessionId(taskId: string): string | null {
 				return sessionIdByTaskId.get(taskId) ?? null;
+			},
+			getTaskProviderId(taskId: string): string | null {
+				return lastStartRequestByTaskId.get(taskId)?.providerId ?? null;
+			},
+			canRestartTaskSession(taskId: string): boolean {
+				return lastStartRequestByTaskId.has(taskId);
 			},
 			async readPersistedTaskSession(taskId: string): Promise<ClinePersistedTaskSessionSnapshot | null> {
 				return await readPersistedTaskSessionMock(taskId);
@@ -312,15 +300,28 @@ function createFakeRuntimeSetup(): FakeRuntimeSetupController {
 		reason: "approved in test",
 	}));
 	const disposeMock = vi.fn(async () => {});
-	const refreshAllMock = vi.fn(async () => {});
-	const getSnapshotMock = vi.fn((_type: string) => new Map());
+	const refreshTypeMock = vi.fn(async () => {});
+	const listRecordsMock = vi.fn(() => []);
+	const listRuntimeCommandsMock = vi.fn(() => []);
+	const resolveRuntimeSlashCommandMock = vi.fn((prompt: string) => prompt);
+	const hasConfiguredSkillsMock = vi.fn(() => false);
+	const createExtensionMock = vi.fn(() => ({
+		name: "test-user-instructions",
+		manifest: { capabilities: ["rules"] },
+	}));
 
 	return {
 		setup: {
-			watcher: {
-				refreshAll: refreshAllMock,
-				getSnapshot: getSnapshotMock,
-			} as unknown as ClineRuntimeSetup["watcher"],
+			userInstructionService: {
+				start: vi.fn(async () => {}),
+				stop: vi.fn(() => {}),
+				refreshType: refreshTypeMock,
+				listRecords: listRecordsMock,
+				listRuntimeCommands: listRuntimeCommandsMock,
+				resolveRuntimeSlashCommand: resolveRuntimeSlashCommandMock,
+				hasConfiguredSkills: hasConfiguredSkillsMock,
+				createExtension: createExtensionMock,
+			} as unknown as ClineRuntimeSetup["userInstructionService"],
 			resolvePrompt: resolvePromptMock,
 			loadRules: loadRulesMock,
 			requestToolApproval: requestToolApprovalMock,
@@ -504,6 +505,52 @@ describe("InMemoryClineTaskSessionService", () => {
 		);
 	});
 
+	it("clears hydrated persisted history even when no live task entry exists", async () => {
+		const { service, runtime } = createTrackedService();
+		runtime.readPersistedTaskSessionMock
+			.mockResolvedValueOnce({
+				record: {
+					sessionId: "task-1-persisted",
+					source: "core" as ClinePersistedTaskSessionSnapshot["record"]["source"],
+					status: "completed",
+					startedAt: "2026-03-17T10:00:00.000Z",
+					updatedAt: "2026-03-17T10:05:00.000Z",
+					interactive: true,
+					provider: "anthropic",
+					model: "claude-sonnet-4-6",
+					cwd: "/tmp/worktree",
+					workspaceRoot: "/tmp/workspace-root",
+					enableTools: true,
+					enableSpawn: false,
+					enableTeams: false,
+					isSubagent: false,
+				},
+				messages: [
+					{
+						role: "user",
+						content: "Recovered prompt",
+					},
+					{
+						role: "assistant",
+						content: "Recovered answer",
+					},
+				],
+			})
+			.mockResolvedValue(null);
+
+		expect((await service.loadTaskSessionMessages("task-1")).map((message) => message.content)).toEqual([
+			"Recovered prompt",
+			"Recovered answer",
+		]);
+
+		const clearedSummary = await service.clearTaskSession("task-1");
+
+		expect(clearedSummary).toBeNull();
+		expect(runtime.clearTaskSessionsMock).toHaveBeenCalledWith("task-1");
+		expect(await service.loadTaskSessionMessages("task-1")).toEqual([]);
+		expect(runtime.readPersistedTaskSessionMock).toHaveBeenCalledTimes(2);
+	});
+
 	it("keeps resume-from-trash sessions awaiting review until the user sends a message", async () => {
 		const { service } = createTrackedService();
 
@@ -516,6 +563,20 @@ describe("InMemoryClineTaskSessionService", () => {
 
 		expect(summary.state).toBe("awaiting_review");
 		expect(summary.reviewReason).toBe("attention");
+		expect(service.listMessages("task-1")).toEqual([]);
+	});
+
+	it("starts empty-prompt sessions idle until the user sends a message", async () => {
+		const { service } = createTrackedService();
+
+		const summary = await service.startTaskSession({
+			taskId: "task-1",
+			cwd: "/tmp/worktree",
+			prompt: "",
+		});
+
+		expect(summary.state).toBe("idle");
+		expect(summary.reviewReason).toBeNull();
 		expect(service.listMessages("task-1")).toEqual([]);
 	});
 
@@ -584,6 +645,71 @@ describe("InMemoryClineTaskSessionService", () => {
 				}),
 			);
 		});
+	});
+
+	it("reinitializes chat history from persisted data when resuming a trashed task", async () => {
+		const { service, runtime } = createTrackedService();
+
+		await service.startTaskSession({
+			taskId: "task-1",
+			cwd: "/tmp/worktree",
+			prompt: "Original prompt",
+		});
+		const firstSessionId = await waitForTaskSessionId(runtime, "task-1");
+		runtime.emitAgentEvent(firstSessionId, {
+			type: "done",
+			reason: "completed",
+			text: "Original answer",
+		});
+
+		await vi.waitFor(() => {
+			expect(service.getSummary("task-1")?.state).toBe("awaiting_review");
+		});
+		expect(service.listMessages("task-1").map((message) => message.content)).toEqual([
+			"Original prompt",
+			"Original answer",
+		]);
+
+		runtime.readPersistedTaskSessionMock.mockResolvedValue({
+			record: {
+				sessionId: "task-1-persisted",
+				source: "core" as ClinePersistedTaskSessionSnapshot["record"]["source"],
+				status: "completed",
+				startedAt: "2026-03-17T10:00:00.000Z",
+				updatedAt: "2026-03-17T10:05:00.000Z",
+				interactive: true,
+				provider: "anthropic",
+				model: "claude-sonnet-4-6",
+				cwd: "/tmp/worktree",
+				workspaceRoot: "/tmp/workspace-root",
+				enableTools: true,
+				enableSpawn: false,
+				enableTeams: false,
+				isSubagent: false,
+			},
+			messages: [
+				{
+					role: "user",
+					content: "Recovered prompt",
+				},
+				{
+					role: "assistant",
+					content: "Recovered answer",
+				},
+			],
+		});
+
+		await service.startTaskSession({
+			taskId: "task-1",
+			cwd: "/tmp/worktree",
+			prompt: "",
+			resumeFromTrash: true,
+		});
+
+		expect(service.listMessages("task-1").map((message) => message.content)).toEqual([
+			"Recovered prompt",
+			"Recovered answer",
+		]);
 	});
 
 	it("defaults to the SDK cline provider when provider is not explicitly configured", async () => {
@@ -728,6 +854,33 @@ describe("InMemoryClineTaskSessionService", () => {
 			);
 		});
 		expect(service.getSummary("task-1")?.mode).toBe("plan");
+	});
+
+	it("prepends a Kanban-managed planning prompt when start in plan mode is enabled", async () => {
+		const { service, runtime } = createTrackedService();
+
+		await service.startTaskSession({
+			taskId: "task-1",
+			cwd: "/tmp/worktree",
+			prompt: "Investigate startup",
+			startInPlanMode: true,
+		});
+		await vi.waitFor(() => {
+			expect(runtime.startTaskSessionMock).toHaveBeenCalledTimes(1);
+		});
+
+		expect(runtime.startTaskSessionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				mode: "act",
+				prompt: expect.stringContaining("Do not modify files, do not use write tools"),
+			}),
+		);
+		expect(runtime.startTaskSessionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				prompt: expect.stringContaining("Task:\nInvestigate startup"),
+			}),
+		);
+		expect(service.getSummary("task-1")?.mode).toBe("act");
 	});
 
 	it("keeps the most recent mode for subsequent follow-up input", async () => {
@@ -881,7 +1034,7 @@ describe("InMemoryClineTaskSessionService", () => {
 		expect(runtime.startTaskSessionMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				prompt: "resolved:/fix issue",
-				userInstructionWatcher: runtimeSetup.setup.watcher,
+				userInstructionService: runtimeSetup.setup.userInstructionService,
 				requestToolApproval: runtimeSetup.setup.requestToolApproval,
 				systemPrompt: expect.stringContaining("Workspace rule"),
 			}),
@@ -1090,6 +1243,33 @@ describe("InMemoryClineTaskSessionService", () => {
 		expect(assistantMessages).toEqual(["Hello world"]);
 	});
 
+	it("shows assistant text when the SDK only emits the full response at content_end", async () => {
+		const { service, runtime } = createTrackedService();
+		await service.startTaskSession({
+			taskId: "task-1",
+			cwd: "/tmp/worktree",
+			prompt: "",
+		});
+
+		const sessionId = await waitForTaskSessionId(runtime, "task-1");
+
+		runtime.emitAgentEvent(sessionId, {
+			type: "content_end",
+			contentType: "text",
+			text: "Here is the complete response.",
+		});
+
+		const assistantMessages = service
+			.listMessages("task-1")
+			.filter((message) => message.role === "assistant")
+			.map((message) => message.content);
+		const summary = service.getSummary("task-1");
+
+		expect(assistantMessages).toEqual(["Here is the complete response."]);
+		expect(summary?.latestHookActivity?.activityText).toBe("Here is the complete response.");
+		expect(summary?.latestHookActivity?.finalMessage).toBe("Here is the complete response.");
+	});
+
 	it("streams reasoning and tool lifecycle messages with stable ids", async () => {
 		const { service, runtime } = createTrackedService();
 		await service.startTaskSession({
@@ -1109,6 +1289,11 @@ describe("InMemoryClineTaskSessionService", () => {
 			type: "content_start",
 			contentType: "reasoning",
 			reasoning: "...",
+		});
+		runtime.emitAgentEvent(sessionId, {
+			type: "content_end",
+			contentType: "reasoning",
+			reasoning: "Thinking...",
 		});
 		runtime.emitAgentEvent(sessionId, {
 			type: "content_start",
@@ -1132,6 +1317,7 @@ describe("InMemoryClineTaskSessionService", () => {
 
 		expect(reasoningMessages).toHaveLength(1);
 		expect(reasoningMessages[0]?.content).toBe("Thinking...");
+		expect(reasoningMessages[0]?.meta?.hookEventName).toBe("reasoning_end");
 		expect(toolMessages).toHaveLength(1);
 		expect(toolMessages[0]?.meta?.hookEventName).toBe("tool_call_end");
 		expect(toolMessages[0]?.content).toContain("Tool: Read");
@@ -1296,6 +1482,69 @@ describe("InMemoryClineTaskSessionService", () => {
 		);
 	});
 
+	it("suppresses generic startup failure warnings for insufficient-balance errors", async () => {
+		const { service, runtime } = createTrackedService();
+		const insufficientBalanceError = new Error("402 Insufficient balance. Your Cline Credits balance is $0.00");
+		runtime.startTaskSessionMock.mockRejectedValueOnce(insufficientBalanceError);
+
+		await service.startTaskSession({
+			taskId: "task-1",
+			cwd: "/tmp/worktree",
+			prompt: "Initial prompt",
+		});
+
+		await vi.waitFor(() => {
+			expect(service.getSummary("task-1")?.state).toBe("awaiting_review");
+		});
+
+		expect(service.getSummary("task-1")?.warningMessage).toBeNull();
+		expect(service.listMessages("task-1").some((message) => message.content.includes("Cline SDK start failed"))).toBe(
+			false,
+		);
+	});
+
+	it("sets credit_limit notificationType on start/send failure path for insufficient-balance errors", async () => {
+		const { service, runtime } = createTrackedService();
+		runtime.startTaskSessionMock.mockRejectedValueOnce(
+			new Error("402 Insufficient balance. Your Cline Credits balance is $0.00"),
+		);
+
+		await service.startTaskSession({
+			taskId: "task-1",
+			cwd: "/tmp/worktree",
+			prompt: "Initial prompt",
+		});
+
+		await vi.waitFor(() => {
+			expect(service.getSummary("task-1")?.state).toBe("awaiting_review");
+		});
+
+		expect(service.getSummary("task-1")?.latestHookActivity?.notificationType).toBe("credit_limit");
+	});
+
+	it("aborts the task session when an agent event signals credit exhaustion", async () => {
+		const { service, runtime } = createTrackedService();
+
+		await service.startTaskSession({
+			taskId: "task-1",
+			cwd: "/tmp/worktree",
+			prompt: "Investigate startup",
+		});
+		const sessionId = await waitForTaskSessionId(runtime, "task-1");
+
+		runtime.emitAgentEvent(sessionId, {
+			type: "error",
+			error: new Error("402 Insufficient balance. Your Cline Credits balance is $0.00"),
+			recoverable: false,
+			iteration: 1,
+		});
+
+		await vi.waitFor(() => {
+			expect(runtime.abortTaskSessionMock).toHaveBeenCalledWith("task-1");
+		});
+		expect(service.getSummary("task-1")?.latestHookActivity?.notificationType).toBe("credit_limit");
+	});
+
 	it("allows follow-up input after a startup error", async () => {
 		const { service, runtime } = createTrackedService();
 		runtime.startTaskSessionMock.mockRejectedValueOnce(new Error("Maximum consecutive mistakes reached."));
@@ -1318,6 +1567,77 @@ describe("InMemoryClineTaskSessionService", () => {
 		});
 		expect(runtime.sendTaskSessionInputMock).not.toHaveBeenCalled();
 		expect(service.listMessages("task-1").map((message) => message.content)).toContain("Try again");
+	});
+
+	it("compacts persisted history and retries send when context window is exceeded", async () => {
+		const { service, runtime } = createTrackedService();
+		runtime.sendTaskSessionInputMock.mockRejectedValueOnce(
+			new Error(
+				"Anthropic request was rejected (HTTP 400). Maximum prompt length exceeded: 1102640 tokens exceeds the 1000000 token limit.",
+			),
+		);
+		runtime.readPersistedTaskSessionMock.mockResolvedValue({
+			record: {
+				sessionId: "task-1-failed",
+				source: "core" as ClinePersistedTaskSessionSnapshot["record"]["source"],
+				status: "failed",
+				startedAt: "2026-03-17T10:00:00.000Z",
+				updatedAt: "2026-03-17T10:05:00.000Z",
+				interactive: true,
+				provider: "anthropic",
+				model: "claude-sonnet-4-6",
+				cwd: "/tmp/worktree",
+				workspaceRoot: "/tmp/workspace-root",
+				enableTools: true,
+				enableSpawn: false,
+				enableTeams: false,
+				isSubagent: false,
+			},
+			messages: [
+				{ role: "user", content: "Initial prompt" },
+				{ role: "assistant", content: "Step 1 response" },
+				{ role: "user", content: "Step 2 request" },
+				{ role: "assistant", content: "Step 2 response" },
+				{ role: "assistant", content: "Tool output summary" },
+				{ role: "user", content: "Latest user request" },
+				{ role: "assistant", content: "Latest response" },
+			],
+		});
+
+		await service.startTaskSession({
+			taskId: "task-1",
+			cwd: "/tmp/worktree",
+			prompt: "Initial prompt",
+		});
+		await vi.waitFor(() => {
+			expect(runtime.startTaskSessionMock).toHaveBeenCalledTimes(1);
+		});
+
+		const nextSummary = await service.sendTaskSessionInput("task-1", "Try again");
+
+		expect(nextSummary?.state).toBe("running");
+		await vi.waitFor(() => {
+			expect(runtime.startTaskSessionMock).toHaveBeenCalledTimes(2);
+		});
+		expect(runtime.stopTaskSessionMock).toHaveBeenCalledWith("task-1");
+		expect(runtime.sendTaskSessionInputMock).toHaveBeenCalledTimes(1);
+		const restartCall = runtime.startTaskSessionMock.mock.calls[1]?.[0];
+		expect(restartCall?.prompt).toBe("resolved:Try again");
+		const compactedMessages = restartCall?.initialMessages;
+		expect(Array.isArray(compactedMessages)).toBe(true);
+		expect((compactedMessages ?? []).length).toBeLessThan(7);
+		expect(compactedMessages?.[0]?.role).toBe("user");
+		const compactedFirstContent =
+			typeof compactedMessages?.[0]?.content === "string"
+				? compactedMessages[0].content
+				: JSON.stringify(compactedMessages?.[0]?.content ?? "");
+		expect(compactedFirstContent).toContain("Previous conversation history was removed due to context window limits");
+		expect(compactedFirstContent).not.toContain("[[");
+		expect(compactedFirstContent).toContain("[Previous conversation history");
+		expect(compactedFirstContent).toContain("Initial prompt");
+		expect(service.listMessages("task-1").some((message) => message.content.includes("Cline SDK send failed"))).toBe(
+			false,
+		);
 	});
 
 	it("restarts the live session from persisted history after the SDK ends the task on send failure", async () => {
@@ -1390,6 +1710,72 @@ describe("InMemoryClineTaskSessionService", () => {
 			}),
 		);
 		expect(service.listMessages("task-1").map((message) => message.content)).toContain("Try again");
+	});
+
+	it("reloads by restarting after stop instead of sending into the just-stopped session", async () => {
+		const { service, runtime } = createTrackedService();
+
+		await service.startTaskSession({
+			taskId: "task-1",
+			cwd: "/tmp/worktree",
+			prompt: "Initial prompt",
+		});
+		await vi.waitFor(() => {
+			expect(runtime.startTaskSessionMock).toHaveBeenCalledTimes(1);
+		});
+
+		const summary = await service.reloadTaskSession("task-1");
+
+		expect(summary?.state).toBe("idle");
+		expect(runtime.stopTaskSessionMock).toHaveBeenCalledWith("task-1");
+		expect(runtime.startTaskSessionMock).toHaveBeenCalledTimes(2);
+		expect(runtime.sendTaskSessionInputMock).not.toHaveBeenCalled();
+	});
+
+	it("returns null for restored home sessions without cached start config so the caller can start fresh", async () => {
+		const { service, runtime } = createTrackedService();
+		const taskId = "__home_agent__:workspace-1:cline";
+		runtime.readPersistedTaskSessionMock.mockResolvedValue({
+			record: {
+				sessionId: "persisted-home-session",
+				source: "core" as ClinePersistedTaskSessionSnapshot["record"]["source"],
+				status: "completed",
+				startedAt: "2026-03-17T10:00:00.000Z",
+				updatedAt: "2026-03-17T10:05:00.000Z",
+				interactive: true,
+				provider: "openrouter",
+				model: "openrouter/auto",
+				cwd: "/tmp/worktree",
+				workspaceRoot: "/tmp/workspace-root",
+				enableTools: true,
+				enableSpawn: false,
+				enableTeams: false,
+				isSubagent: false,
+			},
+			messages: [
+				{
+					role: "user",
+					content: "Initial prompt",
+				},
+				{
+					role: "assistant",
+					content: "Initial reply",
+				},
+			],
+		});
+
+		const reboundSummary = await service.rebindPersistedTaskSession(taskId);
+		expect(reboundSummary?.taskId).toBe(taskId);
+		expect(runtime.startTaskSessionMock).not.toHaveBeenCalled();
+
+		const sendSummary = await service.sendTaskSessionInput(taskId, "Continue");
+		expect(sendSummary).toBeNull();
+		expect(runtime.startTaskSessionMock).not.toHaveBeenCalled();
+		expect(service.listMessages(taskId).map((message) => message.content)).not.toContain("Continue");
+
+		const reloadSummary = await service.reloadTaskSession(taskId);
+		expect(reloadSummary).toBeNull();
+		expect(runtime.startTaskSessionMock).not.toHaveBeenCalled();
 	});
 
 	it("does not duplicate assistant output when stream and send result both include final text", async () => {

@@ -28,6 +28,7 @@ const oauthMocks = vi.hoisted(() => ({
 	loginOcaOAuth: vi.fn(),
 	loginOpenAICodex: vi.fn(),
 	resolveDefaultMcpSettingsPath: vi.fn(),
+	resolveClineDataDir: vi.fn(() => "/tmp/cline"),
 	loadMcpSettingsFile: vi.fn(),
 	saveProviderSettings: vi.fn(),
 	getProviderSettings: vi.fn(),
@@ -37,12 +38,19 @@ const oauthMocks = vi.hoisted(() => ({
 const llmsModelMocks = vi.hoisted(() => ({
 	getAllProviders: vi.fn(),
 	getModelsForProvider: vi.fn(),
+	resolveProviderConfig: vi.fn(),
+	resolveProviderModelCatalogKeys: vi.fn(),
+}));
+
+const localProviderMocks = vi.hoisted(() => ({
+	getLocalProviderModels: vi.fn(),
 }));
 
 const clineAccountMocks = vi.hoisted(() => ({
 	fetchMe: vi.fn(),
 	fetchRemoteConfig: vi.fn(),
 	fetchOrganization: vi.fn(),
+	fetchFeaturebaseToken: vi.fn(),
 	constructedOptions: [] as Array<{ apiBaseUrl: string; getAuthToken: () => Promise<string | undefined | null> }>,
 }));
 
@@ -63,9 +71,10 @@ vi.mock("../../../src/workspace/turn-checkpoints.js", () => ({
 	captureTaskTurnCheckpoint: turnCheckpointMocks.captureTaskTurnCheckpoint,
 }));
 
-vi.mock("@clinebot/core/node", () => ({
+vi.mock("@clinebot/core", () => ({
 	addLocalProvider: oauthMocks.addLocalProvider,
 	ensureCustomProvidersLoaded: oauthMocks.ensureCustomProvidersLoaded,
+	getLocalProviderModels: localProviderMocks.getLocalProviderModels,
 	getValidClineCredentials: oauthMocks.getValidClineCredentials,
 	getValidOcaCredentials: oauthMocks.getValidOcaCredentials,
 	getValidOpenAICodexCredentials: oauthMocks.getValidOpenAICodexCredentials,
@@ -73,7 +82,9 @@ vi.mock("@clinebot/core/node", () => ({
 	loginOcaOAuth: oauthMocks.loginOcaOAuth,
 	loginOpenAICodex: oauthMocks.loginOpenAICodex,
 	resolveDefaultMcpSettingsPath: oauthMocks.resolveDefaultMcpSettingsPath,
+	resolveClineDataDir: oauthMocks.resolveClineDataDir,
 	loadMcpSettingsFile: oauthMocks.loadMcpSettingsFile,
+	resolveProviderConfig: llmsModelMocks.resolveProviderConfig,
 	ClineAccountService: class {
 		constructor(options: { apiBaseUrl: string; getAuthToken: () => Promise<string | undefined | null> }) {
 			clineAccountMocks.constructedOptions.push(options);
@@ -81,11 +92,29 @@ vi.mock("@clinebot/core/node", () => ({
 		fetchMe = clineAccountMocks.fetchMe;
 		fetchRemoteConfig = clineAccountMocks.fetchRemoteConfig;
 		fetchOrganization = clineAccountMocks.fetchOrganization;
+		fetchFeaturebaseToken = clineAccountMocks.fetchFeaturebaseToken;
 	},
 	ProviderSettingsManager: class {
 		saveProviderSettings = oauthMocks.saveProviderSettings;
 		getProviderSettings = oauthMocks.getProviderSettings;
 		getLastUsedProviderSettings = oauthMocks.getLastUsedProviderSettings;
+		getProviderConfig = vi.fn((providerId: string) => {
+			const settings = oauthMocks.getProviderSettings(providerId);
+			if (!settings) {
+				return undefined;
+			}
+			return {
+				providerId: settings.provider,
+				apiKey: settings.apiKey,
+				modelId: settings.model,
+				baseUrl: settings.baseUrl,
+			};
+		});
+	},
+	Llms: {
+		getAllProviders: llmsModelMocks.getAllProviders,
+		getModelsForProvider: llmsModelMocks.getModelsForProvider,
+		resolveProviderModelCatalogKeys: llmsModelMocks.resolveProviderModelCatalogKeys,
 	},
 	LlmsModels: {
 		CLINE_DEFAULT_MODEL: "anthropic/claude-sonnet-4.6",
@@ -98,7 +127,34 @@ vi.mock("../../../src/server/browser.js", () => ({
 	openInBrowser: browserMocks.openInBrowser,
 }));
 
-import { createRuntimeApi } from "../../../src/trpc/runtime-api";
+import type { RuntimeTrpcContext } from "../../../src/trpc/app-router";
+import { type CreateRuntimeApiDependencies, createRuntimeApi } from "../../../src/trpc/runtime-api";
+
+function createTestRuntimeApi(
+	deps: Omit<CreateRuntimeApiDependencies, "getUpdateStatus" | "runUpdateNow"> &
+		Partial<Pick<CreateRuntimeApiDependencies, "getUpdateStatus" | "runUpdateNow">>,
+): RuntimeTrpcContext["runtimeApi"] {
+	return createRuntimeApi({
+		...deps,
+		getUpdateStatus:
+			deps.getUpdateStatus ??
+			vi.fn(() => ({
+				currentVersion: "0.1.0",
+				latestVersion: null,
+				updateAvailable: false,
+				updateTiming: null,
+				installCommand: null,
+			})),
+		runUpdateNow:
+			deps.runUpdateNow ??
+			vi.fn(async () => ({
+				status: "unsupported_installation" as const,
+				currentVersion: "0.1.0",
+				latestVersion: null,
+				message: "On-demand updates are not available in this test runtime.",
+			})),
+	});
+}
 
 function createSummary(overrides: Partial<RuntimeTaskSessionSummary> = {}): RuntimeTaskSessionSummary {
 	return {
@@ -144,6 +200,9 @@ function setSelectedProviderSettings(
 		model?: string;
 		baseUrl?: string;
 		apiKey?: string;
+		reasoning?: {
+			effort?: "low" | "medium" | "high" | "xhigh";
+		};
 		auth?: {
 			accessToken?: string;
 			refreshToken?: string;
@@ -223,8 +282,11 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineAccountMocks.fetchMe.mockReset();
 		clineAccountMocks.fetchRemoteConfig.mockReset();
 		clineAccountMocks.constructedOptions.length = 0;
+		localProviderMocks.getLocalProviderModels.mockReset();
 		llmsModelMocks.getAllProviders.mockReset();
 		llmsModelMocks.getModelsForProvider.mockReset();
+		llmsModelMocks.resolveProviderConfig.mockReset();
+		llmsModelMocks.resolveProviderModelCatalogKeys.mockReset();
 		browserMocks.openInBrowser.mockReset();
 
 		agentRegistryMocks.resolveAgentCommand.mockReturnValue({
@@ -285,6 +347,10 @@ describe("createRuntimeApi startTaskSession", () => {
 		oauthMocks.ensureCustomProvidersLoaded.mockResolvedValue(undefined);
 		llmsModelMocks.getAllProviders.mockResolvedValue([]);
 		llmsModelMocks.getModelsForProvider.mockResolvedValue({});
+		llmsModelMocks.resolveProviderConfig.mockResolvedValue(undefined);
+		llmsModelMocks.resolveProviderModelCatalogKeys.mockImplementation((providerId: string) =>
+			providerId === "cline" ? ["openrouter", "cline"] : [providerId],
+		);
 		oauthMocks.resolveDefaultMcpSettingsPath.mockReturnValue(mcpSettingsPath);
 		oauthMocks.loadMcpSettingsFile.mockReturnValue({
 			mcpServers: {},
@@ -357,7 +423,7 @@ describe("createRuntimeApi startTaskSession", () => {
 			applyTurnCheckpoint: vi.fn(),
 		};
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -404,7 +470,7 @@ describe("createRuntimeApi startTaskSession", () => {
 			applyTurnCheckpoint: vi.fn(),
 		};
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -457,7 +523,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
 		clineTaskSessionService.startTaskSession.mockResolvedValue(createSummary({ agentId: "cline", pid: null }));
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				const runtimeConfigState = createRuntimeConfigState();
@@ -506,11 +572,303 @@ describe("createRuntimeApi startTaskSession", () => {
 				],
 				providerId: "anthropic",
 				apiKey: "anthropic-api-key",
-				mode: "plan",
+				mode: "act",
+				startInPlanMode: true,
 				resumeFromTrash: undefined,
 			}),
 		);
 		expect(terminalManager.startTaskSession).not.toHaveBeenCalled();
+	});
+
+	it("applies task-level reasoning overrides even without task model/provider overrides", async () => {
+		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/existing-worktree");
+		agentRegistryMocks.resolveAgentCommand.mockReturnValue(null);
+		setSelectedProviderSettings({
+			provider: "anthropic",
+			model: "claude-sonnet-4-6",
+			apiKey: "anthropic-api-key",
+		});
+
+		const terminalManager = {
+			startTaskSession: vi.fn(async () => createSummary()),
+			applyTurnCheckpoint: vi.fn(),
+		};
+		const clineTaskSessionService = createClineTaskSessionServiceMock();
+		clineTaskSessionService.startTaskSession.mockResolvedValue(createSummary({ agentId: "cline", pid: null }));
+
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => {
+				const runtimeConfigState = createRuntimeConfigState();
+				runtimeConfigState.selectedAgentId = "cline";
+				return runtimeConfigState;
+			}),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => terminalManager as never),
+			getScopedClineTaskSessionService: vi.fn(async () => clineTaskSessionService as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+
+		const response = await api.startTaskSession(
+			{
+				workspaceId: "workspace-1",
+				workspacePath: "/tmp/repo",
+			},
+			{
+				taskId: "task-1",
+				baseRef: "main",
+				prompt: "Reasoning-only override task",
+				clineSettings: {
+					reasoningEffort: "medium",
+				},
+			},
+		);
+
+		expect(response.ok).toBe(true);
+		expect(clineTaskSessionService.startTaskSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				providerId: "anthropic",
+				modelId: "claude-sonnet-4-6",
+				reasoningEffort: "medium",
+			}),
+		);
+		expect(terminalManager.startTaskSession).not.toHaveBeenCalled();
+	});
+
+	it("uses model-default reasoning when a task overrides the model but leaves reasoning on default", async () => {
+		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/existing-worktree");
+		agentRegistryMocks.resolveAgentCommand.mockReturnValue(null);
+		setSelectedProviderSettings({
+			provider: "anthropic",
+			model: "claude-sonnet-4-6",
+			apiKey: "anthropic-api-key",
+			reasoning: {
+				effort: "high",
+			},
+		});
+
+		const terminalManager = {
+			startTaskSession: vi.fn(async () => createSummary()),
+			applyTurnCheckpoint: vi.fn(),
+		};
+		const clineTaskSessionService = createClineTaskSessionServiceMock();
+		clineTaskSessionService.startTaskSession.mockResolvedValue(createSummary({ agentId: "cline", pid: null }));
+
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => {
+				const runtimeConfigState = createRuntimeConfigState();
+				runtimeConfigState.selectedAgentId = "cline";
+				return runtimeConfigState;
+			}),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => terminalManager as never),
+			getScopedClineTaskSessionService: vi.fn(async () => clineTaskSessionService as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+
+		const response = await api.startTaskSession(
+			{
+				workspaceId: "workspace-1",
+				workspacePath: "/tmp/repo",
+			},
+			{
+				taskId: "task-1",
+				baseRef: "main",
+				prompt: "Task with model override",
+				clineSettings: {
+					modelId: "anthropic/claude-opus-4.6",
+				},
+			},
+		);
+
+		expect(response.ok).toBe(true);
+		expect(clineTaskSessionService.startTaskSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				providerId: "anthropic",
+				modelId: "anthropic/claude-opus-4.6",
+				reasoningEffort: null,
+			}),
+		);
+		expect(terminalManager.startTaskSession).not.toHaveBeenCalled();
+	});
+
+	it("skips cline persisted-session probing when resumeFromTrash already has a non-cline terminal summary", async () => {
+		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/existing-worktree");
+		agentRegistryMocks.resolveAgentCommand.mockReturnValue({
+			agentId: "codex",
+			label: "OpenAI Codex",
+			command: "codex",
+			binary: "codex",
+			args: [],
+		});
+
+		const terminalManager = {
+			getSummary: vi.fn(() => createSummary({ agentId: "codex", state: "idle", pid: null })),
+			startTaskSession: vi.fn(async () => createSummary({ agentId: "codex" })),
+			applyTurnCheckpoint: vi.fn(),
+		};
+		const clineTaskSessionService = createClineTaskSessionServiceMock();
+		const getScopedClineTaskSessionService = vi.fn(async () => clineTaskSessionService as never);
+
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => {
+				const runtimeConfigState = createRuntimeConfigState();
+				runtimeConfigState.selectedAgentId = "cline";
+				return runtimeConfigState;
+			}),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => terminalManager as never),
+			getScopedClineTaskSessionService,
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+
+		const response = await api.startTaskSession(
+			{
+				workspaceId: "workspace-1",
+				workspacePath: "/tmp/repo",
+			},
+			{
+				taskId: "task-1",
+				baseRef: "main",
+				prompt: "Resume task",
+				resumeFromTrash: true,
+			},
+		);
+
+		expect(response.ok).toBe(true);
+		expect(terminalManager.getSummary).toHaveBeenCalledWith("task-1");
+		expect(getScopedClineTaskSessionService).not.toHaveBeenCalled();
+		expect(clineTaskSessionService.rebindPersistedTaskSession).not.toHaveBeenCalled();
+		expect(terminalManager.startTaskSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				taskId: "task-1",
+				agentId: "codex",
+				resumeFromTrash: true,
+			}),
+		);
+		expect(turnCheckpointMocks.captureTaskTurnCheckpoint).not.toHaveBeenCalled();
+	});
+
+	it("clears task chat cache before resumeFromTrash starts", async () => {
+		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/existing-worktree");
+		agentRegistryMocks.resolveAgentCommand.mockReturnValue({
+			agentId: "codex",
+			label: "OpenAI Codex",
+			command: "codex",
+			binary: "codex",
+			args: [],
+		});
+
+		const broadcastTaskChatCleared = vi.fn();
+		const terminalManager = {
+			getSummary: vi.fn(() => createSummary({ agentId: "codex", state: "idle", pid: null })),
+			startTaskSession: vi.fn(async () => createSummary({ agentId: "codex" })),
+			applyTurnCheckpoint: vi.fn(),
+		};
+
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => {
+				const runtimeConfigState = createRuntimeConfigState();
+				runtimeConfigState.selectedAgentId = "codex";
+				return runtimeConfigState;
+			}),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => terminalManager as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			broadcastTaskChatCleared,
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+
+		const response = await api.startTaskSession(
+			{
+				workspaceId: "workspace-1",
+				workspacePath: "/tmp/repo",
+			},
+			{
+				taskId: "task-1",
+				baseRef: "main",
+				prompt: "Resume task",
+				resumeFromTrash: true,
+			},
+		);
+
+		expect(response.ok).toBe(true);
+		expect(broadcastTaskChatCleared).toHaveBeenCalledWith("workspace-1", "task-1");
+	});
+
+	it("probes cline persisted sessions on resumeFromTrash when no terminal agent summary exists", async () => {
+		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/existing-worktree");
+		agentRegistryMocks.resolveAgentCommand.mockReturnValue({
+			agentId: "codex",
+			label: "OpenAI Codex",
+			command: "codex",
+			binary: "codex",
+			args: [],
+		});
+		setSelectedProviderSettings({
+			provider: "anthropic",
+			model: "claude-sonnet-4-6",
+			apiKey: "anthropic-api-key",
+		});
+
+		const terminalManager = {
+			getSummary: vi.fn(() => null),
+			startTaskSession: vi.fn(async () => createSummary({ agentId: "codex" })),
+			applyTurnCheckpoint: vi.fn(),
+		};
+		const clineTaskSessionService = createClineTaskSessionServiceMock();
+		clineTaskSessionService.rebindPersistedTaskSession.mockResolvedValue(
+			createSummary({ agentId: "cline", pid: null }),
+		);
+		clineTaskSessionService.startTaskSession.mockResolvedValue(createSummary({ agentId: "cline", pid: null }));
+
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => {
+				const runtimeConfigState = createRuntimeConfigState();
+				runtimeConfigState.selectedAgentId = "codex";
+				return runtimeConfigState;
+			}),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => terminalManager as never),
+			getScopedClineTaskSessionService: vi.fn(async () => clineTaskSessionService as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+
+		const response = await api.startTaskSession(
+			{
+				workspaceId: "workspace-1",
+				workspacePath: "/tmp/repo",
+			},
+			{
+				taskId: "task-1",
+				baseRef: "main",
+				prompt: "Resume task",
+				resumeFromTrash: true,
+			},
+		);
+
+		expect(response.ok).toBe(true);
+		expect(terminalManager.getSummary).toHaveBeenCalledWith("task-1");
+		expect(clineTaskSessionService.rebindPersistedTaskSession).toHaveBeenCalledWith("task-1");
+		expect(clineTaskSessionService.startTaskSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				taskId: "task-1",
+				resumeFromTrash: true,
+				providerId: "anthropic",
+				apiKey: "anthropic-api-key",
+			}),
+		);
+		expect(terminalManager.startTaskSession).not.toHaveBeenCalled();
+		expect(turnCheckpointMocks.captureTaskTurnCheckpoint).not.toHaveBeenCalled();
 	});
 
 	it("uses saved cline settings even when no last-used provider is recorded", async () => {
@@ -530,7 +888,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
 		clineTaskSessionService.startTaskSession.mockResolvedValue(createSummary({ agentId: "cline", pid: null }));
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				const runtimeConfigState = createRuntimeConfigState();
@@ -583,7 +941,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		};
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				const runtimeConfigState = createRuntimeConfigState();
@@ -632,7 +990,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
 		clineTaskSessionService.startTaskSession.mockResolvedValue(createSummary({ agentId: "cline", pid: null }));
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				const runtimeConfigState = createRuntimeConfigState();
@@ -674,7 +1032,7 @@ describe("createRuntimeApi startTaskSession", () => {
 			applyTurnCheckpoint: vi.fn(),
 		};
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -722,7 +1080,7 @@ describe("createRuntimeApi startTaskSession", () => {
 			applyTurnCheckpoint: vi.fn(),
 		};
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				const runtimeConfigState = createRuntimeConfigState();
@@ -796,7 +1154,7 @@ describe("createRuntimeApi startTaskSession", () => {
 			},
 		});
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				const runtimeConfigState = createRuntimeConfigState();
@@ -860,7 +1218,7 @@ describe("createRuntimeApi startTaskSession", () => {
 			},
 		});
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				const runtimeConfigState = createRuntimeConfigState();
@@ -893,6 +1251,7 @@ describe("createRuntimeApi startTaskSession", () => {
 				apiKey: "workos:oauth-access",
 			}),
 		);
+		expect(clineAccountMocks.fetchMe).not.toHaveBeenCalled();
 		expect(oauthMocks.saveProviderSettings).toHaveBeenCalledWith(
 			expect.objectContaining({
 				provider: "cline",
@@ -929,7 +1288,7 @@ describe("createRuntimeApi startTaskSession", () => {
 			},
 		});
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				const runtimeConfigState = createRuntimeConfigState();
@@ -976,7 +1335,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.sendTaskSessionInput.mockResolvedValue(summary);
 		clineTaskSessionService.stopTaskSession.mockResolvedValue(summary);
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1020,7 +1379,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.loadTaskSessionMessages.mockResolvedValue([latestMessage]);
 		clineTaskSessionService.getSummary.mockReturnValue(summary);
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1073,7 +1432,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.clearTaskSession.mockResolvedValue(summary);
 		const broadcastTaskChatCleared = vi.fn();
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1106,7 +1465,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.sendTaskSessionInput.mockResolvedValue(summary);
 		clineTaskSessionService.listMessages.mockReturnValue([]);
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1152,7 +1511,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.getSummary.mockReturnValue(null);
 		clineTaskSessionService.loadTaskSessionMessages.mockResolvedValue([persistedMessage]);
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1177,7 +1536,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
 		clineTaskSessionService.reloadTaskSession.mockResolvedValue(summary);
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1199,6 +1558,51 @@ describe("createRuntimeApi startTaskSession", () => {
 		expect(clineTaskSessionService.reloadTaskSession).toHaveBeenCalledWith("__home_agent__:workspace-1:cline");
 	});
 
+	it("restarts the home chat session from the saved launch config when reload cannot reuse cached config", async () => {
+		const summary = createSummary({ agentId: "cline", pid: null });
+		const clineTaskSessionService = createClineTaskSessionServiceMock();
+		clineTaskSessionService.reloadTaskSession.mockResolvedValue(null);
+		clineTaskSessionService.startTaskSession.mockResolvedValue(summary);
+		setSelectedProviderSettings({
+			provider: "openrouter",
+			model: "openrouter/auto",
+			apiKey: "sk-or-test",
+			baseUrl: "https://openrouter.ai/api/v1",
+			reasoning: {},
+		});
+
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => ({}) as never),
+			getScopedClineTaskSessionService: vi.fn(async () => clineTaskSessionService as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+
+		const response = await api.reloadTaskChatSession(
+			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
+			{ taskId: "__home_agent__:workspace-1:cline" },
+		);
+
+		expect(response).toEqual({
+			ok: true,
+			summary,
+		});
+		expect(clineTaskSessionService.startTaskSession).toHaveBeenCalledWith({
+			taskId: "__home_agent__:workspace-1:cline",
+			cwd: "/tmp/repo",
+			prompt: "",
+			resumeFromPersistence: true,
+			providerId: "openrouter",
+			modelId: "openrouter/auto",
+			apiKey: "sk-or-test",
+			baseUrl: "https://openrouter.ai/api/v1",
+			reasoningEffort: undefined,
+		});
+	});
+
 	it("rebinds persisted non-home chat sessions before retrying the first send after restart", async () => {
 		const summary = createSummary({ agentId: "cline", pid: null });
 		const latestMessage = {
@@ -1212,7 +1616,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.rebindPersistedTaskSession.mockResolvedValue(summary);
 		clineTaskSessionService.listMessages.mockReturnValue([latestMessage]);
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1271,7 +1675,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.startTaskSession.mockResolvedValue(summary);
 		clineTaskSessionService.listMessages.mockReturnValue([latestMessage]);
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => runtimeConfigState),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1306,6 +1710,57 @@ describe("createRuntimeApi startTaskSession", () => {
 		expect(response.message).toEqual(latestMessage);
 	});
 
+	it("starts home chat sessions from persisted history with current launch config", async () => {
+		const summary = createSummary({ agentId: "cline", pid: null });
+		const latestMessage = {
+			id: "message-home-rebound-1",
+			role: "user" as const,
+			content: "continue home",
+			createdAt: Date.now(),
+		};
+		const clineTaskSessionService = createClineTaskSessionServiceMock();
+		clineTaskSessionService.sendTaskSessionInput.mockResolvedValueOnce(null);
+		clineTaskSessionService.startTaskSession.mockResolvedValue(summary);
+		clineTaskSessionService.listMessages.mockReturnValue([latestMessage]);
+		setSelectedProviderSettings({
+			provider: "cline",
+			auth: {
+				accessToken: "seed-token",
+				refreshToken: "seed-refresh",
+				expiresAt: Date.now() + 3_600_000,
+			},
+		});
+
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => ({}) as never),
+			getScopedClineTaskSessionService: vi.fn(async () => clineTaskSessionService as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+
+		const response = await api.sendTaskChatMessage(
+			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
+			{ taskId: "__home_agent__:workspace-1", text: "continue home" },
+		);
+
+		expect(response.ok).toBe(true);
+		expect(clineTaskSessionService.startTaskSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				taskId: "__home_agent__:workspace-1",
+				cwd: "/tmp/repo",
+				prompt: "continue home",
+				resumeFromPersistence: true,
+				providerId: "cline",
+				apiKey: "workos:oauth-access",
+			}),
+		);
+		expect(clineTaskSessionService.sendTaskSessionInput).toHaveBeenCalledTimes(1);
+		expect(response.message).toEqual(latestMessage);
+	});
+
 	it("home chat auto-start keeps manual API key for non-OAuth providers", async () => {
 		const summary = createSummary({ agentId: "cline", pid: null });
 		const terminalManager = {
@@ -1325,7 +1780,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		clineTaskSessionService.sendTaskSessionInput.mockResolvedValue(null);
 		clineTaskSessionService.startTaskSession.mockResolvedValue(summary);
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => runtimeConfigState),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1356,7 +1811,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		};
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => {
 				return createRuntimeConfigState();
@@ -1387,8 +1842,234 @@ describe("createRuntimeApi startTaskSession", () => {
 		expect(modelsResponse.models.some((model) => model.id === "claude-sonnet-4-6")).toBe(true);
 	});
 
+	it("loads provider models through the SDK local-provider resolver with saved config", async () => {
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => ({}) as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+		setSelectedProviderSettings({
+			provider: "openrouter",
+			model: "openrouter/auto",
+			apiKey: "openrouter-key",
+			baseUrl: "https://openrouter.ai/api/v1",
+		});
+		localProviderMocks.getLocalProviderModels.mockResolvedValue({
+			providerId: "openrouter",
+			models: [
+				{
+					id: "openrouter/free",
+					name: "OpenRouter Free",
+					supportsReasoning: true,
+				},
+			],
+		});
+
+		const response = await api.getClineProviderModels(
+			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
+			{ providerId: "openrouter" },
+		);
+
+		expect(localProviderMocks.getLocalProviderModels).toHaveBeenCalledWith(
+			"openrouter",
+			expect.objectContaining({
+				providerId: "openrouter",
+				modelId: "openrouter/auto",
+				apiKey: "openrouter-key",
+				baseUrl: "https://openrouter.ai/api/v1",
+			}),
+		);
+		expect(response).toEqual({
+			providerId: "openrouter",
+			models: [
+				{
+					id: "openrouter/free",
+					name: "OpenRouter Free",
+					supportsReasoningEffort: true,
+				},
+			],
+		});
+	});
+
+	it("adds refreshed live catalog models to provider model responses", async () => {
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => ({}) as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+		setSelectedProviderSettings({
+			provider: "deepseek",
+			model: "deepseek-chat",
+			apiKey: "deepseek-key",
+			baseUrl: "https://api.deepseek.com/v1",
+		});
+		localProviderMocks.getLocalProviderModels.mockResolvedValue({
+			providerId: "deepseek",
+			models: [
+				{
+					id: "deepseek-chat",
+					name: "DeepSeek Chat",
+				},
+			],
+		});
+		llmsModelMocks.resolveProviderConfig.mockResolvedValue({
+			knownModels: {
+				"deepseek-v4-pro": {
+					id: "deepseek-v4-pro",
+					name: "DeepSeek V4 Pro",
+					capabilities: ["tools", "reasoning"],
+				},
+			},
+		});
+
+		const response = await api.getClineProviderModels(
+			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
+			{ providerId: "deepseek" },
+		);
+
+		expect(llmsModelMocks.resolveProviderModelCatalogKeys).toHaveBeenCalledWith("deepseek");
+		expect(llmsModelMocks.resolveProviderConfig).toHaveBeenCalledWith(
+			"deepseek",
+			expect.objectContaining({
+				loadLatestOnInit: true,
+				loadPrivateOnAuth: true,
+				failOnError: false,
+			}),
+			expect.objectContaining({
+				providerId: "deepseek",
+				modelId: "deepseek-chat",
+				apiKey: "deepseek-key",
+			}),
+		);
+		expect(response.models).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "deepseek-v4-pro",
+					name: "DeepSeek V4 Pro",
+					supportsReasoningEffort: true,
+				}),
+				expect.objectContaining({
+					id: "deepseek-chat",
+					name: "DeepSeek Chat",
+				}),
+			]),
+		);
+	});
+
+	it("loads Cline provider models from the SDK catalog key mapping", async () => {
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => ({}) as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+		setSelectedProviderSettings({
+			provider: "cline",
+			model: "anthropic/claude-sonnet-4.6",
+		});
+		localProviderMocks.getLocalProviderModels.mockResolvedValue({
+			providerId: "cline",
+			models: [
+				{
+					id: "anthropic/claude-sonnet-4.6",
+					name: "Claude Sonnet 4.6",
+				},
+			],
+		});
+		llmsModelMocks.resolveProviderConfig.mockImplementation((providerId: string) =>
+			providerId === "openrouter"
+				? Promise.resolve({
+						knownModels: {
+							"deepseek/deepseek-v4-flash": {
+								id: "deepseek/deepseek-v4-flash",
+								name: "DeepSeek V4 Flash",
+								capabilities: ["tools", "reasoning"],
+							},
+						},
+					})
+				: Promise.resolve(undefined),
+		);
+
+		const response = await api.getClineProviderModels(
+			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
+			{ providerId: "cline" },
+		);
+
+		expect(llmsModelMocks.resolveProviderModelCatalogKeys).toHaveBeenCalledWith("cline");
+		expect(llmsModelMocks.resolveProviderConfig).toHaveBeenCalledWith(
+			"openrouter",
+			expect.objectContaining({
+				loadLatestOnInit: true,
+			}),
+			undefined,
+		);
+		expect(response.models.some((model) => model.id === "deepseek/deepseek-v4-flash")).toBe(true);
+	});
+
+	it("falls back to the queried provider's saved model when provider model loading fails", async () => {
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => ({}) as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+		oauthMocks.getLastUsedProviderSettings.mockReturnValue({
+			provider: "anthropic",
+			model: "claude-sonnet-4-6",
+			apiKey: "anthropic-key",
+		});
+		oauthMocks.getProviderSettings.mockImplementation((providerId: string) => {
+			if (providerId === "anthropic") {
+				return {
+					provider: "anthropic",
+					model: "claude-sonnet-4-6",
+					apiKey: "anthropic-key",
+				};
+			}
+			if (providerId === "openrouter") {
+				return {
+					provider: "openrouter",
+					model: "openrouter/free",
+					apiKey: "openrouter-key",
+					baseUrl: "https://openrouter.ai/api/v1",
+				};
+			}
+			return undefined;
+		});
+		localProviderMocks.getLocalProviderModels.mockRejectedValue(new Error("catalog unavailable"));
+
+		const response = await api.getClineProviderModels(
+			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
+			{ providerId: "openrouter" },
+		);
+
+		expect(response).toEqual({
+			providerId: "openrouter",
+			models: [
+				{
+					id: "openrouter/free",
+					name: "openrouter/free",
+				},
+			],
+		});
+	});
+
 	it("adds a custom OpenAI-compatible provider through the SDK-backed flow", async () => {
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1473,7 +2154,7 @@ describe("createRuntimeApi startTaskSession", () => {
 	});
 
 	it("returns cline account profile for cline OAuth users", async () => {
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1510,7 +2191,7 @@ describe("createRuntimeApi startTaskSession", () => {
 	});
 
 	it("refreshes cline OAuth credentials and retries profile lookup when direct profile fetch fails", async () => {
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1553,7 +2234,7 @@ describe("createRuntimeApi startTaskSession", () => {
 	});
 
 	it("blocks kanban when remote config explicitly disables it", async () => {
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1593,7 +2274,7 @@ describe("createRuntimeApi startTaskSession", () => {
 	});
 
 	it("allows kanban when remote config fetch fails", async () => {
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1640,7 +2321,7 @@ describe("createRuntimeApi startTaskSession", () => {
 	});
 
 	it("allows kanban by default for non-cline providers", async () => {
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1668,8 +2349,9 @@ describe("createRuntimeApi startTaskSession", () => {
 			writeInput: vi.fn(),
 		};
 		const clineTaskSessionService = createClineTaskSessionServiceMock();
+		const bumpClineSessionContextVersion = vi.fn();
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1677,6 +2359,7 @@ describe("createRuntimeApi startTaskSession", () => {
 			getScopedClineTaskSessionService: vi.fn(async () => clineTaskSessionService as never),
 			resolveInteractiveShellCommand: vi.fn(),
 			runCommand: vi.fn(),
+			bumpClineSessionContextVersion,
 		});
 
 		const response = await api.runClineProviderOAuthLogin(
@@ -1709,12 +2392,44 @@ describe("createRuntimeApi startTaskSession", () => {
 			}),
 		);
 		expect(oauthMocks.loginClineOAuth).toHaveBeenCalledTimes(1);
+		expect(bumpClineSessionContextVersion).toHaveBeenCalledTimes(1);
 		const loginInput = oauthMocks.loginClineOAuth.mock.calls[0]?.[0] as
 			| {
 					callbacks?: { onManualCodeInput?: unknown };
 			  }
 			| undefined;
 		expect(loginInput?.callbacks?.onManualCodeInput).toBeUndefined();
+	});
+
+	it("bumps cline session context when provider settings are saved", async () => {
+		const bumpClineSessionContextVersion = vi.fn();
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => ({}) as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+			bumpClineSessionContextVersion,
+		});
+		setSelectedProviderSettings({
+			provider: "openrouter",
+			model: "openrouter/auto",
+			apiKey: "openrouter-key",
+			baseUrl: "https://openrouter.ai/api/v1",
+		});
+
+		const response = await api.saveClineProviderSettings(
+			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
+			{
+				providerId: "openrouter",
+				modelId: "openrouter/free",
+			},
+		);
+
+		expect(response.providerId).toBe("openrouter");
+		expect(bumpClineSessionContextVersion).toHaveBeenCalledTimes(1);
 	});
 
 	it("returns Cline MCP settings", async () => {
@@ -1735,7 +2450,7 @@ describe("createRuntimeApi startTaskSession", () => {
 			),
 		);
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1763,7 +2478,7 @@ describe("createRuntimeApi startTaskSession", () => {
 
 	it("saves Cline MCP settings", async () => {
 		const bumpClineSessionContextVersion = vi.fn();
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1843,7 +2558,7 @@ describe("createRuntimeApi startTaskSession", () => {
 			),
 		);
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1894,7 +2609,7 @@ describe("createRuntimeApi startTaskSession", () => {
 			),
 		);
 
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1936,7 +2651,7 @@ describe("createRuntimeApi startTaskSession", () => {
 				expect(existsSync(path)).toBe(true);
 			}
 		});
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -1979,7 +2694,7 @@ describe("createRuntimeApi startTaskSession", () => {
 			mkdirSync(path, { recursive: true });
 			writeFileSync(join(path, "marker.txt"), "present");
 		}
-		const api = createRuntimeApi({
+		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
 			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
 			setActiveRuntimeConfig: vi.fn(),
@@ -2005,5 +2720,197 @@ describe("createRuntimeApi startTaskSession", () => {
 			}
 			rmSync(tempHome, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("createRuntimeApi getFeaturebaseToken", () => {
+	beforeEach(() => {
+		oauthMocks.getProviderSettings.mockReset();
+		oauthMocks.getLastUsedProviderSettings.mockReset();
+		oauthMocks.getValidClineCredentials.mockReset();
+		oauthMocks.saveProviderSettings.mockReset();
+		clineAccountMocks.fetchFeaturebaseToken.mockReset();
+		clineAccountMocks.constructedOptions.length = 0;
+	});
+
+	it("returns JWT from SDK method", async () => {
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => ({}) as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+		setSelectedProviderSettings({
+			provider: "cline",
+			auth: {
+				accessToken: "workos:oauth-access",
+				refreshToken: "oauth-refresh",
+				accountId: "acct-1",
+				expiresAt: 1_700_000_000_000,
+			},
+		});
+		clineAccountMocks.fetchFeaturebaseToken.mockResolvedValueOnce({
+			featurebaseJwt: "jwt-token-123",
+		});
+
+		const response = await api.getFeaturebaseToken({
+			workspaceId: "workspace-1",
+			workspacePath: "/tmp/repo",
+		});
+
+		expect(response).toEqual({ featurebaseJwt: "jwt-token-123" });
+	});
+
+	it("throws when no provider settings configured", async () => {
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => ({}) as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+		setSelectedProviderSettings(null);
+
+		await expect(
+			api.getFeaturebaseToken({
+				workspaceId: "workspace-1",
+				workspacePath: "/tmp/repo",
+			}),
+		).rejects.toThrow("Failed to fetch Featurebase token.");
+	});
+
+	it("throws when provider is not cline", async () => {
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => ({}) as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+		setSelectedProviderSettings({
+			provider: "oca",
+			auth: {
+				accessToken: "some-token",
+				refreshToken: "some-refresh",
+			},
+		});
+
+		await expect(
+			api.getFeaturebaseToken({
+				workspaceId: "workspace-1",
+				workspacePath: "/tmp/repo",
+			}),
+		).rejects.toThrow("Featurebase token requires a Cline provider.");
+	});
+
+	it("retries after OAuth refresh when first attempt fails", async () => {
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => ({}) as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+		setSelectedProviderSettings({
+			provider: "cline",
+			auth: {
+				accessToken: "workos:stale-access",
+				refreshToken: "oauth-refresh",
+				accountId: "acct-1",
+				expiresAt: 1_700_000_000_000,
+			},
+		});
+
+		// First attempt fails (e.g. expired token)
+		clineAccountMocks.fetchFeaturebaseToken.mockRejectedValueOnce(new Error("Unauthorized"));
+
+		// OAuth refresh returns fresh credentials
+		oauthMocks.getValidClineCredentials.mockResolvedValueOnce({
+			access: "fresh-access",
+			refresh: "fresh-refresh",
+			expires: 1_800_000_000_000,
+			accountId: "acct-1",
+		});
+
+		// Second attempt succeeds with refreshed token
+		clineAccountMocks.fetchFeaturebaseToken.mockResolvedValueOnce({
+			featurebaseJwt: "refreshed-jwt-456",
+		});
+
+		const response = await api.getFeaturebaseToken({
+			workspaceId: "workspace-1",
+			workspacePath: "/tmp/repo",
+		});
+
+		expect(response).toEqual({ featurebaseJwt: "refreshed-jwt-456" });
+		expect(clineAccountMocks.fetchFeaturebaseToken).toHaveBeenCalledTimes(2);
+		expect(oauthMocks.getValidClineCredentials).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("createRuntimeApi update handlers", () => {
+	it("delegates update status to the required dependency", async () => {
+		const getUpdateStatus = vi.fn(() => ({
+			currentVersion: "0.1.0",
+			latestVersion: "0.2.0",
+			updateAvailable: true,
+			updateTiming: "startup" as const,
+			installCommand: "npm install -g kanban@latest",
+		}));
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => ({}) as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+			getUpdateStatus,
+		});
+
+		await expect(api.getUpdateStatus(null)).resolves.toEqual({
+			currentVersion: "0.1.0",
+			latestVersion: "0.2.0",
+			updateAvailable: true,
+			updateTiming: "startup",
+			installCommand: "npm install -g kanban@latest",
+		});
+		expect(getUpdateStatus).toHaveBeenCalledTimes(1);
+	});
+
+	it("delegates update execution to the required dependency", async () => {
+		const runUpdateNow = vi.fn(async () => ({
+			status: "updated" as const,
+			currentVersion: "0.1.0",
+			latestVersion: "0.2.0",
+			message: "Updated Kanban to 0.2.0.",
+		}));
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => ({}) as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+			runUpdateNow,
+		});
+
+		await expect(api.runUpdateNow(null)).resolves.toEqual({
+			status: "updated",
+			currentVersion: "0.1.0",
+			latestVersion: "0.2.0",
+			message: "Updated Kanban to 0.2.0.",
+		});
+		expect(runUpdateNow).toHaveBeenCalledTimes(1);
 	});
 });

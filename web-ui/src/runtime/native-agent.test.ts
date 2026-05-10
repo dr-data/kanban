@@ -254,7 +254,7 @@ describe("native-agent helpers", () => {
 				"task-1": [messageEvent.message],
 			}),
 		).toEqual([messageEvent.message]);
-		expect(selectTaskChatMessagesForTask("task-2", { "task-1": [messageEvent.message] })).toEqual([]);
-		expect(selectTaskChatMessagesForTask(null, { "task-1": [messageEvent.message] })).toEqual([]);
+		expect(selectTaskChatMessagesForTask("task-2", { "task-1": [messageEvent.message] })).toBeNull();
+		expect(selectTaskChatMessagesForTask(null, { "task-1": [messageEvent.message] })).toBeNull();
 	});
 });

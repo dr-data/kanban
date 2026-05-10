@@ -7,6 +7,7 @@ describe("getStartableBacklogTaskIds", () => {
 	function createCard(id: string, prompt = "Do something"): BoardCard {
 		return {
 			id,
+			title: prompt,
 			prompt,
 			startInPlanMode: false,
 			autoReviewEnabled: false,
@@ -31,7 +32,7 @@ describe("getStartableBacklogTaskIds", () => {
 				{ id: "backlog", title: "Backlog", cards: backlogCards },
 				{ id: "in_progress", title: "In Progress", cards: inProgressCards },
 				{ id: "review", title: "Review", cards: [] },
-				{ id: "trash", title: "Trash", cards: [] },
+				{ id: "trash", title: "Done", cards: [] },
 			],
 			dependencies,
 		};

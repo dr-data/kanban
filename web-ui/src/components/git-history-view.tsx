@@ -1,5 +1,5 @@
 import { GitBranch, Trash2 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { type MouseEvent as ReactMouseEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { GitCommitDiffPanel } from "@/components/git-history/git-commit-diff-panel";
 import { GitCommitListPanel } from "@/components/git-history/git-commit-list-panel";
@@ -17,7 +17,15 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
+import { ResizeHandle } from "@/resize/resize-handle";
+import {
+	clampGitCommitsPanelWidth,
+	clampGitRefsPanelWidth,
+	useGitHistoryLayout,
+} from "@/resize/use-git-history-layout";
+import { useResizeDrag } from "@/resize/use-resize-drag";
 import type { RuntimeGitCommit, RuntimeGitRef } from "@/runtime/types";
+import { useWindowEvent } from "@/utils/react-use";
 
 function CommitDiffHeader({ commit }: { commit: RuntimeGitCommit }): React.ReactElement {
 	return (
@@ -104,6 +112,83 @@ export function GitHistoryView({
 		gitHistory.selectWorkingCopy();
 		if (isMobile) setMobileTab("diff");
 	}, [gitHistory.selectWorkingCopy, isMobile]);
+
+	const [historyLayoutWidth, setHistoryLayoutWidth] = useState<number | null>(null);
+	const historyLayoutRef = useRef<HTMLDivElement | null>(null);
+	const { startDrag: startRefsPanelResize } = useResizeDrag();
+	const { startDrag: startCommitsPanelResize } = useResizeDrag();
+	const { displayRefsPanelWidth, displayCommitsPanelWidth, setRefsPanelWidth, setCommitsPanelWidth } =
+		useGitHistoryLayout({
+			containerWidth: historyLayoutWidth,
+		});
+
+	const updateHistoryLayoutWidth = useCallback(() => {
+		const container = historyLayoutRef.current;
+		if (!container) {
+			return;
+		}
+		setHistoryLayoutWidth(Math.max(container.offsetWidth, 1));
+	}, []);
+
+	useEffect(() => {
+		updateHistoryLayoutWidth();
+	}, [updateHistoryLayoutWidth]);
+
+	useWindowEvent("resize", updateHistoryLayoutWidth);
+
+	const handleRefsSeparatorMouseDown = useCallback(
+		(event: ReactMouseEvent<HTMLDivElement>) => {
+			const container = historyLayoutRef.current;
+			if (!container) {
+				return;
+			}
+			const containerWidth = Math.max(container.offsetWidth, 1);
+			const startX = event.clientX;
+			const startWidth = displayRefsPanelWidth;
+			startRefsPanelResize(event, {
+				axis: "x",
+				cursor: "ew-resize",
+				onMove: (pointerX) => {
+					const deltaX = pointerX - startX;
+					const nextWidth = clampGitRefsPanelWidth(startWidth + deltaX, containerWidth, displayCommitsPanelWidth);
+					setRefsPanelWidth(nextWidth);
+				},
+				onEnd: (pointerX) => {
+					const deltaX = pointerX - startX;
+					const nextWidth = clampGitRefsPanelWidth(startWidth + deltaX, containerWidth, displayCommitsPanelWidth);
+					setRefsPanelWidth(nextWidth);
+				},
+			});
+		},
+		[displayCommitsPanelWidth, displayRefsPanelWidth, setRefsPanelWidth, startRefsPanelResize],
+	);
+
+	const handleCommitsSeparatorMouseDown = useCallback(
+		(event: ReactMouseEvent<HTMLDivElement>) => {
+			const container = historyLayoutRef.current;
+			if (!container) {
+				return;
+			}
+			const containerWidth = Math.max(container.offsetWidth, 1);
+			const startX = event.clientX;
+			const startWidth = displayCommitsPanelWidth;
+			startCommitsPanelResize(event, {
+				axis: "x",
+				cursor: "ew-resize",
+				onMove: (pointerX) => {
+					const deltaX = pointerX - startX;
+					const nextWidth = clampGitCommitsPanelWidth(startWidth + deltaX, containerWidth, displayRefsPanelWidth);
+					setCommitsPanelWidth(nextWidth);
+				},
+				onEnd: (pointerX) => {
+					const deltaX = pointerX - startX;
+					const nextWidth = clampGitCommitsPanelWidth(startWidth + deltaX, containerWidth, displayRefsPanelWidth);
+					setCommitsPanelWidth(nextWidth);
+				},
+			});
+		},
+		[displayCommitsPanelWidth, displayRefsPanelWidth, setCommitsPanelWidth, startCommitsPanelResize],
+	);
 
 	if (!workspaceId) {
 		return (
@@ -239,6 +324,7 @@ export function GitHistoryView({
 							}
 							isLoading={gitHistory.isRefsLoading}
 							errorMessage={gitHistory.refsErrorMessage}
+							panelWidth={9999}
 							workingCopyChanges={gitHistory.hasWorkingCopy ? gitHistory.workingCopyFileCount : null}
 							isWorkingCopySelected={gitHistory.viewMode === "working-copy"}
 							onSelectRef={handleSelectRef}
@@ -255,6 +341,7 @@ export function GitHistoryView({
 							canLoadMore={gitHistory.commits.length < gitHistory.totalCommitCount}
 							errorMessage={gitHistory.logErrorMessage}
 							refs={gitHistory.refs}
+							panelWidth={9999}
 							onSelectCommit={handleSelectCommit}
 							onLoadMore={gitHistory.loadMoreCommits}
 						/>
@@ -276,6 +363,7 @@ export function GitHistoryView({
 
 	return (
 		<div
+			ref={historyLayoutRef}
 			style={{
 				display: "flex",
 				flex: "1 1 0",
@@ -289,13 +377,19 @@ export function GitHistoryView({
 				selectedRefName={gitHistory.viewMode === "working-copy" ? null : (gitHistory.activeRef?.name ?? null)}
 				isLoading={gitHistory.isRefsLoading}
 				errorMessage={gitHistory.refsErrorMessage}
+				panelWidth={displayRefsPanelWidth}
 				workingCopyChanges={gitHistory.hasWorkingCopy ? gitHistory.workingCopyFileCount : null}
 				isWorkingCopySelected={gitHistory.viewMode === "working-copy"}
 				onSelectRef={handleSelectRef}
 				onSelectWorkingCopy={gitHistory.hasWorkingCopy ? handleSelectWorkingCopy : undefined}
 				onCheckoutRef={onCheckoutBranch}
 			/>
-			<div style={{ width: 1, background: "var(--color-divider)", flexShrink: 0 }} />
+			<ResizeHandle
+				orientation="vertical"
+				ariaLabel="Resize git refs and commits panels"
+				onMouseDown={handleRefsSeparatorMouseDown}
+				className="z-10"
+			/>
 			<GitCommitListPanel
 				commits={gitHistory.commits}
 				totalCount={gitHistory.totalCommitCount}
@@ -305,10 +399,16 @@ export function GitHistoryView({
 				canLoadMore={gitHistory.commits.length < gitHistory.totalCommitCount}
 				errorMessage={gitHistory.logErrorMessage}
 				refs={gitHistory.refs}
+				panelWidth={displayCommitsPanelWidth}
 				onSelectCommit={handleSelectCommit}
 				onLoadMore={gitHistory.loadMoreCommits}
 			/>
-			<div style={{ width: 1, background: "var(--color-divider)", flexShrink: 0 }} />
+			<ResizeHandle
+				orientation="vertical"
+				ariaLabel="Resize git commits and diff panels"
+				onMouseDown={handleCommitsSeparatorMouseDown}
+				className="z-10"
+			/>
 			<GitCommitDiffPanel
 				diffSource={gitHistory.diffSource}
 				isLoading={gitHistory.isDiffLoading}

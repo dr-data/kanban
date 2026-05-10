@@ -1,5 +1,117 @@
 # Changelog
 
+## [0.1.68]
+
+- Codex hooks are now pre-trusted, eliminating permission prompts when Kanban manages Codex sessions
+- Fixed signal handling to properly re-raise signals and ignore SIGQUIT for cleaner process cleanup
+- Updated Cline SDK from 0.0.36 to 0.0.38, which includes: new OpenAI ChatGPT Subscription and v0 providers, Ollama no longer requires an API key, file-based and event-driven automation, auto-compaction for provider requests, per-turn usage metrics on assistant messages, normalized provider usage costs, web fetch enabled by default in act mode, various message handling and abort fixes
+
+## [0.1.67]
+
+- "New version available" notification with one-click update from the web UI
+- Renamed the "Trash" column to "Done" and added CLI command aliases
+- Allow entering a custom model ID when no matching models are found in the model selector
+- Use Codex hooks for task state transitions
+- Fixed stale worktree setup locks not being cleaned up on shutdown
+- Fixed task ID generation to avoid timestamp-derived fallback IDs
+- Added scaffolding for an Electron desktop app (not yet available)
+
+## [0.1.66]
+
+- Added a refresh button for LiteLLM and custom provider model lists, so you can re-fetch available models without leaving settings
+- Enforced origin and host validation on the Kanban websocket service to prevent unauthorized connections
+
+## [0.1.65]
+
+- Model catalog now auto-refreshes on startup so newly available models appear immediately
+- Fixed task cards resizing and causing layout shifts on the board
+- Fixed initial Cline message not being sent after starting a new session
+- Added runtime child process manager for the desktop app
+
+## [0.1.64]
+
+- Multi-line diff comments: Shift+click to select a range of lines, click the line number to open the comment box, and comments now include file path, line number, and column context
+- File tree panel in diff views can now be toggled open or closed
+- Task title editing now requires clicking the pencil icon that appears on card hover, preventing accidental edits when clicking the card
+
+## [0.1.63]
+
+- Fixed task detail view being lost on page refresh
+- Fixed API key getting reset when modifying Cline agent settings
+- Fixed Kanban agent starting in thinking state instead of idle
+
+## [0.1.62]
+
+- Fixed Cline chats on the home screen not resuming correctly from persisted history, causing conversation context to be lost
+- Fixed Cline thinking indicator hiding prematurely during active requests
+- Reasoning blocks now animate their collapse after finishing streaming
+- Fixed model selector not scrolling to the selected model when opened, and improved visual clarity of the selected model and reasoning effort states
+
+## [0.1.61]
+
+- Added device code authorization for signing into Cline on remote systems
+- Revamped theme system with new theme picker and improved color palettes
+- Fixed duplicate MCP tool registration when using SDK 0.0.34
+- Fixed MCP settings not showing up during Cline setup
+
+## [0.1.60]
+
+- Choose a different agent per task, or change the model and provider for Cline tasks, when creating tasks from the board
+- Adds remote file browser for adding projects when running Kanban on a remote server, with git clone support for adding projects by repository URL
+- HTTPS and passcode authentication support for secure remote access
+- Adds Kiro CLI agent support
+- Pick from 10 new color themes to personalize your board
+- Cline account organization switching and credit balance display in settings
+- Set and edit task titles
+- Incremental expand in the diff viewer -- click to show 20 more lines in collapsed context blocks
+- Mobile-responsive layout for the web UI, including adaptive navigation, task detail views, and chat panels
+- Friendly labels for task commands (like file edits and shell commands) in the sidebar chat
+- Cline credit usage notifications with a link to manage your plan
+- Fixed startup onboarding reappearing after being dismissed
+- Fixed browser back button not returning from task detail view to the board
+- Fixed chat state not reinitializing properly when resuming a trashed task
+- Fixed `/clear` not fully resetting chat for restored sessions
+- Fixed diff mode toggle not reflecting its active state
+- Fixed detached notification process orphans on shutdown
+- Disabled unnecessary startup update checks for Codex agent
+- Faster trash restore for Codex tasks by skipping unnecessary session probes
+- Redesigned settings dialog with sidebar navigation, scroll-spy highlighting, and card-style sections
+- Updated Cline SDK from 0.0.28 to 0.0.33, which includes: checkpoint support (configurable, disabled by default), correct model list for Cline provider via OpenRouter, compaction at 95%, steer messages fix, and team agent identity in event payloads
+
+## [0.1.59]
+
+- Added a beta hint card to the project sidebar with quick access to send feedback or report issues
+- Added "Read the docs" button in the settings dialog linking to documentation
+- Adjusted prompting for the commit button to better handle stale git lock files and multiple stashes at once
+
+## [0.1.58]
+
+- More panels are now resizable (agent chat, git history, and more) and your layout preferences persist across sessions
+- Adds full Factory Droid CLI agent support
+- Add, edit, and delete custom OpenAI Compatible providers from the settings dialog
+- Fixed trashed task cards being openable from the board
+- Fixed git history cache not clearing when closing the view
+- Terminal cursor defaults now match VS Code behavior
+- Feedback widget no longer triggers authentication until you actually click it
+- Updated Cline SDK from 0.0.24 to 0.0.28, which includes: OpenAI-compatible provider support via AI SDK, custom provider CRUD in core, better handling of overloaded and insufficient-credits errors, fixed tool schema format for OpenAI-compatible providers, accurate input token reporting
+
+## [0.1.57]
+
+- Added `kanban --update` command so you can check for and install updates manually
+- Fixed Windows agents (like Codex) being incorrectly launched through cmd.exe when they're native executables
+- Reduced latency when switching between projects
+- Restored the feedback widget with proper JWT authentication
+- Fixed telemetry service configuration for Cline agents
+- Updated Cline SDK from 0.0.23 to 0.0.24, which includes reasoning details support and improved JSON Schema handling for tool definitions
+
+## [0.1.56]
+
+- Automatic context overflow recovery: when the conversation history exceeds the model's context window, Kanban now compacts old messages and retries instead of failing
+- Credit limit errors (insufficient balance / 402) are now surfaced immediately without unnecessary retries or confusing system messages
+- Added report issue and feature request links to the settings dialog
+- Added Cline icon to browser notifications
+- Updated Cline SDK from 0.0.22 to 0.0.23, which includes: LiteLLM private model support, provider-specific setting configs, loop detection as a built-in agent policy, provider ID normalization for model resolution, OAuth token refresh fix for spawned agents
+
 ## [0.1.55]
 
 - Fixed non-ASCII file paths (e.g. Japanese, Chinese, Korean characters) rendering as garbled octal escape sequences in the diff view

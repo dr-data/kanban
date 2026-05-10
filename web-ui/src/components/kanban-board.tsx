@@ -42,6 +42,7 @@ export function KanbanBoard({
 	editingTaskId,
 	inlineTaskEditor,
 	onEditTask,
+	onSaveTaskTitle,
 	onCommitTask,
 	onOpenPrTask,
 	onCancelAutomaticTaskAction,
@@ -57,6 +58,7 @@ export function KanbanBoard({
 	onRequestProgrammaticCardMoveReady,
 	workspacePath,
 	onUpdateTask,
+	defaultClineModelId,
 }: {
 	data: BoardData;
 	taskSessions: Record<string, RuntimeTaskSessionSummary>;
@@ -68,6 +70,7 @@ export function KanbanBoard({
 	editingTaskId?: string | null;
 	inlineTaskEditor?: ReactNode;
 	onEditTask?: (card: BoardCard) => void;
+	onSaveTaskTitle?: (taskId: string, title: string) => void;
 	onCommitTask?: (taskId: string) => void;
 	onOpenPrTask?: (taskId: string) => void;
 	onCancelAutomaticTaskAction?: (taskId: string) => void;
@@ -84,6 +87,7 @@ export function KanbanBoard({
 	workspacePath?: string | null;
 	/** Callback to update recurring/schedule fields on a task. */
 	onUpdateTask?: (taskId: string, updates: Record<string, unknown>) => void;
+	defaultClineModelId?: string | null;
 }): React.ReactElement {
 	const isMobile = useIsMobile();
 	const dragOccurredRef = useRef(false);
@@ -92,6 +96,7 @@ export function KanbanBoard({
 	const latestDataRef = useRef<BoardData>(data);
 	const programmaticCardMoveInFlightRef = useRef<ProgrammaticCardMoveInFlight | null>(null);
 	const [activeDragTaskId, setActiveDragTaskId] = useState<string | null>(null);
+
 	const [activeDragSourceColumnId, setActiveDragSourceColumnId] = useState<BoardColumnId | null>(null);
 	const [mobileTopColumnId, setMobileTopColumnIdRaw] = useState<BoardColumnId>("backlog");
 	const [mobileBottomColumnId, setMobileBottomColumnIdRaw] = useState<BoardColumnId>("in_progress");
@@ -518,6 +523,7 @@ export function KanbanBoard({
 								editingTaskId={column.id === "backlog" ? editingTaskId : null}
 								inlineTaskEditor={column.id === "backlog" ? inlineTaskEditor : undefined}
 								onEditTask={column.id === "backlog" ? onEditTask : undefined}
+								onSaveTitle={column.id !== "trash" ? onSaveTaskTitle : undefined}
 								onCommitTask={column.id === "review" ? onCommitTask : undefined}
 								onOpenPrTask={column.id === "review" ? onOpenPrTask : undefined}
 								onCancelAutomaticTaskAction={onCancelAutomaticTaskAction}
@@ -543,6 +549,7 @@ export function KanbanBoard({
 								onEnterMobileLinkMode={isMobile ? handleEnterMobileLinkMode : undefined}
 								onShowMobileDependencies={isMobile ? handleShowMobileDependencies : undefined}
 								onUpdateTask={onUpdateTask}
+								defaultClineModelId={defaultClineModelId}
 							/>
 						);
 					})}

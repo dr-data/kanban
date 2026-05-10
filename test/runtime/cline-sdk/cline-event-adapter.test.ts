@@ -23,6 +23,7 @@ function applyEvent(input: {
 	entry?: ClineTaskSessionEntry;
 	event: unknown;
 	pendingTurnCancelTaskIds?: Set<string>;
+	isClineProvider?: boolean;
 }) {
 	const taskId = input.taskId ?? "task-1";
 	const entry = input.entry ?? createEntry(taskId);
@@ -35,6 +36,7 @@ function applyEvent(input: {
 		taskId,
 		entry,
 		pendingTurnCancelTaskIds,
+		isClineProvider: input.isClineProvider ?? true,
 		emitSummary: (summary) => {
 			summaries.push(summary);
 		},
@@ -48,6 +50,22 @@ function applyEvent(input: {
 		summaries,
 		messages,
 		pendingTurnCancelTaskIds,
+	};
+}
+
+function runtimeSnapshot(iteration = 1) {
+	return {
+		agentId: "agent-1",
+		status: "running",
+		iteration,
+		messages: [],
+		pendingToolCalls: [],
+		usage: {
+			inputTokens: 0,
+			outputTokens: 0,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 0,
+		},
 	};
 }
 
@@ -92,6 +110,117 @@ describe("applyClineSessionEvent", () => {
 		expect(secondPass.summaries.at(-1)?.latestHookActivity?.finalMessage).toBe("world");
 	});
 
+	it("handles runtime-native assistant, tool, and finished agent events", () => {
+		const entry = createEntry("task-1");
+		entry.summary.state = "running";
+
+		applyEvent({
+			entry,
+			event: {
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "assistant-text-delta",
+						snapshot: runtimeSnapshot(),
+						iteration: 1,
+						text: "Hello",
+						accumulatedText: "Hello",
+					},
+				},
+			},
+		});
+
+		applyEvent({
+			entry,
+			event: {
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "tool-started",
+						snapshot: runtimeSnapshot(),
+						iteration: 1,
+						toolCall: {
+							type: "tool-call",
+							toolCallId: "tool-1",
+							toolName: "Read",
+							input: { file_path: "src/index.ts" },
+						},
+					},
+				},
+			},
+		});
+
+		applyEvent({
+			entry,
+			event: {
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "tool-finished",
+						snapshot: runtimeSnapshot(),
+						iteration: 1,
+						toolCall: {
+							type: "tool-call",
+							toolCallId: "tool-1",
+							toolName: "Read",
+							input: { file_path: "src/index.ts" },
+						},
+						message: {
+							id: "msg-tool-1",
+							role: "tool",
+							content: [
+								{
+									type: "tool-result",
+									toolCallId: "tool-1",
+									toolName: "Read",
+									output: { ok: true },
+								},
+							],
+							createdAt: 1,
+						},
+					},
+				},
+			},
+		});
+
+		const finished = applyEvent({
+			entry,
+			event: {
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "run-finished",
+						snapshot: runtimeSnapshot(),
+						result: {
+							agentId: "agent-1",
+							runId: "run-1",
+							status: "completed",
+							iterations: 1,
+							outputText: "Done.",
+							messages: [],
+							usage: {
+								inputTokens: 0,
+								outputTokens: 0,
+								cacheReadTokens: 0,
+								cacheWriteTokens: 0,
+							},
+						},
+					},
+				},
+			},
+		});
+
+		expect(entry.messages.map((message) => message.role)).toEqual(["assistant", "tool"]);
+		expect(entry.messages[0]?.content).toBe("Done.");
+		expect(entry.messages[1]?.meta?.hookEventName).toBe("tool_call_end");
+		expect(finished.entry.summary.state).toBe("awaiting_review");
+		expect(finished.entry.summary.latestHookActivity?.finalMessage).toBe("Done.");
+	});
+
 	it("keeps the full streamed assistant message in summary metadata", () => {
 		const entry = createEntry("task-1");
 		const longText = `${"Detailed handoff sentence ".repeat(12)}tail`;
@@ -116,6 +245,33 @@ describe("applyClineSessionEvent", () => {
 		expect(latestHookActivity?.finalMessage).toBe(longText.trim());
 		expect(latestHookActivity?.activityText?.length ?? 0).toBeLessThan(latestHookActivity?.finalMessage?.length ?? 0);
 		expect(latestHookActivity?.activityText).toContain("…");
+	});
+
+	it("shows full assistant text received only at content_end", () => {
+		const entry = createEntry("task-1");
+		entry.summary.state = "running";
+
+		const result = applyEvent({
+			entry,
+			event: {
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "content_end",
+						contentType: "text",
+						text: "Here is the complete response.",
+					},
+				},
+			},
+		});
+
+		expect(result.messages).toHaveLength(1);
+		expect(result.messages[0]?.role).toBe("assistant");
+		expect(result.messages[0]?.content).toBe("Here is the complete response.");
+		expect(result.entry.summary.latestHookActivity?.hookEventName).toBe("assistant_delta");
+		expect(result.entry.summary.latestHookActivity?.activityText).toBe("Here is the complete response.");
+		expect(result.entry.summary.latestHookActivity?.finalMessage).toBe("Here is the complete response.");
 	});
 
 	it("transitions into and back out of awaiting review around user-attention tools", () => {
@@ -269,6 +425,33 @@ describe("applyClineSessionEvent", () => {
 		expect(result.summaries.at(-1)?.latestHookActivity?.hookEventName).toBe("turn_canceled");
 	});
 
+	it("converts run-failed events with pending cancel state back to idle", () => {
+		const entry = createEntry("task-1");
+		entry.summary.state = "running";
+		const pendingTurnCancelTaskIds = new Set<string>(["task-1"]);
+
+		const result = applyEvent({
+			entry,
+			pendingTurnCancelTaskIds,
+			event: {
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "run-failed",
+						snapshot: runtimeSnapshot(),
+						error: new Error("This operation was aborted"),
+					},
+				},
+			},
+		});
+
+		expect(result.entry.summary.state).toBe("idle");
+		expect(result.entry.summary.reviewReason).toBeNull();
+		expect(result.pendingTurnCancelTaskIds.has("task-1")).toBe(false);
+		expect(result.summaries.at(-1)?.latestHookActivity?.hookEventName).toBe("turn_canceled");
+	});
+
 	it("moves completed done events into awaiting review with the final message attached", () => {
 		const entry = createEntry("task-1");
 		entry.summary.state = "running";
@@ -379,6 +562,216 @@ describe("applyClineSessionEvent", () => {
 		expect(result.messages[0]?.role).toBe("system");
 		expect(result.messages[0]?.content).toContain("Retrying:");
 		expect(result.messages[0]?.content).toContain("Missing API key");
+	});
+
+	it("sets credit_limit notificationType and suppresses warningMessage for insufficient-balance errors from SDK", () => {
+		const entry = createEntry("task-1");
+		entry.summary.state = "running";
+
+		const result = applyEvent({
+			entry,
+			event: {
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "error",
+						error: new Error("402 Insufficient balance. Your Cline Credits balance is $0.00"),
+						recoverable: false,
+						iteration: 1,
+					},
+				},
+			},
+		});
+
+		expect(result.entry.summary.state).toBe("awaiting_review");
+		expect(result.entry.summary.reviewReason).toBe("error");
+		expect(result.entry.summary.warningMessage).toBeNull();
+		expect(result.entry.summary.latestHookActivity?.notificationType).toBe("credit_limit");
+		expect(result.messages).toHaveLength(0);
+	});
+
+	it("preserves credit-limit metadata when a later done event closes the turn", () => {
+		const entry = createEntry("task-1");
+		entry.summary.state = "awaiting_review";
+		entry.summary.reviewReason = "error";
+		entry.summary.latestHookActivity = {
+			activityText: "Agent error: 402 Insufficient balance",
+			toolName: null,
+			toolInputSummary: null,
+			finalMessage: "402 Insufficient balance. Your Cline Credits balance is $0.00",
+			hookEventName: "agent_error",
+			notificationType: "credit_limit",
+			source: "cline-sdk",
+		};
+
+		const result = applyEvent({
+			entry,
+			event: {
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "done",
+						reason: "aborted",
+					},
+				},
+			},
+		});
+
+		expect(result.entry.summary.latestHookActivity?.hookEventName).toBe("agent_end");
+		expect(result.entry.summary.latestHookActivity?.notificationType).toBe("credit_limit");
+	});
+
+	it("forces credit-limit errors to non-recoverable even when SDK marks them recoverable", () => {
+		const entry = createEntry("task-1");
+		entry.summary.state = "running";
+
+		const result = applyEvent({
+			entry,
+			event: {
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "error",
+						error: new Error("402 Insufficient balance. Your Cline Credits balance is $0.00"),
+						recoverable: true,
+						iteration: 1,
+					},
+				},
+			},
+		});
+
+		expect(result.entry.summary.state).toBe("awaiting_review");
+		expect(result.entry.summary.reviewReason).toBe("error");
+		expect(result.entry.summary.warningMessage).toBeNull();
+		expect(result.entry.summary.latestHookActivity?.notificationType).toBe("credit_limit");
+		expect(result.messages).toHaveLength(0);
+	});
+
+	it("suppresses recovery notices containing credit-limit text", () => {
+		const entry = createEntry("task-1");
+		entry.summary.state = "running";
+
+		const result = applyEvent({
+			entry,
+			event: {
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "notice",
+						message:
+							"The previous turn failed with 402 Insufficient balance. Retry and continue from the latest state",
+						displayRole: "system",
+						reason: "recovery",
+					},
+				},
+			},
+		});
+
+		expect(result.messages).toHaveLength(0);
+		expect(result.summaries).toHaveLength(0);
+	});
+
+	it("passes through credit-limit notices when reason is absent", () => {
+		const entry = createEntry("task-1");
+		entry.summary.state = "running";
+
+		const result = applyEvent({
+			entry,
+			event: {
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "notice",
+						message: "402 Insufficient balance. Your Cline Credits balance is $0.00",
+						displayRole: "system",
+					},
+				},
+			},
+		});
+
+		expect(result.messages).toHaveLength(1);
+		expect(result.messages[0]?.role).toBe("system");
+	});
+
+	it("passes through non-recovery notices even when they contain credit-limit text", () => {
+		const entry = createEntry("task-1");
+		entry.summary.state = "running";
+
+		const result = applyEvent({
+			entry,
+			event: {
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "notice",
+						message: "402 Insufficient balance. Your Cline Credits balance is $0.00",
+						displayRole: "system",
+						reason: "info",
+					},
+				},
+			},
+		});
+
+		expect(result.messages).toHaveLength(1);
+		expect(result.messages[0]?.role).toBe("system");
+	});
+
+	it("detects credit-limit from agentEvent.message when error is absent", () => {
+		const entry = createEntry("task-1");
+		entry.summary.state = "running";
+
+		const result = applyEvent({
+			entry,
+			event: {
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "error",
+						error: undefined,
+						message: "402 Insufficient balance for this request",
+						recoverable: true,
+						iteration: 1,
+					},
+				},
+			},
+		});
+
+		expect(result.entry.summary.state).toBe("awaiting_review");
+		expect(result.entry.summary.latestHookActivity?.notificationType).toBe("credit_limit");
+		expect(result.entry.summary.warningMessage).toBeNull();
+	});
+
+	it("does not detect credit-limit errors for non-Cline providers", () => {
+		const entry = createEntry("task-1");
+		entry.summary.state = "running";
+
+		const result = applyEvent({
+			entry,
+			isClineProvider: false,
+			event: {
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "error",
+						error: new Error("402 Insufficient balance. Your Cline Credits balance is $0.00"),
+						recoverable: false,
+						iteration: 1,
+					},
+				},
+			},
+		});
+
+		expect(result.entry.summary.state).toBe("awaiting_review");
+		expect(result.entry.summary.latestHookActivity?.notificationType).toBeNull();
+		expect(result.entry.summary.warningMessage).toBe("402 Insufficient balance. Your Cline Credits balance is $0.00");
 	});
 
 	it("keeps unrecoverable agent errors resumable", () => {

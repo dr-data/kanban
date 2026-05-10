@@ -36,7 +36,7 @@ const BOARD_COLUMNS: Array<{ id: RuntimeBoardColumnId; title: string }> = [
 	{ id: "backlog", title: "Backlog" },
 	{ id: "in_progress", title: "In Progress" },
 	{ id: "review", title: "Review" },
-	{ id: "trash", title: "Trash" },
+	{ id: "trash", title: "Done" },
 ];
 
 interface WorkspaceIndexEntry {
@@ -299,6 +299,10 @@ async function readWorkspaceBoard(workspaceId: string): Promise<RuntimeBoardData
 	return updateTaskDependencies(
 		parsePersistedStateFile(boardPath, BOARD_FILENAME, rawBoard, runtimeBoardDataSchema, createEmptyBoard()),
 	);
+}
+
+export async function loadWorkspaceBoardById(workspaceId: string): Promise<RuntimeBoardData> {
+	return await readWorkspaceBoard(workspaceId);
 }
 
 async function readWorkspaceSessions(workspaceId: string): Promise<Record<string, RuntimeTaskSessionSummary>> {

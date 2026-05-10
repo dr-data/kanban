@@ -17,6 +17,7 @@ vi.mock("@/telemetry/events", () => ({
 function createTask(taskId: string, prompt: string, createdAt: number): BoardCard {
 	return {
 		id: taskId,
+		title: prompt,
 		prompt,
 		startInPlanMode: false,
 		autoReviewEnabled: false,
@@ -41,7 +42,7 @@ function createBoard(dependencies: BoardDependency[] = []): BoardData {
 				title: "Review",
 				cards: [createTask("task-2", "Review task", 2)],
 			},
-			{ id: "trash", title: "Trash", cards: [] },
+			{ id: "trash", title: "Done", cards: [] },
 		],
 		dependencies,
 	};
